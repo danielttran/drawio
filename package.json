@@ -1,0 +1,12 @@
+{
+  "name": "drawio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local development environment for draw.io",
+  "scripts": {
+    "dev": "vite src/main/webapp --host localhost --port 3000 --open"
+  },
+  "devDependencies": {
+    "vite": "^5.2.11"
+  }
+}
