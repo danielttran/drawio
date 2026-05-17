@@ -14,6 +14,8 @@ endif()
 
 add_library(print_engine_contract
   src/contract_loader.cpp
+  src/devmode.cpp
+  src/native_print.cpp
   src/path_parser.cpp
   src/renderer.cpp
 )
@@ -44,6 +46,7 @@ if(BUILD_TESTING)
     tests/phase4_merge_barcode_tests.cpp
     tests/phase5_targets_preview_tests.cpp
     tests/phase6_hardening_tests.cpp
+    tests/phase7_v2_native_bridge_tests.cpp
   )
 
   target_compile_definitions(print_engine_contract_tests

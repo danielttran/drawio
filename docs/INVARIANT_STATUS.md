@@ -9,7 +9,8 @@
 | INV-2a structural half | Active, covered | Phase 1 |
 | INV-4 | Active, covered | Phase 1 |
 | INV-2a merge-text half | Active, covered | Phase 4 |
-| INV-6 | Active, covered | Phase 3 |
+| INV-6 schema/source retention | Active, covered | Phase 3 |
+| INV-6 rasterization-DPI sub-test | Pending per v2.0 section 3.2 | Future SVG rasterizer |
 | INV-5 | Active, covered | Phase 5 |
 
 Pending invariants are tracked here but are not part of the gating suite until their activation phase.
@@ -21,9 +22,10 @@ Phase 0 coverage note:
 - INV-1 is covered by the dependency-direction architecture test and by keeping this module independent from draw.io/mxGraph sources.
 - INV-2 is covered by dependency-direction checks and path emission tests that consume baked path data verbatim.
 - INV-2a structural half is covered by static checks blocking layout/routing/Z-order concepts outside the allowed future merge-text and barcode seams.
-- INV-4 is covered by world-transform and numeric-drift tests at 300/600/1200 DPI.
+- INV-4 is covered by world-transform and numeric-drift tests at 300/600/1200 DPI, plus v2 mock printer caps at 203/300/600 DPI.
 - Phase 2 static text behavior is covered by pre-wrapped-line rendering, vertical alignment, baseline correction, and deterministic font substitution tests.
-- INV-6 is covered by retained SVG source validation and one-source/two-DPI raster-size tests.
+- INV-6 schema/source retention is covered by retained SVG source validation. The old rasterization-DPI sub-test is pending because embedded SVG is a loud stub in v2.0.
 - INV-2a merge-text half is covered by merge text fitting tests and barcode sizing/error tests behind the renderer seam.
 - INV-5 is covered by print/operator-preview/design-preview target tests that assert shared node order, normalized geometry, and correct merge-vs-sample behavior.
 - Phase 6 hardening is covered by adversarial JSON corpus, deterministic fuzz ingest, regression-pair tests, and `RESIDUAL_RISK.md`.
+- Phase 7 v2 bridge coverage includes loud barcode/SVG stubs, structured degradation notices, mock GDI surface trace, DEVMODE custom stock merge rules, hardware-margin notices, printer world transform, and document/page/tile lifecycle with AbortDoc on mid-job failure.

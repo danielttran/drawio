@@ -1264,6 +1264,8 @@ const char* to_string(ContractErrorCode code) noexcept {
       return "ContractValueError";
     case ContractErrorCode::ImageColorError:
       return "ImageColorError";
+    case ContractErrorCode::ImageDecodeError:
+      return "ImageDecodeError";
     case ContractErrorCode::MergeResolveError:
       return "MergeResolveError";
     case ContractErrorCode::MergeOverflowError:
@@ -1272,6 +1274,8 @@ const char* to_string(ContractErrorCode code) noexcept {
       return "BarcodeEncodeError";
     case ContractErrorCode::BarcodeRepresentationError:
       return "BarcodeRepresentationError";
+    case ContractErrorCode::PrintDeviceError:
+      return "PrintDeviceError";
   }
   return "UnknownContractError";
 }

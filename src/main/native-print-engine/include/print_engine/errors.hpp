@@ -11,10 +11,12 @@ enum class ContractErrorCode {
   ContractEnumError,
   ContractValueError,
   ImageColorError,
+  ImageDecodeError,
   MergeResolveError,
   MergeOverflowError,
   BarcodeEncodeError,
-  BarcodeRepresentationError
+  BarcodeRepresentationError,
+  PrintDeviceError
 };
 
 struct ContractError {

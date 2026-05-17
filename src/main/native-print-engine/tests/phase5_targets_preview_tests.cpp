@@ -87,3 +87,24 @@ TEST_CASE("Phase 5 design preview uses samples while operator preview uses actua
   CHECK(first_text(design.value()).label == "Sample");
   CHECK(first_text(operator_preview.value()).label == "Actual");
 }
+
+TEST_CASE("Phase 5 numeric drift covers text image svg and barcode boxes") {
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":10,"w":50,"h":20},"font":{"family":"Arial","sizePx":10,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"static","lines":["AB"]}},)"
+    R"({"kind":"image","box":{"x":20,"y":10,"w":32,"h":16},"format":"png","data":"iVBORw==","aspect":"preserve","flipH":false,"flipV":false},)"
+    R"({"kind":"svg","box":{"x":30,"y":10,"w":20,"h":10},"source":"PHN2Zz48L3N2Zz4=","aspect":"fill"},)"
+    R"({"kind":"barcode","box":{"x":40,"y":10,"w":50,"h":20},"symbology":"stub","params":{},"value":{"type":"static","data":"ABC123"}})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+
+  const auto rendered = render_design_preview_trace(loaded.value(), RenderTarget{300.0, 96.0});
+
+  REQUIRE(rendered);
+  CHECK(nearly_equal(rendered.value().commands[2].device_box.w, 12.0 * 300.0 / 96.0, 0.499));
+  CHECK(nearly_equal(rendered.value().commands[3].device_box.w, 32.0 * 300.0 / 96.0, 0.499));
+  CHECK(nearly_equal(rendered.value().commands[4].device_box.w, 20.0 * 300.0 / 96.0, 0.499));
+  CHECK(nearly_equal(rendered.value().commands[5].device_box.w, 50.0 * 300.0 / 96.0, 0.499));
+}

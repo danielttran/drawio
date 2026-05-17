@@ -3,8 +3,25 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace print_engine {
+
+enum class DegradationNoticeType {
+  StubbedBarcode,
+  StubbedSvgArtwork,
+  HardwareMarginClip,
+  FontSubstitution,
+  MergeClip
+};
+
+struct DegradationNotice {
+  DegradationNoticeType type;
+  std::string page_id;
+  std::string detail;
+  std::string symbology;
+  std::string resolved_value;
+};
 
 template <typename TValue, typename TError>
 class Result {

@@ -36,6 +36,7 @@ struct EmittedCommand {
   Rect device_box;
   std::vector<PathCommand> path_commands;
   std::string label;
+  std::string style_signature;
   std::string font_family;
   double font_size_px = 0.0;
   bool degradation_notice = false;
@@ -45,6 +46,7 @@ struct EmittedCommand {
 
 struct RenderTrace {
   std::vector<EmittedCommand> commands;
+  std::vector<DegradationNotice> notices;
 };
 
 using RenderResult = Result<RenderTrace, ContractError>;

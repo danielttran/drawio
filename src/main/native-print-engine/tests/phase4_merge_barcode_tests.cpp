@@ -6,6 +6,7 @@
 #include <map>
 
 using print_engine::ContractErrorCode;
+using print_engine::DegradationNoticeType;
 using print_engine::EmittedKind;
 using print_engine::RenderTarget;
 using print_engine::load_baked_contract;
@@ -20,6 +21,25 @@ namespace {
     R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
     R"({"kind":"text","box":{"x":10,"y":20,"w":42,"h":)" + std::to_string(box_height) + R"(},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":"Sample","maxLen":32,"wrap":"word","overflow":")" + overflow + R"(")" + shrink + R"(}},)"
     R"({"kind":"barcode","box":{"x":10,"y":50,"w":50,"h":20},"symbology":"stub","params":{},"value":{"type":"merge","key":"CODE","sample":"12345","maxLen":12,"errorOnUnencodable":true}})"
+    R"(]}]}})";
+}
+
+[[nodiscard]] std::string merge_fixture_with_width(std::string overflow, double box_width, int max_len = 32) {
+  const std::string shrink = overflow == "shrink" ? R"(,"shrinkFloorPx":6)" : "";
+  return
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":)" + std::to_string(box_width) + R"(,"h":20},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":"Sample","maxLen":)"
+    + std::to_string(max_len) +
+    R"(,"wrap":"none","overflow":")" + overflow + R"(")" + shrink + R"(}})"
+    R"(]}]}})";
+}
+
+[[nodiscard]] std::string static_barcode_fixture() {
+  return
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"barcode","box":{"x":10,"y":50,"w":50,"h":20},"symbology":"stub","params":{},"value":{"type":"static","data":"ABC123"}})"
     R"(]}]}})";
 }
 
@@ -40,7 +60,11 @@ TEST_CASE("Phase 4 resolves merge text and barcode values through seams") {
   CHECK(rendered.value().commands[2].kind == EmittedKind::Text);
   CHECK(rendered.value().commands[2].label.find("Ada") != std::string::npos);
   CHECK(rendered.value().commands[3].kind == EmittedKind::Barcode);
-  CHECK(rendered.value().commands[3].label == "ZX42");
+  CHECK(rendered.value().commands[3].label == std::string("BARCODE STUB \xE2\x80\x94 symbology=stub value=ZX42"));
+  CHECK(rendered.value().commands[3].style_signature == "stub-barcode-diagonal-hatch");
+  REQUIRE(rendered.value().notices.size() == 1);
+  CHECK(rendered.value().notices[0].type == DegradationNoticeType::StubbedBarcode);
+  CHECK(rendered.value().notices[0].resolved_value == "ZX42");
 }
 
 TEST_CASE("Phase 4 design-time preview uses merge samples") {
@@ -51,7 +75,7 @@ TEST_CASE("Phase 4 design-time preview uses merge samples") {
 
   REQUIRE(rendered);
   CHECK(rendered.value().commands[2].label == "Sample");
-  CHECK(rendered.value().commands[3].label == "12345");
+  CHECK(rendered.value().commands[3].label == std::string("BARCODE STUB \xE2\x80\x94 symbology=stub value=12345"));
 }
 
 TEST_CASE("Phase 4 rejects merge value beyond maxLen") {
@@ -66,6 +90,48 @@ TEST_CASE("Phase 4 rejects merge value beyond maxLen") {
 
   REQUIRE_FALSE(rendered);
   CHECK(rendered.error().code == ContractErrorCode::MergeOverflowError);
+}
+
+TEST_CASE("Phase 4 accepts merge value exactly at maxLen") {
+  const auto loaded = load_baked_contract(merge_fixture_with_width("clip", 200.0, 4));
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(
+    loaded.value(),
+    RenderTarget{96.0, 96.0},
+    {{"NAME", "ABCD"}},
+    false);
+
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[2].label == "ABCD");
+}
+
+TEST_CASE("Phase 4 reject policy refuses width overflow") {
+  const auto loaded = load_baked_contract(merge_fixture_with_width("reject", 10.0));
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(
+    loaded.value(),
+    RenderTarget{96.0, 96.0},
+    {{"NAME", "TOO-WIDE"}},
+    false);
+
+  REQUIRE_FALSE(rendered);
+  CHECK(rendered.error().code == ContractErrorCode::MergeOverflowError);
+}
+
+TEST_CASE("Phase 4 clip policy emits degradation notice on width overflow") {
+  const auto loaded = load_baked_contract(merge_fixture_with_width("clip", 10.0));
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(
+    loaded.value(),
+    RenderTarget{96.0, 96.0},
+    {{"NAME", "TOO-WIDE"}},
+    false);
+
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[2].degradation_notice);
 }
 
 TEST_CASE("Phase 4 refuses missing runtime merge values") {
@@ -98,7 +164,7 @@ TEST_CASE("Phase 4 shrink geometry uses the fitted font size") {
   CHECK(text.contract_box.h <= 13.0);
 }
 
-TEST_CASE("Phase 4 rejects unencodable barcode values") {
+TEST_CASE("Phase 4 v2 barcode stub is loud even for future unencodable values") {
   const auto loaded = load_baked_contract(merge_fixture());
   REQUIRE(loaded);
 
@@ -108,11 +174,12 @@ TEST_CASE("Phase 4 rejects unencodable barcode values") {
     {{"NAME", "Ada"}, {"CODE", "BAD!"}},
     false);
 
-  REQUIRE_FALSE(rendered);
-  CHECK(rendered.error().code == ContractErrorCode::BarcodeEncodeError);
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[3].label == std::string("BARCODE STUB \xE2\x80\x94 symbology=stub value=BAD!"));
+  CHECK(rendered.value().commands[3].degradation_notice);
 }
 
-TEST_CASE("Phase 4 rejects fixed-DPI barcode representations") {
+TEST_CASE("Phase 4 v2 barcode stub preserves future representation seam without fixed-DPI output") {
   std::string json = merge_fixture();
   const std::string from = R"("symbology":"stub")";
   const std::string to = R"("symbology":"fixed-dpi-raster")";
@@ -122,6 +189,20 @@ TEST_CASE("Phase 4 rejects fixed-DPI barcode representations") {
 
   const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0}, {{"NAME", "Ada"}, {"CODE", "123"}}, false);
 
-  REQUIRE_FALSE(rendered);
-  CHECK(rendered.error().code == ContractErrorCode::BarcodeRepresentationError);
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[3].style_signature == "stub-barcode-diagonal-hatch");
+  CHECK(rendered.value().commands[3].raster_width_px == 0);
+}
+
+TEST_CASE("Phase 4 renders static barcode values through the barcode seam") {
+  const auto loaded = load_baked_contract(static_barcode_fixture());
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0}, {}, false);
+
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[2].kind == EmittedKind::Barcode);
+  CHECK(rendered.value().commands[2].label == std::string("BARCODE STUB \xE2\x80\x94 symbology=stub value=ABC123"));
+  REQUIRE(rendered.value().notices.size() == 1);
+  CHECK(rendered.value().notices[0].type == DegradationNoticeType::StubbedBarcode);
 }

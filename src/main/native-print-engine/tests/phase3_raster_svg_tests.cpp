@@ -58,7 +58,7 @@ TEST_CASE("Phase 3 refuses PNG ICC profiles loudly") {
   CHECK(loaded.error().code == ContractErrorCode::ImageColorError);
 }
 
-TEST_CASE("Phase 3 rasterizes one SVG source at consumer DPI") {
+TEST_CASE("Phase 3 retains SVG source and emits loud stub geometry at consumer DPI") {
   const auto loaded = load_baked_contract(svg_fixture());
   REQUIRE(loaded);
 
@@ -71,6 +71,8 @@ TEST_CASE("Phase 3 rasterizes one SVG source at consumer DPI") {
   const auto& print_svg = print.value().commands[2];
   CHECK(preview_svg.kind == EmittedKind::Svg);
   CHECK(print_svg.kind == EmittedKind::Svg);
+  CHECK(preview_svg.label == "SVG ARTWORK STUB");
+  CHECK(preview_svg.degradation_notice);
   CHECK(preview_svg.raster_width_px == 20);
   CHECK(print_svg.raster_width_px == 80);
   CHECK(nearly_equal(preview_svg.contract_box.w, print_svg.contract_box.w, 0.0001));

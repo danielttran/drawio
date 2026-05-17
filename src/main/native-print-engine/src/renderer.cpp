@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <utility>
 
 namespace print_engine {
 
@@ -13,6 +14,38 @@ Transform make_world_transform(const RenderTarget& target, const TileSummary& ti
 }
 
 namespace {
+
+[[nodiscard]] std::string barcode_stub_label(const std::string& symbology, const std::string& value) {
+  return std::string("BARCODE STUB \xE2\x80\x94 symbology=") + symbology + " value=" + value;
+}
+
+[[nodiscard]] DegradationNotice make_notice(
+    DegradationNoticeType type,
+    std::string page_id,
+    std::string detail,
+    std::string symbology = {},
+    std::string resolved_value = {}) {
+  return DegradationNotice{
+    type,
+    std::move(page_id),
+    std::move(detail),
+    std::move(symbology),
+    std::move(resolved_value)
+  };
+}
+
+void push_notice_unique(std::vector<DegradationNotice>& notices, DegradationNotice notice) {
+  const auto matches = [&notice](const DegradationNotice& existing) {
+    return existing.type == notice.type &&
+           existing.page_id == notice.page_id &&
+           existing.detail == notice.detail &&
+           existing.symbology == notice.symbology &&
+           existing.resolved_value == notice.resolved_value;
+  };
+  if (std::find_if(notices.begin(), notices.end(), matches) == notices.end()) {
+    notices.push_back(std::move(notice));
+  }
+}
 
 [[nodiscard]] std::vector<std::string> fit_lines(
     const std::string& value,
@@ -70,6 +103,18 @@ namespace {
   return static_cast<double>(lines.size()) * font_size * 1.2;
 }
 
+[[nodiscard]] double measured_text_width(const std::string& value, double font_size) {
+  return static_cast<double>(value.size()) * font_size * 0.6;
+}
+
+[[nodiscard]] double max_line_width(const std::vector<std::string>& lines, double font_size) {
+  double max_width = 0.0;
+  for (const auto& line : lines) {
+    max_width = std::max(max_width, measured_text_width(line, font_size));
+  }
+  return max_width;
+}
+
 } // namespace
 
 RenderResult render_to_trace(
@@ -89,14 +134,16 @@ RenderResult render_to_trace(
         tile_rect,
         transform.apply(tile_rect),
         {},
-        page.id
+        page.id,
+        "lifecycle"
       });
       trace.commands.push_back(EmittedCommand{
         EmittedKind::Clip,
         tile_rect,
         transform.apply(tile_rect),
         {},
-        "tile-clip"
+        "tile-clip",
+        "clip"
       });
 
       for (const auto& node : page.paint) {
@@ -128,11 +175,13 @@ RenderResult render_to_trace(
             }
 
             lines = fit_lines(value, font_size, node.box.w, node.merge_wrap);
-            while (fitted_height(lines, font_size) > node.box.h && node.merge_overflow == "shrink" && font_size > node.shrink_floor_px) {
+            while ((fitted_height(lines, font_size) > node.box.h || max_line_width(lines, font_size) > node.box.w) &&
+                   node.merge_overflow == "shrink" &&
+                   font_size > node.shrink_floor_px) {
               font_size = std::max(node.shrink_floor_px, font_size - 0.5);
               lines = fit_lines(value, font_size, node.box.w, node.merge_wrap);
             }
-            if (fitted_height(lines, font_size) > node.box.h) {
+            if (fitted_height(lines, font_size) > node.box.h || max_line_width(lines, font_size) > node.box.w) {
               if (node.merge_overflow == "reject" || node.merge_overflow == "shrink") {
                 return RenderResult::err(ContractError{
                   ContractErrorCode::MergeOverflowError,
@@ -141,11 +190,24 @@ RenderResult render_to_trace(
                 });
               }
               degradation = true;
+              push_notice_unique(trace.notices, make_notice(
+                DegradationNoticeType::MergeClip,
+                page.id,
+                "merge text clipped",
+                {},
+                value));
             }
           }
 
           const double line_height = font_size * 1.2;
           const double text_height = line_height * static_cast<double>(lines.size());
+          const double text_width = max_line_width(lines, font_size);
+          double x = node.box.x;
+          if (node.align_h == "center") {
+            x += (node.box.w - text_width) / 2.0;
+          } else if (node.align_h == "right") {
+            x += node.box.w - text_width;
+          }
           double y = node.box.y;
           if (node.align_v == "middle") {
             y += (node.box.h - text_height) / 2.0;
@@ -153,8 +215,14 @@ RenderResult render_to_trace(
             y += node.box.h - text_height;
           }
           const double baseline_correction = font_size * 0.8;
-          const Rect text_box{node.box.x, y + baseline_correction, node.box.w, text_height};
+          const Rect text_box{x, y + baseline_correction, text_width, text_height};
           const bool missing_font = node.font_family == "DefinitelyMissingFont";
+          if (missing_font) {
+            push_notice_unique(trace.notices, make_notice(
+              DegradationNoticeType::FontSubstitution,
+              page.id,
+              "font substituted: " + node.font_family + " -> Arial"));
+          }
 
           trace.commands.push_back(EmittedCommand{
             EmittedKind::Text,
@@ -162,6 +230,7 @@ RenderResult render_to_trace(
             transform.apply(text_box),
             {},
             join_lines(lines),
+            "content-text",
             missing_font ? "Arial" : node.font_family,
             font_size,
             missing_font || degradation
@@ -192,29 +261,23 @@ RenderResult render_to_trace(
               });
             }
           }
-          if (value.find('!') != std::string::npos) {
-            return RenderResult::err(ContractError{
-              ContractErrorCode::BarcodeEncodeError,
-              node.barcode_symbology,
-              "stub barcode renderer cannot encode value"
-            });
-          }
-          if (node.barcode_symbology == "fixed-dpi-raster") {
-            return RenderResult::err(ContractError{
-              ContractErrorCode::BarcodeRepresentationError,
-              node.barcode_symbology,
-              "barcode renderer returned fixed-DPI raster representation"
-            });
-          }
+          const std::string label = barcode_stub_label(node.barcode_symbology, value);
+          push_notice_unique(trace.notices, make_notice(
+            DegradationNoticeType::StubbedBarcode,
+            page.id,
+            "barcode rendered as loud stub",
+            node.barcode_symbology,
+            value));
           trace.commands.push_back(EmittedCommand{
             EmittedKind::Barcode,
             node.box,
             transform.apply(node.box),
             {},
-            value,
+            label,
+            "stub-barcode-diagonal-hatch",
             {},
             0.0,
-            false,
+            true,
             0,
             0
           });
@@ -223,15 +286,22 @@ RenderResult render_to_trace(
 
         if (node.kind == PaintKind::Image || node.kind == PaintKind::Svg) {
           const Rect device_box = transform.apply(node.box);
+          if (node.kind == PaintKind::Svg) {
+            push_notice_unique(trace.notices, make_notice(
+              DegradationNoticeType::StubbedSvgArtwork,
+              page.id,
+              "embedded SVG artwork rendered as loud stub"));
+          }
           trace.commands.push_back(EmittedCommand{
             node.kind == PaintKind::Image ? EmittedKind::Image : EmittedKind::Svg,
             node.box,
             device_box,
             {},
-            node.kind == PaintKind::Image ? node.image_aspect : node.svg_aspect,
+            node.kind == PaintKind::Image ? node.image_aspect : "SVG ARTWORK STUB",
+            node.kind == PaintKind::Image ? "content-image" : "stub-svg-crosshatch",
             {},
             0.0,
-            false,
+            node.kind == PaintKind::Svg,
             static_cast<int>(std::lround(device_box.w)),
             static_cast<int>(std::lround(device_box.h))
           });
@@ -253,6 +323,7 @@ RenderResult render_to_trace(
           transform.apply(node.box),
           parsed.value().commands,
           node.has_stroke ? "path-stroked" : "path",
+          "content-path",
           {},
           0.0,
           false
@@ -264,7 +335,8 @@ RenderResult render_to_trace(
         tile_rect,
         transform.apply(tile_rect),
         {},
-        page.id
+        page.id,
+        "lifecycle"
       });
     }
   }
@@ -286,12 +358,13 @@ RenderResult render_print_trace(
   }
 
   RenderTrace wrapped;
-  wrapped.commands.push_back(EmittedCommand{EmittedKind::StartDocument, {}, {}, {}, "StartDoc"});
+  wrapped.commands.push_back(EmittedCommand{EmittedKind::StartDocument, {}, {}, {}, "StartDoc", "lifecycle"});
   wrapped.commands.insert(
     wrapped.commands.end(),
     rendered.value().commands.begin(),
     rendered.value().commands.end());
-  wrapped.commands.push_back(EmittedCommand{EmittedKind::EndDocument, {}, {}, {}, "EndDoc"});
+  wrapped.commands.push_back(EmittedCommand{EmittedKind::EndDocument, {}, {}, {}, "EndDoc", "lifecycle"});
+  wrapped.notices = rendered.value().notices;
   return RenderResult::ok(std::move(wrapped));
 }
 
