@@ -17,6 +17,8 @@ add_library(print_engine_contract
   src/devmode.cpp
   src/native_print.cpp
   src/path_parser.cpp
+  src/proto.cpp
+  src/proto_adapter.cpp
   src/renderer.cpp
 )
 
@@ -24,6 +26,26 @@ target_include_directories(print_engine_contract
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+# Standalone host executable. Host sources live OUTSIDE include/ + src/ so the
+# INV-1 architecture scan never sees host concepts; the engine library stays
+# device-free. Windows builds the real Win32/GDI+ services; other platforms
+# get the device-free stub (engine still builds/tests with zero host present).
+if(WIN32)
+  set(PRINT_ENGINE_HOST_SERVICES host/win32_services.cpp)
+else()
+  set(PRINT_ENGINE_HOST_SERVICES host/stub_services.cpp)
+endif()
+
+add_executable(print_engine_host
+  host/host_main.cpp
+  ${PRINT_ENGINE_HOST_SERVICES}
+)
+target_include_directories(print_engine_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
+target_link_libraries(print_engine_host PRIVATE print_engine_contract)
+if(WIN32)
+  target_link_libraries(print_engine_host PRIVATE gdiplus winspool gdi32 user32 ole32)
+endif()
 
 include(CTest)
 
@@ -47,6 +69,8 @@ if(BUILD_TESTING)
     tests/phase5_targets_preview_tests.cpp
     tests/phase6_hardening_tests.cpp
     tests/phase7_v2_native_bridge_tests.cpp
+    tests/proto_tests.cpp
+    tests/proto_adapter_tests.cpp
   )
 
   target_compile_definitions(print_engine_contract_tests

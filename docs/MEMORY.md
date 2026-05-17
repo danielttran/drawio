@@ -28,15 +28,28 @@
   - `mxgraph/src/`: Core mxGraph graph visualization engine source.
 - **`src/main/java/`**: Java backend server servlets.
 - **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
-- **`src/main/native-print-engine/`**: Isolated C++20 native print engine scaffold for `docs/PRINT_ENGINE_SPEC_v1.1.md` plus the `PRINT_ENGINE_SPEC_v2.0.md` native-print bridge.
-  - Current phase: Phases 0-6 have tested C++ slices; first v2 bridge slice has tested native seams; production Win32/GDI+ and hardware validation remain for spec-governed open items.
-  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build src/main/native-print-engine/build --config Debug`, `ctest --test-dir src/main/native-print-engine/build -C Debug --output-on-failure`.
-  - Test tooling: Catch2 v3 via CMake FetchContent.
-  - Implemented: baked contract loader, typed contract errors, fixture builder, invariant status, INV-1/INV-2/INV-2a structural architecture checks, schema/version/merge-text/barcode descriptor tests, deterministic Phase 1 trace sink, path parser, world transform, numeric drift tests, Phase 2 static pre-wrapped text rendering/alignment/baseline/font substitution tests.
-  - Phase coverage now includes Phase 3 image/SVG seams, Phase 4 merge text fitting and v2 barcode stub, Phase 5 print/operator/design preview traces, Phase 6 adversarial/fuzz hardening, and Phase 7/v2 bridge tests for degradation notices, SVG/barcode loud stubs, device caps validation, preflight-before-StartDoc, DEVMODE, content-based hardware margins, lifecycle, and AbortDoc.
-  - Latest verification: CMake build green and CTest green 58/58 after v2 bridge audit.
-  - Spec coverage matrix: `src/main/native-print-engine/SPEC_COVERAGE.md`.
-  - CI wiring: `.github/workflows/native-print-engine.yml`.
+- **`src/main/native-print-engine/`**: Isolated C++20 native print engine (`docs/PRINT_ENGINE_SPEC_v1.1.md` + `_v2.0.md` bridge) plus its host-integration layer.
+  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `src/main/native-print-engine/SPEC_COVERAGE.md`.
+  - **Status: full host integration DONE & verified end-to-end; CTest 83/83 green.**
+
+---
+
+## Native Print — host integration (current state)
+
+End-to-end working: launch webapp → design diagram → **File > Native Print** → dialog with PC printers (enumerated by the C++ engine) → live preview → acknowledge notices → print. Run: `npm run dev` from `E:\Dev\drawio`. Only the in-browser click and a physical sheet remain for the user to exercise.
+
+**Where things live**
+- Engine library (INV-1-clean, scanned): `include/print_engine/proto*.hpp`, `src/proto.cpp`, `src/proto_adapter.cpp` + `tests/proto*_tests.cpp`.
+- Host (not scanned): `host/host_main.cpp` (framed **stdio** transport), `host/win32_services.cpp` (real EnumPrintersW + GDI+ PNG preview + printer DC w/ AbortDoc), `host/stub_services.cpp` (non-Windows), `host/engine_services_factory.hpp`, `host/tools/{smoke,exporter_e2e}.js`.
+- Webapp: `src/main/webapp/vite.config.mjs` (broker = Vite middleware, 127.0.0.1 + Origin check, temp-file + ReleaseContract), `plugins/nativeprint.js` (UI + mandatory notice-ack gate), `plugins/nativeprint/exporter.js` (bake, native subset, zoom-independent), wired in `index.html`.
+
+**Load-bearing constraints (do not regress)**
+- INV-1 banned tokens in `include/`+`src/` (incl. comments): draw.io, drawio, mxGraph, mxCell, mxGeometry, mxPerimeter, mxGraphModel, palette, perimeter, edgeRouting, routeEdge, layoutSolver, zOrder. Keep host concepts under `host/`.
+- INV-5: preview and print share one trace + one rasterizer; never let draw calls diverge.
+- Engine read loop must use low-level `_read`/`read` (fread blocks until buffer full — fatal for small frames).
+- Decisions (user-confirmed, override spec defaults): no Electron; broker is the only engine client; bake is in-scope native subset; block-until-real (no stub milestone); browser↔broker localhost hop is a documented dev-only deviation from spec §3.1.
+
+**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Known limitations (NULL DEVMODE → driver-default paper/copies; no hardware-margin compensation; exporter is rect/text/edge subset) are tracked there as §§5, 6, 8.
 
 ---
 
