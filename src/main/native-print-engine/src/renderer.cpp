@@ -48,47 +48,8 @@ void push_notice_unique(std::vector<DegradationNotice>& notices, DegradationNoti
   }
 }
 
-[[nodiscard]] std::vector<std::string> fit_lines(
-    const std::string& value,
-    double font_size,
-    double box_width,
-    const std::string& wrap) {
-  const double char_width = font_size * 0.6;
-  const std::size_t max_chars = box_width <= 0.0 ? 0 : static_cast<std::size_t>(box_width / char_width);
-  if (wrap == "none" || max_chars == 0 || value.size() <= max_chars) {
-    return {value};
-  }
-
-  std::vector<std::string> lines;
-  std::istringstream words(value);
-  std::string word;
-  std::string current;
-  while (words >> word) {
-    if (word.size() > max_chars) {
-      if (!current.empty()) {
-        lines.push_back(current);
-      }
-      lines.push_back(word);
-      current.clear();
-      continue;
-    }
-    const std::size_t next_size = current.empty() ? word.size() : current.size() + 1 + word.size();
-    if (next_size > max_chars && !current.empty()) {
-      lines.push_back(current);
-      current = word;
-    } else {
-      if (!current.empty()) {
-        current += ' ';
-      }
-      current += word;
-    }
-  }
-  if (!current.empty()) {
-    lines.push_back(current);
-  }
-  return lines.empty() ? std::vector<std::string>{""} : lines;
-}
-
+// Hard line breaks are preserved; the device sink does all real metric
+// layout (§2 measure-at-the-sink). No fake-metric helpers remain here.
 [[nodiscard]] std::string join_lines(const std::vector<std::string>& lines) {
   std::ostringstream label;
   for (std::size_t index = 0; index < lines.size(); ++index) {
@@ -98,22 +59,6 @@ void push_notice_unique(std::vector<DegradationNotice>& notices, DegradationNoti
     label << lines[index];
   }
   return label.str();
-}
-
-[[nodiscard]] double fitted_height(const std::vector<std::string>& lines, double font_size) {
-  return static_cast<double>(lines.size()) * font_size * 1.2;
-}
-
-[[nodiscard]] double measured_text_width(const std::string& value, double font_size) {
-  return static_cast<double>(value.size()) * font_size * 0.6;
-}
-
-[[nodiscard]] double max_line_width(const std::vector<std::string>& lines, double font_size) {
-  double max_width = 0.0;
-  for (const auto& line : lines) {
-    max_width = std::max(max_width, measured_text_width(line, font_size));
-  }
-  return max_width;
 }
 
 } // namespace
@@ -131,28 +76,27 @@ RenderResult render_to_trace(
       const Rect tile_rect{tile.origin.x, tile.origin.y, tile.size.w, tile.size.h};
 
       trace.commands.push_back(EmittedCommand{
-        EmittedKind::StartTile,
-        tile_rect,
-        transform.apply(tile_rect),
-        {},
-        page.id,
-        "lifecycle"
+        .kind = EmittedKind::StartTile,
+        .contract_box = tile_rect,
+        .device_box = transform.apply(tile_rect),
+        .label = page.id,
+        .style_signature = "lifecycle"
       });
       trace.commands.push_back(EmittedCommand{
-        EmittedKind::Clip,
-        tile_rect,
-        transform.apply(tile_rect),
-        {},
-        "tile-clip",
-        "clip"
+        .kind = EmittedKind::Clip,
+        .contract_box = tile_rect,
+        .device_box = transform.apply(tile_rect),
+        .label = "tile-clip",
+        .style_signature = "clip"
       });
 
       for (const auto& node : page.paint) {
         if (node.kind == PaintKind::Text) {
-          std::vector<std::string> lines = node.static_lines;
-          double font_size = node.font_size_px;
-          bool degradation = false;
-
+          // §2 measure-at-the-sink: the engine does NO wrapping/fitting/
+          // positioning (real glyph metrics live only in the device sink).
+          // It forwards the raw text + the node box + the layout policy, and
+          // keeps ONLY the metric-independent hard guards.
+          std::string text;
           if (node.text_content_type == TextContentType::Merge) {
             std::string value = node.merge_sample;
             if (!design_time_preview) {
@@ -166,7 +110,7 @@ RenderResult render_to_trace(
               }
               value = found->second;
             }
-
+            // Content-length guard is metric-independent → stays in the engine.
             if (value.size() > static_cast<std::size_t>(node.merge_max_len)) {
               return RenderResult::err(ContractError{
                 ContractErrorCode::MergeOverflowError,
@@ -174,69 +118,27 @@ RenderResult render_to_trace(
                 "merge value exceeds maxLen"
               });
             }
-
-            lines = fit_lines(value, font_size, node.box.w, node.merge_wrap);
-            while ((fitted_height(lines, font_size) > node.box.h || max_line_width(lines, font_size) > node.box.w) &&
-                   node.merge_overflow == "shrink" &&
-                   font_size > node.shrink_floor_px) {
-              font_size = std::max(node.shrink_floor_px, font_size - 0.5);
-              lines = fit_lines(value, font_size, node.box.w, node.merge_wrap);
-            }
-            if (fitted_height(lines, font_size) > node.box.h || max_line_width(lines, font_size) > node.box.w) {
-              if (node.merge_overflow == "reject" || node.merge_overflow == "shrink") {
-                return RenderResult::err(ContractError{
-                  ContractErrorCode::MergeOverflowError,
-                  node.merge_key,
-                  "merge text does not fit box"
-                });
-              }
-              degradation = true;
-              push_notice_unique(trace.notices, make_notice(
-                DegradationNoticeType::MergeClip,
-                page.id,
-                "merge text clipped",
-                {},
-                value));
-            }
+            text = value;
+          } else {
+            text = join_lines(node.static_lines);  // hard line breaks kept
           }
 
-          const double line_height = font_size * 1.2;
-          const double text_height = line_height * static_cast<double>(lines.size());
-          const double text_width = max_line_width(lines, font_size);
-          double x = node.box.x;
-          if (node.align_h == "center") {
-            x += (node.box.w - text_width) / 2.0;
-          } else if (node.align_h == "right") {
-            x += node.box.w - text_width;
-          }
-          double y = node.box.y;
-          if (node.align_v == "middle") {
-            y += (node.box.h - text_height) / 2.0;
-          } else if (node.align_v == "bottom") {
-            y += node.box.h - text_height;
-          }
-          const double baseline_correction = font_size * 0.8;
-          const Rect text_box{x, y + baseline_correction, text_width, text_height};
           trace.commands.push_back(EmittedCommand{
-            EmittedKind::Text,
-            text_box,
-            transform.apply(text_box),
-            {},
-            join_lines(lines),
-            "content-text",
-            std::nullopt,
-            std::nullopt,
-            node.font_color,
-            {},
-            {},
-            {},
-            false,
-            false,
-            node.font_family,
-            font_size,
-            node.font_weight,
-            node.font_italic,
-            degradation
+            .kind = EmittedKind::Text,
+            .contract_box = node.box,
+            .device_box = transform.apply(node.box),
+            .label = text,
+            .style_signature = "content-text",
+            .text_color = node.font_color,
+            .font_family = node.font_family,
+            .font_size_px = node.font_size_px,
+            .font_weight = node.font_weight,
+            .font_italic = node.font_italic,
+            .align_h = node.align_h,
+            .align_v = node.align_v,
+            .wrap = node.merge_wrap,
+            .overflow = node.merge_overflow,
+            .shrink_floor_px = node.shrink_floor_px
           });
           continue;
         }
@@ -272,27 +174,12 @@ RenderResult render_to_trace(
             node.barcode_symbology,
             value));
           trace.commands.push_back(EmittedCommand{
-            EmittedKind::Barcode,
-            node.box,
-            transform.apply(node.box),
-            {},
-            label,
-            "stub-barcode-diagonal-hatch",
-            std::nullopt,
-            std::nullopt,
-            {},
-            {},
-            {},
-            {},
-            false,
-            false,
-            {},
-            0.0,
-            400,
-            false,
-            true,
-            0,
-            0
+            .kind = EmittedKind::Barcode,
+            .contract_box = node.box,
+            .device_box = transform.apply(node.box),
+            .label = label,
+            .style_signature = "stub-barcode-diagonal-hatch",
+            .degradation_notice = true
           });
           continue;
         }
@@ -306,27 +193,26 @@ RenderResult render_to_trace(
               "embedded SVG artwork rendered as loud stub"));
           }
           trace.commands.push_back(EmittedCommand{
-            node.kind == PaintKind::Image ? EmittedKind::Image : EmittedKind::Svg,
-            node.box,
-            device_box,
-            {},
-            node.kind == PaintKind::Image ? node.image_aspect : "SVG ARTWORK STUB",
-            node.kind == PaintKind::Image ? "content-image" : "stub-svg-crosshatch",
-            std::nullopt,
-            std::nullopt,
-            {},
-            node.kind == PaintKind::Image ? node.image_data : std::string{},
-            node.kind == PaintKind::Image ? node.image_format : std::string{},
-            node.kind == PaintKind::Image ? node.image_aspect : node.svg_aspect,
-            node.kind == PaintKind::Image ? node.flip_h : false,
-            node.kind == PaintKind::Image ? node.flip_v : false,
-            {},
-            0.0,
-            400,
-            false,
-            node.kind == PaintKind::Svg,
-            static_cast<int>(std::lround(device_box.w)),
-            static_cast<int>(std::lround(device_box.h))
+            .kind = node.kind == PaintKind::Image ? EmittedKind::Image
+                                                  : EmittedKind::Svg,
+            .contract_box = node.box,
+            .device_box = device_box,
+            .label = node.kind == PaintKind::Image ? node.image_aspect
+                                                   : std::string("SVG ARTWORK STUB"),
+            .style_signature = node.kind == PaintKind::Image
+                                   ? std::string("content-image")
+                                   : std::string("stub-svg-crosshatch"),
+            .image_data = node.kind == PaintKind::Image ? node.image_data
+                                                        : std::string{},
+            .image_format = node.kind == PaintKind::Image ? node.image_format
+                                                          : std::string{},
+            .image_aspect = node.kind == PaintKind::Image ? node.image_aspect
+                                                          : node.svg_aspect,
+            .flip_h = node.kind == PaintKind::Image ? node.flip_h : false,
+            .flip_v = node.kind == PaintKind::Image ? node.flip_v : false,
+            .degradation_notice = node.kind == PaintKind::Svg,
+            .raster_width_px = static_cast<int>(std::lround(device_box.w)),
+            .raster_height_px = static_cast<int>(std::lround(device_box.h))
           });
           continue;
         }
@@ -341,35 +227,23 @@ RenderResult render_to_trace(
         }
 
         trace.commands.push_back(EmittedCommand{
-          EmittedKind::Path,
-          node.box,
-          transform.apply(node.box),
-          parsed.value().commands,
-          node.stroke.has_value() ? "path-stroked" : "path",
-          "content-path",
-          node.fill,
-          node.stroke,
-          {},
-          {},
-          {},
-          {},
-          false,
-          false,
-          {},
-          0.0,
-          400,
-          false,
-          false
+          .kind = EmittedKind::Path,
+          .contract_box = node.box,
+          .device_box = transform.apply(node.box),
+          .path_commands = parsed.value().commands,
+          .label = node.stroke.has_value() ? "path-stroked" : "path",
+          .style_signature = "content-path",
+          .fill = node.fill,
+          .stroke = node.stroke
         });
       }
 
       trace.commands.push_back(EmittedCommand{
-        EmittedKind::EndTile,
-        tile_rect,
-        transform.apply(tile_rect),
-        {},
-        page.id,
-        "lifecycle"
+        .kind = EmittedKind::EndTile,
+        .contract_box = tile_rect,
+        .device_box = transform.apply(tile_rect),
+        .label = page.id,
+        .style_signature = "lifecycle"
       });
     }
   }
@@ -391,12 +265,20 @@ RenderResult render_print_trace(
   }
 
   RenderTrace wrapped;
-  wrapped.commands.push_back(EmittedCommand{EmittedKind::StartDocument, {}, {}, {}, "StartDoc", "lifecycle"});
+  wrapped.commands.push_back(EmittedCommand{
+    .kind = EmittedKind::StartDocument,
+    .label = "StartDoc",
+    .style_signature = "lifecycle"
+  });
   wrapped.commands.insert(
     wrapped.commands.end(),
     rendered.value().commands.begin(),
     rendered.value().commands.end());
-  wrapped.commands.push_back(EmittedCommand{EmittedKind::EndDocument, {}, {}, {}, "EndDoc", "lifecycle"});
+  wrapped.commands.push_back(EmittedCommand{
+    .kind = EmittedKind::EndDocument,
+    .label = "EndDoc",
+    .style_signature = "lifecycle"
+  });
   wrapped.notices = rendered.value().notices;
   return RenderResult::ok(std::move(wrapped));
 }

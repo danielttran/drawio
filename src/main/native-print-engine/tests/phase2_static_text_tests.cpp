@@ -40,7 +40,11 @@ namespace {
 
 } // namespace
 
-TEST_CASE("Phase 2 renders static pre-wrapped lines without fitting") {
+// §2 measure-at-the-sink: the engine no longer wraps/positions text. It
+// forwards the raw text, the NODE box, the layout policy and the font
+// verbatim; real glyph layout is the device sink's job (verified by host
+// e2e). These tests assert that faithful forwarding + the box transform.
+TEST_CASE("Phase 2 forwards static text, node box and style without layout") {
   const auto loaded = load_baked_contract(static_text_fixture());
   REQUIRE(loaded);
 
@@ -53,14 +57,20 @@ TEST_CASE("Phase 2 renders static pre-wrapped lines without fitting") {
   CHECK(text.label == "Line A\nLine B");
   CHECK(text.font_family == "Arial");
   CHECK(text.font_size_px == 10.0);
-  CHECK(nearly_equal(text.contract_box.y, 28.0, 0.0001));
+  // contract_box is the node box verbatim (no engine-computed text_box).
+  CHECK(nearly_equal(text.contract_box.x, 10.0, 0.0001));
+  CHECK(nearly_equal(text.contract_box.y, 20.0, 0.0001));
+  CHECK(nearly_equal(text.contract_box.w, 80.0, 0.0001));
+  CHECK(nearly_equal(text.contract_box.h, 30.0, 0.0001));
+  CHECK(text.align_h == "left");
+  CHECK(text.align_v == "top");
   CHECK(text.text_color.r == 0);
   CHECK(text.text_color.g == 0);
   CHECK(text.text_color.b == 0);
   CHECK(text.text_color.a == 1.0);
 }
 
-TEST_CASE("Phase 2 applies deterministic horizontal alignment") {
+TEST_CASE("Phase 2 forwards horizontal alignment policy unchanged") {
   const auto centered = load_baked_contract(static_text_fixture_with_align("center"));
   const auto right = load_baked_contract(static_text_fixture_with_align("right"));
   REQUIRE(centered);
@@ -71,11 +81,15 @@ TEST_CASE("Phase 2 applies deterministic horizontal alignment") {
 
   REQUIRE(centered_render);
   REQUIRE(right_render);
-  CHECK(nearly_equal(centered_render.value().commands[2].contract_box.x, 44.0, 0.0001));
-  CHECK(nearly_equal(right_render.value().commands[2].contract_box.x, 78.0, 0.0001));
+  // The engine does NOT pre-shift x for alignment; it forwards the policy and
+  // the unchanged node box. The sink positions using real metrics.
+  CHECK(centered_render.value().commands[2].align_h == "center");
+  CHECK(right_render.value().commands[2].align_h == "right");
+  CHECK(nearly_equal(centered_render.value().commands[2].contract_box.x, 10.0, 0.0001));
+  CHECK(nearly_equal(right_render.value().commands[2].contract_box.x, 10.0, 0.0001));
 }
 
-TEST_CASE("Phase 2 applies deterministic vertical alignment and baseline correction") {
+TEST_CASE("Phase 2 forwards vertical alignment and scales the node box") {
   const auto loaded = load_baked_contract(static_text_fixture("Arial", "bottom"));
   REQUIRE(loaded);
 
@@ -83,8 +97,11 @@ TEST_CASE("Phase 2 applies deterministic vertical alignment and baseline correct
 
   REQUIRE(rendered);
   const auto& text = rendered.value().commands[2];
-  CHECK(nearly_equal(text.contract_box.y, 34.0, 0.0001));
-  CHECK(nearly_equal(text.device_box.y, 34.0 * 300.0 / 96.0, 0.0001));
+  CHECK(text.align_v == "bottom");
+  // No baseline/vertical pre-offset: contract_box.y is the node box; the
+  // device box is just that box under the world transform.
+  CHECK(nearly_equal(text.contract_box.y, 20.0, 0.0001));
+  CHECK(nearly_equal(text.device_box.y, 20.0 * 300.0 / 96.0, 0.0001));
 }
 
 TEST_CASE("Phase 2 missing font name is preserved for device substitution notice") {

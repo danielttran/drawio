@@ -22,8 +22,28 @@ cmake --build src/main/native-print-engine/build --config Debug
 ctest --test-dir src/main/native-print-engine/build -C Debug --output-on-failure
 ```
 
-The cumulative suite passed locally at 87/87 tests after the accuracy pass audit.
-The web exporter suite also passed locally at 5/5 via `npm run test:nativeprint-exporter`.
+The cumulative suite passed locally at **94/94** tests after the accuracy-pass
+audit, the §2 measure-at-the-sink text-layout rework (engine text path is now
+a pure pass-through; real wrap/shrink/align/clip/reject live in the host sink,
+host-e2e-verified), and the WYSIWYG-parity engine net
+(`tests/wysiwyg_parity_tests.cpp`). The web exporter suite passed locally at
+**43/43** via `npm run test:nativeprint-exporter`, including a cross-process
+test that drives the real engine binary with a complex all-shapes document.
+
+### WYSIWYG-parity safety contract (tested)
+
+The exporter is a named-shape subset and is NOT pixel-identical to drawio for
+every stencil — by design. The enforced, tested guarantee is: **every drawio
+object is rendered faithfully OR loudly flagged with an
+`ExporterUnsupportedShape` `DegradationNotice` (operator-acknowledged) — never
+silently mis-rendered — and every emitted contract is v1.1-schema-valid so the
+engine never silently rejects/diverges.** Coverage: every supported vertex
+shape, 14+ unsupported stencils (must degrade loudly), fill/stroke/gradient/
+opacity/dash/cap/join, full font matrix (family/size/bold/italic/color), the
+h×v alignment matrix, multi-line + HTML-label stripping, edge variants
+(straight/orthogonal/rounded/arrows/labels), zoom-independence across scales,
+a complex mixed-document invariant sweep, and a real-engine cross-process
+render. Preview==print is structural (one shared `draw_trace`, INV-5).
 
 ## Spec-Governed Open Items
 
@@ -32,8 +52,8 @@ These are not inferred in code because the spec says they must be escalated or d
 - Concrete SVG rasterizer library and distribution license clearance.
 - Exact barcode symbology enum/params from the enLabel SDK.
 - Real barcode SDK adapter behavior.
-- Real text metrics/shaping model and overflow authority (blocked by `PRINT_ENGINE_ACCURACY_TODO.md` section 2 `[ESCALATE]`).
-- Hardware-margin policy: fit-to-printable vs true-size-with-clip (blocked by `PRINT_ENGINE_ACCURACY_TODO.md` section 6 `[ESCALATE]`).
+- ~~Real text metrics/shaping model and overflow authority~~ — **RESOLVED**: owner directive "max-accuracy WYSIWYG" → measure-at-the-sink (real GDI+ metrics in `draw_trace`; engine forwards text+box+policy). Implemented & audited; see `PRINT_ENGINE_ACCURACY_TODO.md` §2.
+- ~~Hardware-margin policy~~ — **RESOLVED** by the same directive: true-size, never silent scale, loud `HardwareMarginClip` notice; already implemented. Only hardware-in-the-loop validation remains (a test, not a decision).
 - Hardware-in-the-loop printer-driver and label-stock validation.
 - Full host golden-image/PDF/printer-driver validation harness.
 - Custom stock protocol/UI shape for dimensions that do not map to a named printer paper ID.

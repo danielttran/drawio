@@ -71,6 +71,7 @@ if(BUILD_TESTING)
     tests/phase7_v2_native_bridge_tests.cpp
     tests/proto_tests.cpp
     tests/proto_adapter_tests.cpp
+    tests/wysiwyg_parity_tests.cpp
   )
 
   target_compile_definitions(print_engine_contract_tests

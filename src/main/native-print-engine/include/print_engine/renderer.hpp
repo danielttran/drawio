@@ -49,6 +49,14 @@ struct EmittedCommand {
   double font_size_px = 0.0;
   int font_weight = 400;
   bool font_italic = false;
+  // Text-layout policy. §2 measure-at-the-sink: the engine forwards these
+  // verbatim and performs NO wrapping/fitting/positioning; draw_trace() does
+  // real layout with device font metrics so preview == print (INV-5).
+  std::string align_h;
+  std::string align_v;
+  std::string wrap;
+  std::string overflow;
+  double shrink_floor_px = 0.0;
   bool degradation_notice = false;
   int raster_width_px = 0;
   int raster_height_px = 0;

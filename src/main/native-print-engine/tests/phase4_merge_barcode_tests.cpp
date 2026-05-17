@@ -10,6 +10,7 @@ using print_engine::DegradationNoticeType;
 using print_engine::EmittedKind;
 using print_engine::RenderTarget;
 using print_engine::load_baked_contract;
+using print_engine::nearly_equal;
 using print_engine::render_to_trace;
 
 namespace {
@@ -106,21 +107,26 @@ TEST_CASE("Phase 4 accepts merge value exactly at maxLen") {
   CHECK(rendered.value().commands[2].label == "ABCD");
 }
 
-TEST_CASE("Phase 4 reject policy refuses width overflow") {
+// §2 measure-at-the-sink: width-overflow is metric-dependent, so the engine
+// no longer decides it — it forwards the value + the overflow policy and the
+// device sink enforces reject/clip with real glyph metrics (host e2e).
+// The engine keeps ONLY the metric-independent maxLen guard.
+TEST_CASE("Phase 4 forwards reject policy without deciding width overflow") {
   const auto loaded = load_baked_contract(merge_fixture_with_width("reject", 10.0));
   REQUIRE(loaded);
 
   const auto rendered = render_to_trace(
     loaded.value(),
     RenderTarget{96.0, 96.0},
-    {{"NAME", "TOO-WIDE"}},
+    {{"NAME", "TOO-WIDE"}},  // 8 chars <= maxLen 32: engine must NOT error
     false);
 
-  REQUIRE_FALSE(rendered);
-  CHECK(rendered.error().code == ContractErrorCode::MergeOverflowError);
+  REQUIRE(rendered);
+  CHECK(rendered.value().commands[2].label == "TOO-WIDE");
+  CHECK(rendered.value().commands[2].overflow == "reject");
 }
 
-TEST_CASE("Phase 4 clip policy emits degradation notice on width overflow") {
+TEST_CASE("Phase 4 forwards clip policy for device-side enforcement") {
   const auto loaded = load_baked_contract(merge_fixture_with_width("clip", 10.0));
   REQUIRE(loaded);
 
@@ -131,7 +137,8 @@ TEST_CASE("Phase 4 clip policy emits degradation notice on width overflow") {
     false);
 
   REQUIRE(rendered);
-  CHECK(rendered.value().commands[2].degradation_notice);
+  CHECK(rendered.value().commands[2].overflow == "clip");
+  CHECK(rendered.value().commands[2].label == "TOO-WIDE");
 }
 
 TEST_CASE("Phase 4 refuses missing runtime merge values") {
@@ -148,7 +155,7 @@ TEST_CASE("Phase 4 refuses missing runtime merge values") {
   CHECK(rendered.error().code == ContractErrorCode::MergeResolveError);
 }
 
-TEST_CASE("Phase 4 shrink geometry uses the fitted font size") {
+TEST_CASE("Phase 4 forwards shrink policy and font size unchanged") {
   const auto loaded = load_baked_contract(merge_fixture("shrink", 13.0));
   REQUIRE(loaded);
 
@@ -160,8 +167,12 @@ TEST_CASE("Phase 4 shrink geometry uses the fitted font size") {
 
   REQUIRE(rendered);
   const auto& text = rendered.value().commands[2];
-  CHECK(text.font_size_px < 12.0);
-  CHECK(text.contract_box.h <= 13.0);
+  // The engine no longer shrinks (no real metrics here); it forwards the
+  // requested font size, the shrink policy and floor for the sink to apply.
+  CHECK(text.font_size_px == 12.0);
+  CHECK(text.overflow == "shrink");
+  CHECK(nearly_equal(text.shrink_floor_px, 6.0, 0.0001));
+  CHECK(nearly_equal(text.contract_box.h, 13.0, 0.0001));
 }
 
 TEST_CASE("Phase 4 v2 barcode stub is loud even for future unencodable values") {

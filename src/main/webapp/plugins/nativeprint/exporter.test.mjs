@@ -1,9 +1,64 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const exporter = require('./exporter.js');
+
+const ENGINE_EXE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..', 'native-print-engine', 'build', 'Debug',
+  'print_engine_host.exe');
+
+// Drive the real engine binary: Hello -> RenderPreview(contract) -> reply.
+// This is the true cross-process WYSIWYG gate — anything the exporter emits
+// must come back as PreviewResult, never an Error (silent rejection at print).
+function renderViaEngine(contract) {
+  return new Promise((resolve, reject) => {
+    const frame = (o) => {
+      const p = Buffer.from(JSON.stringify(o));
+      const h = Buffer.alloc(9);
+      h.writeUInt32LE(p.length + 5, 0);
+      h.writeUInt8(1, 4);
+      h.writeUInt32LE(0, 5);
+      return Buffer.concat([h, p]);
+    };
+    const e = spawn(ENGINE_EXE);
+    let buf = Buffer.alloc(0);
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) { done = true; try { e.kill(); } catch {} reject(new Error('engine timeout')); }
+    }, 15000);
+    e.stdout.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 4) {
+        const fl = buf.readUInt32LE(0);
+        if (buf.length < fl + 4) break;
+        const t = buf.readUInt8(4);
+        const pl = buf.subarray(9, 4 + fl);
+        buf = buf.subarray(4 + fl);
+        if (t === 1) {
+          const m = JSON.parse(pl.toString());
+          if (m.result === 'PreviewResult' || m.result === 'Error') {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              try { e.stdin.write(frame({ op: 'Shutdown' })); } catch {}
+              resolve(m);
+            }
+          }
+        }
+      }
+    });
+    e.on('error', reject);
+    e.stdin.write(frame({ op: 'Hello', proto: { major: 1, minor: 0 } }));
+    e.stdin.write(frame({ op: 'RenderPreview', contractRef: { inline: JSON.stringify(contract) }, dpi: 200 }));
+  });
+}
 
 function graphFixture(cells, states, labels, styles, bounds = { x: 10, y: 20, width: 400, height: 300 }, scale = 2) {
   const model = {
@@ -162,3 +217,349 @@ test('exporter refuses non-schema hex lengths instead of emitting invalid paint'
   assert.equal(paint[0].stroke, null);
   assert.equal(paint[1].font.color, '#000000');
 });
+
+// ===========================================================================
+// WYSIWYG-SAFETY SUITE
+//
+// The exporter is a named-shape subset; it CANNOT be pixel-identical to
+// drawio for every stencil. The guarantee that actually protects the user is:
+//   every drawio object is EITHER rendered faithfully OR loudly flagged with
+//   an `ExporterUnsupportedShape` notice — NEVER silently mis-rendered —
+//   and every emitted contract is v1.1-schema-valid so the engine never
+//   silently rejects/diverges. These tests enforce that per object class.
+// ===========================================================================
+
+const SCHEMA_PAINT_SOLID = 'solid';
+
+// Minimal mirror of the engine's frozen v1.1 contract validation (Appendix A
+// of PRINT_ENGINE_ACCURACY_TODO.md). Anything the exporter emits MUST pass
+// this, otherwise the engine would loud-reject it and break WYSIWYG silently
+// at print time.
+function assertSchemaValid(contract, label) {
+  const ctx = label ? `[${label}] ` : '';
+  assert.equal(contract.schema.major, 1, `${ctx}schema.major`);
+  assert.equal(contract.schema.minor, 0, `${ctx}schema.minor`);
+  assert.equal(contract.document.units, 'px', `${ctx}units`);
+  for (const page of contract.document.pages) {
+    assert.ok(page.size.w >= 1 && page.size.h >= 1, `${ctx}page size`);
+    assert.ok(Array.isArray(page.tiles) && page.tiles.length >= 1, `${ctx}tiles`);
+    for (const n of page.paint) {
+      assert.ok(n.kind === 'path' || n.kind === 'text', `${ctx}kind ${n.kind}`);
+      if (n.kind === 'path') {
+        assert.match(n.d, /^M /, `${ctx}path d must start absolute M`);
+        assert.ok(!/[a-z]/.test(n.d.replace(/e/gi, '')),
+          `${ctx}path d must be absolute commands only`);
+        if (n.fill !== null) assertPaint(n.fill, ctx + 'fill');
+        if (n.stroke !== null) assertStroke(n.stroke, ctx + 'stroke');
+      } else {
+        for (const k of ['x', 'y', 'w', 'h']) {
+          assert.equal(typeof n.box[k], 'number', `${ctx}text box.${k}`);
+        }
+        assert.ok(n.font.sizePx > 0, `${ctx}font.sizePx>0`);
+        assert.equal(typeof n.font.family, 'string', `${ctx}font.family`);
+        assert.ok(['left', 'center', 'right'].includes(n.align.h),
+          `${ctx}align.h`);
+        assert.ok(['top', 'middle', 'bottom'].includes(n.align.v),
+          `${ctx}align.v`);
+        assert.match(n.font.color, /^#[0-9a-f]{6}$/, `${ctx}font.color hex`);
+        assert.ok(Array.isArray(n.content.lines), `${ctx}content.lines`);
+      }
+    }
+  }
+}
+function assertPaint(p, ctx) {
+  assert.ok(['solid', 'linear', 'radial'].includes(p.type), `${ctx}.type`);
+  if (p.type === SCHEMA_PAINT_SOLID) {
+    assert.match(p.color, /^#[0-9a-f]{6}$/, `${ctx}.color hex`);
+    assert.ok(p.alpha >= 0 && p.alpha <= 1, `${ctx}.alpha 0..1`);
+  } else {
+    assert.ok(Array.isArray(p.stops) && p.stops.length >= 1, `${ctx}.stops`);
+    for (const s of p.stops) {
+      assert.ok(s.offset >= 0 && s.offset <= 1, `${ctx}.stop.offset`);
+      assert.match(s.color, /^#[0-9a-f]{6}$/, `${ctx}.stop.color`);
+      assert.ok(s.alpha >= 0 && s.alpha <= 1, `${ctx}.stop.alpha`);
+    }
+  }
+}
+function assertStroke(s, ctx) {
+  assertPaint(s.paint, ctx + '.paint');
+  assert.ok(s.width > 0, `${ctx}.width>0`);
+  assert.ok(['butt', 'round', 'square'].includes(s.cap), `${ctx}.cap`);
+  assert.ok(['miter', 'round', 'bevel'].includes(s.join), `${ctx}.join`);
+  assert.ok(s.miterLimit > 0, `${ctx}.miterLimit>0`);
+  assert.ok(s.dash === null || Array.isArray(s.dash), `${ctx}.dash`);
+  if (Array.isArray(s.dash)) {
+    for (const d of s.dash) assert.ok(d > 0, `${ctx}.dash entry>0`);
+  }
+}
+
+// scale=1 + origin (10,20) so a default state maps to a clean (0,0,80,40)
+// box, making geometry assertions exact and independent of zoom plumbing.
+const FIXED_BOUNDS = { x: 10, y: 20, width: 400, height: 300 };
+function oneVertex(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }) {
+  const cells = { v: { id: 'v', vertex: true } };
+  return exporter.buildResult(graphFixture(
+    cells, { v: state }, { v: label }, { v: style }, FIXED_BOUNDS, 1));
+}
+
+// ---- Every supported vertex shape renders faithfully (no notice) ----------
+const SUPPORTED_SHAPES = [
+  ['rectangle', { shape: 'rectangle' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
+  ['rounded rect', { shape: 'rectangle', rounded: '1' }, / A [\d.]+ [\d.]+ 0 0 1 /],
+  ['ellipse', { shape: 'ellipse' }, /^M 0 20 A 40 20 0 1 0 80 20 A 40 20 0 1 0 0 20 Z$/],
+  ['rhombus', { shape: 'rhombus' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
+  ['diamond', { shape: 'diamond' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
+  ['triangle north', { shape: 'triangle' }, /^M 40 0 L 80 40 L 0 40 Z$/],
+  ['triangle south', { shape: 'triangle', direction: 'south' }, /^M 0 0 L 80 0 L 40 40 Z$/],
+  ['triangle east', { shape: 'triangle', direction: 'east' }, /^M 0 0 L 80 20 L 0 40 Z$/],
+  ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 0 L 0 20 L 80 40 Z$/],
+  ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
+  ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
+  ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
+  ['default (no shape)', {}, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/]
+];
+for (const [name, style, dRe] of SUPPORTED_SHAPES) {
+  test(`supported shape faithfully baked: ${name}`, () => {
+    const r = oneVertex({ ...style, fillColor: '#112233', strokeColor: '#445566' });
+    const path = r.contract.document.pages[0].paint[0];
+    assert.equal(r.notices.length, 0, `${name} must NOT degrade`);
+    assert.equal(path.kind, 'path');
+    assert.match(path.d, dRe, `${name} geometry`);
+    assertSchemaValid(r.contract, name);
+  });
+}
+
+// ---- Every UNSUPPORTED stencil is loudly flagged (never silent) ----------
+const UNSUPPORTED = [
+  'hexagon', 'step', 'process', 'parallelogram', 'actor', 'callout',
+  'mxgraph.flowchart.decision', 'mxgraph.azure.vm', 'mxgraph.aws4.lambda',
+  'mxgraph.bpmn.task', 'tape', 'card', 'umlActor', 'note', 'cube'
+];
+for (const shape of UNSUPPORTED) {
+  test(`unsupported stencil loudly degraded, not silent: ${shape}`, () => {
+    const r = oneVertex({ shape, fillColor: '#abcdef', strokeColor: '#fedcba' });
+    const notice = r.notices.find((n) => n.kind === 'ExporterUnsupportedShape');
+    assert.ok(notice, `${shape} MUST emit ExporterUnsupportedShape`);
+    assert.ok(String(notice.detail.detail).includes(shape), 'notice names shape');
+    const path = r.contract.document.pages[0].paint[0];
+    assert.match(path.d, /^M 0 0 L \d+ 0 L \d+ \d+ L 0 \d+ Z$/,
+      'fallback is a valid bounding-box rect');
+    assertSchemaValid(r.contract, shape);
+  });
+}
+
+// ---- Fill variants -------------------------------------------------------
+test('fill: solid / none / transparent / gradient / opacity', () => {
+  assert.equal(oneVertex({ shape: 'rectangle' }).contract.document.pages[0].paint[0].fill, null,
+    'no fillColor -> null (faithful: drawio draws no fill)');
+  assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'none' })
+    .contract.document.pages[0].paint[0].fill, null);
+  assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'transparent' })
+    .contract.document.pages[0].paint[0].fill, null);
+  const solid = oneVertex({ shape: 'rectangle', fillColor: '#ABCDEF', fillOpacity: 40 })
+    .contract.document.pages[0].paint[0].fill;
+  assert.deepEqual(solid, { type: 'solid', color: '#abcdef', alpha: 0.4 });
+  const grad = oneVertex({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#0000ff' })
+    .contract.document.pages[0].paint[0].fill;
+  assert.equal(grad.type, 'linear');
+  assert.equal(grad.stops.length, 2);
+});
+
+// ---- Stroke variants -----------------------------------------------------
+test('stroke: none / width / dashed / cap / join faithfully captured', () => {
+  assert.equal(oneVertex({ shape: 'rectangle', strokeColor: 'none' })
+    .contract.document.pages[0].paint[0].stroke, null,
+    'strokeColor none -> no stroke (faithful)');
+  const s = oneVertex({
+    shape: 'rectangle', strokeColor: '#000000', strokeWidth: 5,
+    dashed: '1', dashPattern: '8 3', lineCap: 'round', lineJoin: 'bevel'
+  }).contract.document.pages[0].paint[0].stroke;
+  assert.equal(s.width, 5);
+  assert.deepEqual(s.dash, [8, 3]);
+  assert.equal(s.cap, 'round');
+  assert.equal(s.join, 'bevel');
+  const rounded = oneVertex({ shape: 'rectangle', strokeColor: '#000000', rounded: '1' })
+    .contract.document.pages[0].paint[0].stroke;
+  assert.equal(rounded.join, 'round', 'rounded vertex -> round join');
+});
+
+// ---- Text / font matrix --------------------------------------------------
+test('text: family, size, bold, italic, bold+italic, color, multiline', () => {
+  const base = { shape: 'rectangle', strokeColor: '#000000' };
+  const t = (extra, label) => oneVertex({ ...base, ...extra }, label)
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.equal(t({ fontFamily: 'Times New Roman', fontSize: 21 }, 'X').font.family, 'Times New Roman');
+  assert.equal(t({ fontSize: 21 }, 'X').font.sizePx, 21);
+  assert.equal(t({ fontStyle: 1 }, 'B').font.weight, 700, 'bold bit');
+  assert.equal(t({ fontStyle: 2 }, 'I').font.italic, true, 'italic bit');
+  const bi = t({ fontStyle: 3 }, 'BI').font;
+  assert.equal(bi.weight, 700);
+  assert.equal(bi.italic, true);
+  assert.equal(t({ fontColor: '#abcdef' }, 'C').font.color, '#abcdef');
+  assert.deepEqual(t({}, 'L1\nL2\nL3').content.lines, ['L1', 'L2', 'L3']);
+});
+
+test('text alignment matrix h x v', () => {
+  for (const h of ['left', 'center', 'right']) {
+    for (const v of ['top', 'middle', 'bottom']) {
+      const node = oneVertex(
+        { shape: 'rectangle', strokeColor: '#000000', align: h, verticalAlign: v },
+        'A').contract.document.pages[0].paint.find((n) => n.kind === 'text');
+      assert.equal(node.align.h, h, `h=${h}`);
+      assert.equal(node.align.v, v, `v=${v}`);
+    }
+  }
+});
+
+test('HTML rich-text label is stripped to plain text, never silently dropped', () => {
+  // Documented interim behavior (rich-text fidelity = PRINT_ENGINE_RICHTEXT_TODO).
+  // The point here: a formatted label still produces a text node — it is NOT
+  // silently lost, so the operator still sees the content (degraded, not gone).
+  const node = oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000' },
+    '<b>Bold</b><br><font color="#ff0000">Red</font>')
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.ok(node, 'formatted label still emits a text node');
+  assert.equal(node.content.lines.join(' ').includes('Bold'), true);
+  assert.equal(node.content.lines.join('').includes('<'), false, 'tags stripped');
+});
+
+// ---- Edge matrix ---------------------------------------------------------
+function oneEdge(style, pts, label = '', off) {
+  const cells = { e: { id: 'e', edge: true } };
+  const st = { e: { x: 0, y: 0, width: 0, height: 0, absolutePoints: pts } };
+  if (off) st.e.absoluteOffset = off;
+  return exporter.buildResult(
+    graphFixture(cells, st, { e: label }, { e: style }, FIXED_BOUNDS, 1));
+}
+test('edges: straight, polyline, orthogonal, rounded, arrows, labels, default stroke', () => {
+  const straight = oneEdge({ strokeColor: '#000000' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+  assert.equal(straight.contract.document.pages[0].paint[0].d, 'M -10 -20 L 90 -20');
+  assertSchemaValid(straight.contract, 'straight edge');
+
+  const ortho = oneEdge({ strokeColor: '#111111' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }]);
+  assert.match(ortho.contract.document.pages[0].paint[0].d, /^M .* L .* L /);
+
+  const rounded = oneEdge({ strokeColor: '#111111', rounded: '1' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }]);
+  assert.match(rounded.contract.document.pages[0].paint[0].d, / C /);
+
+  const both = oneEdge({ strokeColor: '#222222', startArrow: 'block', endArrow: 'block' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+  const fills = both.contract.document.pages[0].paint.filter((n) => n.fill);
+  assert.equal(fills.length, 2, 'start + end arrowheads');
+
+  const none = oneEdge({ strokeColor: '#222222', startArrow: 'none', endArrow: 'none' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+  assert.equal(none.contract.document.pages[0].paint.filter((n) => n.fill).length, 0);
+
+  const noStroke = oneEdge({}, [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+  assert.ok(noStroke.contract.document.pages[0].paint[0].stroke,
+    'edge always gets a stroke (faithful: drawio always strokes edges)');
+
+  const labelled = oneEdge({ strokeColor: '#000000' },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }], 'E', { x: 50, y: 0 });
+  assert.ok(labelled.contract.document.pages[0].paint.some((n) => n.kind === 'text'));
+});
+
+test('degenerate edge (<2 points) is dropped without crashing', () => {
+  const r = oneEdge({ strokeColor: '#000000' }, [{ x: 1, y: 1 }]);
+  assert.equal(r.contract.document.pages[0].paint.length, 0);
+  assertSchemaValid(r.contract, 'degenerate edge');
+});
+
+// ---- Zoom independence at several scales ---------------------------------
+test('contract is identical across zoom scales (no print/zoom coupling)', () => {
+  const mk = (scale) => exporter.buildResult(graphFixture(
+    { v: { id: 'v', vertex: true } },
+    { v: { x: 100 * scale, y: 80 * scale, width: 160 * scale, height: 60 * scale } },
+    { v: 'Z' },
+    { v: { shape: 'ellipse', fillColor: '#123456', strokeColor: '#654321', fontSize: 12 } },
+    { x: 100 * scale, y: 80 * scale, width: 160 * scale, height: 60 * scale },
+    scale)).contract;
+  const a = JSON.stringify(mk(1));
+  for (const s of [0.25, 1.5, 2, 3, 4.75]) {
+    assert.equal(JSON.stringify(mk(s)), a, `scale ${s} must match scale 1`);
+  }
+});
+
+// ---- The complex-file invariant sweep ------------------------------------
+test('complex mixed document: every cell faithful OR loudly degraded, schema-valid', () => {
+  const cells = {};
+  const states = {};
+  const styles = {};
+  const labels = {};
+  let i = 0;
+  const add = (style, isEdge, label) => {
+    const id = 'c' + i++;
+    cells[id] = { id, vertex: !isEdge, edge: isEdge };
+    states[id] = isEdge
+      ? { x: 0, y: 0, width: 0, height: 0,
+          absolutePoints: [{ x: i * 5, y: 5 }, { x: i * 5 + 40, y: 45 }] }
+      : { x: (i % 8) * 60, y: Math.floor(i / 8) * 60, width: 50, height: 40 };
+    styles[id] = style;
+    labels[id] = label || '';
+  };
+  for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Lbl');
+  for (const shape of UNSUPPORTED) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
+  add({ strokeColor: '#000000', endArrow: 'block', rounded: '1' }, true, 'edge');
+  add({ strokeColor: '#0a0b0c', dashed: '1', dashPattern: '4 4' }, true, '');
+  add({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#00ff00', fillOpacity: 60,
+        strokeColor: '#0000ff', strokeWidth: 3, fontStyle: 3, fontColor: '#202020' }, false,
+      '<b>HTML</b><br>two');
+
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles));
+  // Invariant 1: schema-valid (engine will accept every node — no silent reject).
+  assertSchemaValid(r.contract, 'complex');
+  // Invariant 2: exactly one notice per unsupported stencil — none silent.
+  const degraded = r.notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(degraded.length, UNSUPPORTED.length,
+    'every unsupported stencil must be loudly flagged');
+  // Invariant 3: nothing vanished — every cell contributed >=1 paint node.
+  assert.ok(r.contract.document.pages[0].paint.length >=
+    SUPPORTED_SHAPES.length + UNSUPPORTED.length,
+    'no cell silently dropped');
+});
+
+// ---- Cross-process gate: real engine accepts every exporter output -------
+test('real engine renders the complex exporter document (no silent reject)',
+  { skip: existsSync(ENGINE_EXE) ? false : 'engine binary not built' },
+  async () => {
+    const cells = {};
+    const states = {};
+    const styles = {};
+    const labels = {};
+    let i = 0;
+    const add = (style, isEdge, label) => {
+      const id = 'c' + i++;
+      cells[id] = { id, vertex: !isEdge, edge: isEdge };
+      states[id] = isEdge
+        ? { x: 0, y: 0, width: 0, height: 0,
+            absolutePoints: [{ x: i * 6, y: 6 }, { x: i * 6 + 50, y: 56 }] }
+        : { x: (i % 6) * 70, y: Math.floor(i / 6) * 70, width: 60, height: 44 };
+      styles[id] = style;
+      labels[id] = label || '';
+    };
+    for (const [, st] of SUPPORTED_SHAPES) {
+      add({ ...st, fillColor: '#2a5d8f', strokeColor: '#102030' }, false, 'Node');
+    }
+    for (const shape of UNSUPPORTED) {
+      add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
+    }
+    add({ strokeColor: '#000000', endArrow: 'block', rounded: '1' }, true, 'edge');
+    add({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#00aa00',
+          fillOpacity: 55, strokeColor: '#0000ff', strokeWidth: 3, dashed: '1',
+          dashPattern: '6 3', fontStyle: 3, fontColor: '#202020' }, false,
+        'Wrapped label that should word-wrap inside its box nicely');
+
+    const { contract } = exporter.buildResult(
+      graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+    const m = await renderViaEngine(contract);
+    assert.equal(m.result, 'PreviewResult',
+      `engine must render every exporter output; got ${m.result} ` +
+      `${m.error || ''} ${m.detail || ''}`);
+    assert.equal(m.imageFormat, 'png');
+    assert.ok(m.widthPx >= 1 && m.heightPx >= 1);
+  });

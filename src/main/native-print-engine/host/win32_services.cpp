@@ -490,6 +490,12 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         g.DrawPath(styled_pen.pen.get(), &path);
       }
     } else if (c.kind == EmittedKind::Text) {
+      if (c.label.empty()) {
+        continue;
+      }
+      // §2 measure-at-the-sink: ALL text layout (wrap, shrink-to-fit, align,
+      // clip) is done here with real GDI+ glyph metrics. Preview and print run
+      // this same code, so what is measured is exactly what prints (INV-5).
       const double scale = command_scale(c);
       const std::wstring family =
           widen(c.font_family.empty() ? std::string("Arial") : c.font_family);
@@ -505,18 +511,141 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
             {},
             {}});
       }
-      const Gdiplus::REAL em = static_cast<Gdiplus::REAL>(
-          std::max(1.0, c.font_size_px * scale));
-      Gdiplus::Font font(&use, em, font_style_for(c),
-                         Gdiplus::UnitPixel);
-      Gdiplus::RectF box(
+      const Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
           static_cast<Gdiplus::REAL>(c.device_box.y),
           static_cast<Gdiplus::REAL>(c.device_box.w),
           static_cast<Gdiplus::REAL>(c.device_box.h));
-      const std::wstring text = widen(c.label);
       Gdiplus::SolidBrush text_brush(gdip_color(c.text_color));
-      g.DrawString(text.c_str(), -1, &font, box, nullptr, &text_brush);
+
+      std::unique_ptr<Gdiplus::StringFormat> fmt(
+          Gdiplus::StringFormat::GenericTypographic()->Clone());
+      fmt->SetFormatFlags(fmt->GetFormatFlags() |
+                          Gdiplus::StringFormatFlagsNoWrap |
+                          Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+
+      // Hard line breaks from the contract are honored verbatim.
+      std::vector<std::wstring> paragraphs;
+      {
+        const std::wstring all = widen(c.label);
+        std::size_t pos = 0;
+        while (true) {
+          const std::size_t nl = all.find(L'\n', pos);
+          paragraphs.push_back(all.substr(
+              pos, nl == std::wstring::npos ? std::wstring::npos : nl - pos));
+          if (nl == std::wstring::npos) break;
+          pos = nl + 1;
+        }
+      }
+      const bool do_wrap = (c.wrap == "word");
+      const int style = font_style_for(c);
+
+      auto measure_w = [&](const Gdiplus::Font& f,
+                           const std::wstring& s) -> double {
+        if (s.empty()) return 0.0;
+        Gdiplus::RectF bb;
+        g.MeasureString(s.c_str(), -1, &f,
+                        Gdiplus::RectF(0, 0, 1.0e6f, 1.0e6f), fmt.get(), &bb);
+        return bb.Width;
+      };
+
+      struct Layout {
+        std::vector<std::wstring> lines;
+        double line_h = 0.0;
+        double block_w = 0.0;
+        double block_h = 0.0;
+      };
+      auto build = [&](double em) -> Layout {
+        Layout L;
+        Gdiplus::Font f(&use, static_cast<Gdiplus::REAL>(em), style,
+                        Gdiplus::UnitPixel);
+        L.line_h = f.GetHeight(&g);
+        for (const auto& para : paragraphs) {
+          if (!do_wrap || para.empty()) {
+            L.lines.push_back(para);
+            continue;
+          }
+          std::wstring cur;
+          std::size_t i = 0;
+          while (i < para.size()) {
+            std::size_t sp = para.find(L' ', i);
+            const std::wstring word = para.substr(
+                i, sp == std::wstring::npos ? std::wstring::npos : sp - i);
+            const std::wstring cand = cur.empty() ? word : cur + L" " + word;
+            if (cur.empty() ||
+                measure_w(f, cand) <= static_cast<double>(box.Width)) {
+              cur = cand;
+            } else {
+              L.lines.push_back(cur);
+              cur = word;
+            }
+            if (sp == std::wstring::npos) break;
+            i = sp + 1;
+          }
+          L.lines.push_back(cur);
+        }
+        L.block_h = static_cast<double>(L.lines.size()) * L.line_h;
+        for (const auto& ln : L.lines) {
+          Gdiplus::Font fm(&use, static_cast<Gdiplus::REAL>(em), style,
+                           Gdiplus::UnitPixel);
+          L.block_w = std::max(L.block_w, measure_w(fm, ln));
+        }
+        return L;
+      };
+
+      double em = std::max(1.0, c.font_size_px * scale);
+      const double floor_em = std::max(1.0, c.shrink_floor_px * scale);
+      Layout lay = build(em);
+      if (c.overflow == "shrink") {
+        while ((lay.block_h > box.Height || lay.block_w > box.Width) &&
+               em > floor_em) {
+          em = std::max(floor_em, em - std::max(0.5, em * 0.06));
+          lay = build(em);
+        }
+      }
+      const bool overflowed = lay.block_h > static_cast<double>(box.Height) + 0.5 ||
+                              lay.block_w > static_cast<double>(box.Width) + 0.5;
+      if (overflowed) {
+        if (c.overflow == "reject" || c.overflow == "shrink") {
+          return Result<DrawResult, ContractError>::err(ContractError{
+              ContractErrorCode::MergeOverflowError, "text",
+              "text does not fit its box at the device font metrics"});
+        }
+        if (c.overflow == "clip") {
+          push_notice_unique(result.notices, DegradationNotice{
+              DegradationNoticeType::MergeClip, current_page_id,
+              "text clipped to box", {}, {}});
+        }
+        // empty/none (static): truthful overflow, no error/notice.
+      }
+
+      double y = box.Y;
+      if (c.align_v == "middle") {
+        y = box.Y + (static_cast<double>(box.Height) - lay.block_h) / 2.0;
+      } else if (c.align_v == "bottom") {
+        y = box.Y + static_cast<double>(box.Height) - lay.block_h;
+      }
+      Gdiplus::GraphicsState clip_state = g.Save();
+      if (c.overflow == "clip") {
+        g.SetClip(box);
+      }
+      Gdiplus::Font font(&use, static_cast<Gdiplus::REAL>(em), style,
+                         Gdiplus::UnitPixel);
+      for (const auto& ln : lay.lines) {
+        const double w = measure_w(font, ln);
+        double x = box.X;
+        if (c.align_h == "center") {
+          x = box.X + (static_cast<double>(box.Width) - w) / 2.0;
+        } else if (c.align_h == "right") {
+          x = box.X + static_cast<double>(box.Width) - w;
+        }
+        g.DrawString(ln.c_str(), -1, &font,
+                     Gdiplus::PointF(static_cast<Gdiplus::REAL>(x),
+                                     static_cast<Gdiplus::REAL>(y)),
+                     fmt.get(), &text_brush);
+        y += lay.line_h;
+      }
+      g.Restore(clip_state);
     } else if (c.kind == EmittedKind::Barcode || c.kind == EmittedKind::Svg) {
       // Loud stub: hatched box + the stub label so the operator sees it is
       // NOT real artwork (the matching DegradationNotice is in trace.notices).

@@ -11,6 +11,40 @@ states the *root cause with file references*, the *required change*, and a
 
 ---
 
+## Status (audited 2026-05-17)
+
+| § | Item | Status |
+|---|------|--------|
+| 1 | Color / alpha / gradient fidelity | **DONE & audited** (engine Paint model + host brushes; live-verified) |
+| 2 | Real text metrics & shaping | **DONE & audited.** Measure-at-the-sink: engine forwards raw text+box+font+policy (no layout); `draw_trace` does real GDI+ `MeasureString` word-wrap / shrink-to-fit / h+v align / clip+notice / loud reject; preview==print (INV-5). Host e2e visually verified (centered, wrapped, shrunk) + reject errors loudly. Accepted/intended consequence: overflow reflects real glyph widths (font-dependent). |
+| 3 | Raster image rendering | **DONE & audited** (base64 decode + GDI+ draw, flip/aspect, loud `ImageDecodeError`) |
+| 4 | True elliptical arcs | **DONE & audited** (`arc_to_cubic_beziers`, W3C F.6.5; rounded-rect/ellipse verified round) |
+| 5 | DEVMODE paper/copies/orientation | **DONE & audited** (`DocumentPropertiesW` merge, `PrinterHandle` RAII, copies via page iteration) |
+| 6 | Hardware-margin correctness | **DECIDED + already implemented.** Directive resolves it: true size, **never silent scale**, content 1:1 at device DPI from the printable-area origin, loud `HardwareMarginClip` notice when content exceeds the printable area. Code already does this; only hardware-in-the-loop validation remains (test, not decision). |
+| 7 | Multi-page / multi-tile printing | **DONE & audited** (`split_tiles`, page-per-tile, AbortDoc names failing page/tile) |
+| 8 | Exporter fidelity | **DONE for the named subset & audited** (shapes/edges/arrows/labels; unsupported → loud notice). Broader stencils remain incremental. |
+| 9 | DPI alignment + golden harness | **PARTIAL** — preview DPI now follows selected stock (done); host golden-image CI harness still deferred (needs harness decision). |
+
+Audit (2 rounds): **no functional bugs**. Engine 87/87 ctest, exporter 5/5,
+strict `/W4 /WX` clean, INV-1/INV-5 intact, schema/version gate intact, live
+e2e (color/gradient/arc/dash/colored text) correct. One technical-debt item —
+fragile positional `EmittedCommand` aggregate init in `renderer.cpp` — was
+**resolved** (converted to C++20 designated initializers; behavior-preserving,
+re-verified) to de-risk the rich-text work that extends that struct.
+
+**Decision authority:** the project owner's standing directive is **"as
+accurate as possible, WYSIWYG."** That is the tie-breaker for any
+accuracy-vs-other trade-off here — it is NOT an open escalation. §2 and §6 were
+re-classified accordingly (§6 already satisfies it; §2 is being implemented).
+
+Genuinely-still-external (not decisions — separate work/dependencies): the SVG
+rasterizer library (`PRINT_ENGINE_SVG_TODO.md`), the barcode SDK adapter
+(needs the external enLabel SDK), the host golden-image CI harness (infra), and
+the custom-stock protocol shape. These are tracked in
+`docs/IMPLEMENTATION_STATUS.md` "Spec-Governed Open Items".
+
+---
+
 ## 0. Ground rules (read before touching anything)
 
 - **Authority:** `docs/PRINT_ENGINE_SPEC_v1.1.md`, `PRINT_ENGINE_SPEC_v2.0.md`,
@@ -86,10 +120,14 @@ plumbing and a host-side golden-image check (see §9).
 
 ---
 
-## 2. Real text metrics & shaping  — **highest impact**
+## 2. Real text metrics & shaping  — **DONE & audited**
 
-**Symptom:** text position, wrapping, centering and shrink-to-fit are wrong for
-any proportional font.
+**Status:** implemented as the measure-at-the-sink design below and verified
+(87/87 ctest, host e2e visual). The "Symptom"/"Root cause" text is kept for
+history; the **DECIDED** block is the as-built design.
+
+**Symptom (historical):** text position, wrapping, centering and shrink-to-fit
+were wrong for any proportional font.
 
 **Root cause:** `src/renderer.cpp` fakes metrics:
 `measured_text_width` ≈ `chars × fontSize × 0.6` (l.~106),
@@ -98,31 +136,39 @@ any proportional font.
 and merge overflow/shrink decisions (`MergeOverflowError`) are all computed from
 this guess (l.~149–238).
 
-**[ESCALATE] — design decision required before coding:** real metrics need a
-font engine, but `renderer.cpp` is platform-agnostic (INV-1) and its overflow/
-shrink verdicts are **contractual and must be deterministic & host-independent**
-(spec v1.1 §4.3). You may not simply call GDI+ from the renderer. Resolve with
-the spec owner which model holds:
-- (a) Introduce an injected `ITextMeasurer` seam: the engine ships a
-  *deterministic, specified* metric model used for the *contractual* fit/
-  overflow decision; the device sink (`draw_trace`) does *pixel-accurate*
-  shaping for drawing. Then prove they cannot disagree (engine model must be a
-  conservative upper bound on real width/height, else preview shows fit but the
-  printer clips — an INV-5 break). **Document the metric model in the spec.**
-- (b) Move *all* text layout to the rasterizer and carry only unshaped text +
-  box + font in the trace; both preview and print measure with the same GDI+
-  call (INV-5 holds because both sinks are the same code). Overflow becomes a
-  device verdict — a spec change to §4.3.
+**DECIDED (owner directive "max-accuracy WYSIWYG") → approach (b),
+measure-at-the-sink:**
+- The engine no longer fakes metrics. `renderer.cpp` carries through the trace,
+  for each text command: the **raw string**, box, font family/size/weight/
+  italic, h/v align, and the wrap/overflow/shrink policy + `shrinkFloorPx` —
+  it performs **no wrapping/fitting/positioning**.
+- `draw_trace()` (host, real GDI+) does wrapping, shrink-to-fit, alignment and
+  clip using `Graphics::MeasureString` for true glyph metrics. Preview and
+  print call the *same* `draw_trace`, so what is measured/wrapped is exactly
+  what prints (INV-5 holds by construction).
+- Overflow/shrink is now a **device verdict** (no longer engine-deterministic).
+  This is the accepted, intended consequence of WYSIWYG: the operator must see
+  real glyph widths. The engine keeps the *hard* contractual guard only
+  (`merge value exceeds maxLen` stays an engine `MergeOverflowError`, since
+  that is content-length, not metric-dependent).
+- INV-1 preserved: the engine still links no GDI+; it stops pretending to
+  measure. `errors.hpp`/loud-fail discipline unchanged.
 
-Either way: implement, then add tests that a 40-char proportional string in a
-known box wraps / aligns / shrinks **identically in the contractual decision
-and in the drawn output** (no preview/print divergence).
+Implement, then add tests asserting: a proportional string in a known box
+wraps/aligns/shrinks correctly **by real metrics** (text fits within the box;
+centered/right text within tolerance), and that preview and print produce the
+same shaped output (one shared sink path).
 
 **Acceptance:** for Arial/Segoe UI/Times at 8–48 px, glyph advance error vs the
 device metric **< 0.5 px at 600 dpi**; centered/right-aligned text visually
 centered to **±1 px**; shrink-to-fit lands within the box without clipping;
 preview and print receive identical text draw calls (same shaped runs, same
 positions) at the same DPI.
+
+**Coupled work:** drawio rich-text (HTML) labels need *multi-run* layout on
+this same metric model — see `docs/PRINT_ENGINE_RICHTEXT_TODO.md`. Design the
+measurer here for mixed-font/size runs on one line, not just a single uniform
+string, so rich text does not force a second metrics rework.
 
 ---
 

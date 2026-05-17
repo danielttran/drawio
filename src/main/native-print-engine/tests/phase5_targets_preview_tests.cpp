@@ -103,7 +103,9 @@ TEST_CASE("Phase 5 numeric drift covers text image svg and barcode boxes") {
   const auto rendered = render_design_preview_trace(loaded.value(), RenderTarget{300.0, 96.0});
 
   REQUIRE(rendered);
-  CHECK(nearly_equal(rendered.value().commands[2].device_box.w, 12.0 * 300.0 / 96.0, 0.499));
+  // §2 measure-at-the-sink: the text command now carries the NODE box
+  // (w=50), not a fake engine-measured text width. Drift parity still holds.
+  CHECK(nearly_equal(rendered.value().commands[2].device_box.w, 50.0 * 300.0 / 96.0, 0.499));
   CHECK(nearly_equal(rendered.value().commands[3].device_box.w, 32.0 * 300.0 / 96.0, 0.499));
   CHECK(nearly_equal(rendered.value().commands[4].device_box.w, 20.0 * 300.0 / 96.0, 0.499));
   CHECK(nearly_equal(rendered.value().commands[5].device_box.w, 50.0 * 300.0 / 96.0, 0.499));
