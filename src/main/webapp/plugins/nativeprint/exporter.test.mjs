@@ -244,8 +244,19 @@ function assertSchemaValid(contract, label) {
     assert.ok(page.size.w >= 1 && page.size.h >= 1, `${ctx}page size`);
     assert.ok(Array.isArray(page.tiles) && page.tiles.length >= 1, `${ctx}tiles`);
     for (const n of page.paint) {
-      assert.ok(n.kind === 'path' || n.kind === 'text', `${ctx}kind ${n.kind}`);
-      if (n.kind === 'path') {
+      assert.ok(n.kind === 'path' || n.kind === 'text' || n.kind === 'image',
+        `${ctx}kind ${n.kind}`);
+      if (n.kind === 'image') {
+        for (const k of ['x', 'y', 'w', 'h']) {
+          assert.equal(typeof n.box[k], 'number', `${ctx}image box.${k}`);
+        }
+        assert.equal(n.format, 'png', `${ctx}image.format must be png`);
+        assert.match(n.data, /^[A-Za-z0-9+/=]+$/,
+          `${ctx}image.data must be bare base64 (no data: prefix)`);
+        assert.ok(['fill', 'preserve'].includes(n.aspect), `${ctx}image.aspect`);
+        assert.equal(typeof n.flipH, 'boolean', `${ctx}image.flipH`);
+        assert.equal(typeof n.flipV, 'boolean', `${ctx}image.flipV`);
+      } else if (n.kind === 'path') {
         assert.match(n.d, /^M /, `${ctx}path d must start absolute M`);
         assert.ok(!/[a-z]/.test(n.d.replace(/e/gi, '')),
           `${ctx}path d must be absolute commands only`);
@@ -399,6 +410,45 @@ test('text: family, size, bold, italic, bold+italic, color, multiline', () => {
   assert.deepEqual(t({}, 'L1\nL2\nL3').content.lines, ['L1', 'L2', 'L3']);
 });
 
+test('fontStyle bitmask matrix: bold/italic/underline/strikethrough + combos', () => {
+  const f = (fontStyle) => oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000', fontStyle }, 'T')
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text').font;
+  // absent / 0 -> all off
+  for (const off of [undefined, 0, '0']) {
+    const a = f(off);
+    assert.equal(a.weight, 400);
+    assert.equal(a.italic, false);
+    assert.equal(a.underline, false);
+    assert.equal(a.strikethrough, false);
+  }
+  // single bits
+  assert.equal(f(1).weight, 700);            // bold
+  assert.equal(f(2).italic, true);           // italic
+  assert.equal(f(4).underline, true);        // underline
+  assert.equal(f(8).strikethrough, true);    // strikethrough
+  assert.equal(f(4).italic, false, 'underline alone is not italic');
+  // THE REPORTED BUG: italic + underline (fontStyle 6) -> BOTH set
+  const iu = f(6);
+  assert.equal(iu.italic, true);
+  assert.equal(iu.underline, true);
+  assert.equal(iu.weight, 400);
+  assert.equal(iu.strikethrough, false);
+  // bold + italic + underline (7)
+  const biu = f(7);
+  assert.equal(biu.weight, 700);
+  assert.equal(biu.italic, true);
+  assert.equal(biu.underline, true);
+  // all four (15) and string form ("15")
+  for (const all of [15, '15']) {
+    const x = f(all);
+    assert.equal(x.weight, 700);
+    assert.equal(x.italic, true);
+    assert.equal(x.underline, true);
+    assert.equal(x.strikethrough, true);
+  }
+});
+
 test('text alignment matrix h x v', () => {
   for (const h of ['left', 'center', 'right']) {
     for (const v of ['top', 'middle', 'bottom']) {
@@ -422,6 +472,78 @@ test('HTML rich-text label is stripped to plain text, never silently dropped', (
   assert.ok(node, 'formatted label still emits a text node');
   assert.equal(node.content.lines.join(' ').includes('Bold'), true);
   assert.equal(node.content.lines.join('').includes('<'), false, 'tags stripped');
+});
+
+// ---- Image cells: faithful PNG, loud-specific for the rest --------------
+const PNG_1x1 = Buffer.from([
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+  0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+  0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+  0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]).toString('base64');
+
+test('drawio PNG image cell is baked FAITHFULLY as an image node (not a box)', () => {
+  const r = oneVertex({
+    shape: 'image',
+    image: 'data:image/png;base64,' + PNG_1x1,
+    imageAspect: '1'
+  });
+  assert.equal(r.notices.length, 0, 'a supported PNG image must NOT degrade');
+  const node = r.contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'image');
+  assert.equal(node.format, 'png');
+  assert.equal(node.data, PNG_1x1, 'data: prefix stripped, bare base64');
+  assert.equal(node.aspect, 'preserve');
+  assert.equal(node.flipH, false);
+  assert.equal(node.flipV, false);
+  assertSchemaValid(r.contract, 'png image');
+});
+
+test('image aspect/flip style maps onto the image node', () => {
+  const r = oneVertex({
+    shape: 'image',
+    image: 'data:image/png;base64,' + PNG_1x1,
+    imageAspect: '0', imageFlipH: '1', imageFlipV: 1
+  });
+  const node = r.contract.document.pages[0].paint[0];
+  assert.equal(node.aspect, 'fill');
+  assert.equal(node.flipH, true);
+  assert.equal(node.flipV, true);
+});
+
+test('image style without shape=image is still detected as an image', () => {
+  const r = oneVertex({ image: 'data:image/png;base64,' + PNG_1x1 });
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'image');
+  assert.equal(r.notices.length, 0);
+});
+
+for (const [label, src, why] of [
+  ['JPEG', 'data:image/jpeg;base64,/9j/4AAQ', /format "jpeg"/],
+  ['GIF', 'data:image/gif;base64,R0lGODlh', /format "gif"/],
+  ['SVG data URI', 'data:image/svg+xml;base64,PHN2Zz4=', /format "svg\+xml"/],
+  ['non-base64 data URI', 'data:image/svg+xml;utf8,<svg/>', /non-base64/],
+  ['external http URL', 'https://example.com/pic.png', /external image URL/],
+  ['relative URL', '/images/logo.png', /external image URL/]
+]) {
+  test(`non-PNG image loud-flagged specifically, not silent/generic: ${label}`, () => {
+    const r = oneVertex({ shape: 'image', image: src });
+    const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
+    assert.ok(n, `${label} must emit ExporterUnsupportedImage`);
+    assert.ok(!r.notices.some((x) => x.kind === 'ExporterUnsupportedShape'),
+      'must NOT be the generic unsupported-shape notice');
+    assert.match(n.detail.detail, why);
+    // placeholder box still emitted so location is visible, schema-valid.
+    assert.equal(r.contract.document.pages[0].paint[0].kind, 'path');
+    assertSchemaValid(r.contract, label);
+  });
+}
+
+test('shape=image with no image data is loudly flagged, not silent', () => {
+  const r = oneVertex({ shape: 'image' });
+  const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
+  assert.ok(n);
+  assert.match(n.detail.detail, /missing or unreadable/);
 });
 
 // ---- Edge matrix ---------------------------------------------------------
@@ -509,6 +631,8 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
   add({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#00ff00', fillOpacity: 60,
         strokeColor: '#0000ff', strokeWidth: 3, fontStyle: 3, fontColor: '#202020' }, false,
       '<b>HTML</b><br>two');
+  add({ shape: 'image', image: 'data:image/png;base64,' + PNG_1x1 }, false, '');
+  add({ shape: 'image', image: 'https://example.com/x.png' }, false, '');
 
   const r = exporter.buildResult(graphFixture(cells, states, labels, styles));
   // Invariant 1: schema-valid (engine will accept every node — no silent reject).
@@ -549,6 +673,7 @@ test('real engine renders the complex exporter document (no silent reject)',
       add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
     }
     add({ strokeColor: '#000000', endArrow: 'block', rounded: '1' }, true, 'edge');
+    add({ shape: 'image', image: 'data:image/png;base64,' + PNG_1x1 }, false, '');
     add({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#00aa00',
           fillOpacity: 55, strokeColor: '#0000ff', strokeWidth: 3, dashed: '1',
           dashPattern: '6 3', fontStyle: 3, fontColor: '#202020' }, false,

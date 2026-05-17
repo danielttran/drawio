@@ -228,14 +228,18 @@
 
   function textNode(style, box, label) {
     var fs = number(style.fontSize, 12);
+    // drawio fontStyle bitmask: 1=bold, 2=italic, 4=underline, 8=strikethrough.
+    var fst = parseInt(style.fontStyle || 0, 10) || 0;
     return {
       kind: 'text',
       box: box,
       font: {
         family: style.fontFamily || 'Arial',
         sizePx: fs > 0 ? fs : 12,
-        weight: (parseInt(style.fontStyle || 0, 10) & 1) ? 700 : 400,
-        italic: !!(parseInt(style.fontStyle || 0, 10) & 2),
+        weight: (fst & 1) ? 700 : 400,
+        italic: !!(fst & 2),
+        underline: !!(fst & 4),
+        strikethrough: !!(fst & 8),
         color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000'
       },
       align: { h: alignH(style.align), v: alignV(style.verticalAlign) },
@@ -270,6 +274,41 @@
 
   function degradation(kind, detail, cellId) {
     return { kind: kind, detail: { detail: detail, cellId: String(cellId || '') } };
+  }
+
+  // drawio image cells carry the picture in the `image=` style value, almost
+  // always a data URI. The engine renders raster images natively but ONLY
+  // accepts PNG (it loud-rejects other formats). So: embed PNG faithfully;
+  // for anything we cannot embed, emit a SPECIFIC loud notice (never the
+  // generic "unsupported shape", and never silent).
+  function parseImage(src) {
+    if (typeof src !== 'string' || src === '') return null;
+    var m = /^data:image\/([a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(src);
+    if (m) {
+      var fmt = m[1].toLowerCase();
+      var data = m[2].replace(/\s+/g, '');
+      if (fmt === 'png') return { format: 'png', data: data };
+      return { unsupportedFormat: fmt };       // jpeg/gif/bmp/svg+xml/...
+    }
+    if (/^data:image\//i.test(src)) return { unsupportedFormat: 'non-base64' };
+    return { externalUrl: src };               // http(s)/relative URL
+  }
+
+  function isImageCell(style) {
+    return style.shape === 'image' ||
+      (typeof style.image === 'string' && style.image !== '');
+  }
+
+  function imageNode(style, box, parsed) {
+    return {
+      kind: 'image',
+      box: box,
+      format: 'png',
+      data: parsed.data,
+      aspect: String(style.imageAspect) === '0' ? 'fill' : 'preserve',
+      flipH: boolish(style.imageFlipH) || boolish(style.flipH),
+      flipV: boolish(style.imageFlipV) || boolish(style.flipV)
+    };
   }
 
   function buildResult(graph) {
@@ -321,6 +360,34 @@
 
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices) {
     var box = scaledBox(state, origin, scale);
+    var label = plainLabel(graph, cell);
+
+    if (isImageCell(style)) {
+      var img = parseImage(style.image);
+      if (img && img.format === 'png') {
+        paint.push(imageNode(style, box, img));        // faithful — WYSIWYG
+      } else {
+        // Cannot embed faithfully: loud, SPECIFIC notice + a placeholder box
+        // so the operator sees exactly where/what is missing (never silent).
+        var why = img && img.unsupportedFormat
+          ? 'image format "' + img.unsupportedFormat +
+            '" is not supported (engine renders PNG only)'
+          : img && img.externalUrl
+            ? 'external image URL is not embedded in the diagram'
+            : 'image source is missing or unreadable';
+        notices.push(degradation('ExporterUnsupportedImage',
+          why + ' — placeholder box printed.', cell.id));
+        paint.push({
+          kind: 'path',
+          d: rectPath(box.x, box.y, box.w, box.h),
+          fill: null,
+          stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
+        });
+      }
+      if (label !== '') paint.push(textNode(style, box, label));
+      return;
+    }
+
     var d = shapePath(style, box.x, box.y, box.w, box.h);
     if (!d) {
       d = rectPath(box.x, box.y, box.w, box.h);
@@ -334,7 +401,6 @@
       stroke: strokeOf(style)
     });
 
-    var label = plainLabel(graph, cell);
     if (label !== '') paint.push(textNode(style, box, label));
   }
 

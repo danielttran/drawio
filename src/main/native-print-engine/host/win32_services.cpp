@@ -327,6 +327,8 @@ INT font_style_for(const EmittedCommand& c) {
   INT style = Gdiplus::FontStyleRegular;
   if (c.font_weight >= 600) style |= Gdiplus::FontStyleBold;
   if (c.font_italic) style |= Gdiplus::FontStyleItalic;
+  if (c.font_underline) style |= Gdiplus::FontStyleUnderline;
+  if (c.font_strikethrough) style |= Gdiplus::FontStyleStrikeout;
   return style;
 }
 

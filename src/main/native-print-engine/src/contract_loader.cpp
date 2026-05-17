@@ -380,6 +380,25 @@ private:
   return Result<bool, ContractError>::ok(*parsed);
 }
 
+// Optional bool: absent => false (additive/backward-compatible); present but
+// not a bool => loud shape error. Used for font.underline / font.strikethrough
+// so pre-existing contracts without them stay valid.
+[[nodiscard]] Result<bool, ContractError> read_optional_bool(
+    const JsonObject& parent,
+    std::string_view key,
+    std::string path) {
+  const JsonValue* value = find(parent, key);
+  if (value == nullptr) {
+    return Result<bool, ContractError>::ok(false);
+  }
+  const bool* parsed = as_bool(*value);
+  if (parsed == nullptr) {
+    return Result<bool, ContractError>::err(
+      error(ContractErrorCode::ContractShapeError, path, "expected bool"));
+  }
+  return Result<bool, ContractError>::ok(*parsed);
+}
+
 [[nodiscard]] bool is_base64_like(const std::string& value) {
   if (value.empty() || value.size() % 4 != 0) {
     return false;
@@ -940,6 +959,16 @@ private:
       return Result<PaintNodeSummary, ContractError>::err(italic.error());
     }
     const bool* italic_value = as_bool(*find(*font.value(), "italic"));
+    auto underline = read_optional_bool(*font.value(), "underline",
+                                        path + ".font.underline");
+    if (!underline) {
+      return Result<PaintNodeSummary, ContractError>::err(underline.error());
+    }
+    auto strikethrough = read_optional_bool(*font.value(), "strikethrough",
+                                            path + ".font.strikethrough");
+    if (!strikethrough) {
+      return Result<PaintNodeSummary, ContractError>::err(strikethrough.error());
+    }
     auto color = require_string(*font.value(), "color", path + ".font.color");
     if (!color) {
       return Result<PaintNodeSummary, ContractError>::err(color.error());
@@ -974,6 +1003,8 @@ private:
     summary.font_size_px = size_px.value();
     summary.font_weight = weight.value();
     summary.font_italic = italic_value != nullptr && *italic_value;
+    summary.font_underline = underline.value();
+    summary.font_strikethrough = strikethrough.value();
     summary.align_h = align_h.value();
     summary.align_v = align_v.value();
     auto font_rgba = parse_hex_color(color.value(), 1.0, path + ".font.color");

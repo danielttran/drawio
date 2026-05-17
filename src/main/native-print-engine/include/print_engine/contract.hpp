@@ -85,6 +85,8 @@ struct PaintNodeSummary {
   double font_size_px = 0.0;
   int font_weight = 400;
   bool font_italic = false;
+  bool font_underline = false;
+  bool font_strikethrough = false;
   std::string align_h;
   std::string align_v;
   TextContentType text_content_type = TextContentType::None;

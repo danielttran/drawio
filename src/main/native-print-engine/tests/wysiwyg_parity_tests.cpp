@@ -142,6 +142,46 @@ TEST_CASE("Exporter text nodes pass through with policy + box preserved",
   }
 }
 
+TEST_CASE("Text style flags (bold/italic/underline/strikethrough) round-trip",
+          "[wysiwyg]") {
+  auto text_node = [](const std::string& font_extra) {
+    return std::string(
+      R"({"kind":"text","box":{"x":0,"y":0,"w":80,"h":20},"font":{"family":)"
+      R"("Arial","sizePx":12,"weight":700,"italic":true)") + font_extra +
+      R"(,"color":"#000000"},"align":{"h":"left","v":"top"},)"
+      R"("content":{"type":"static","lines":["Styled"]}})";
+  };
+  // Underline + strikethrough explicitly set (the reported italic+underline
+  // case generalized): all four flags must survive to the EmittedCommand.
+  {
+    const auto loaded = load_baked_contract(contract_with(
+        text_node(R"(,"underline":true,"strikethrough":true)")));
+    REQUIRE(loaded);
+    const auto r = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+    REQUIRE(r);
+    const auto& t = r.value().commands[2];
+    CHECK(t.font_weight == 700);
+    CHECK(t.font_italic);
+    CHECK(t.font_underline);
+    CHECK(t.font_strikethrough);
+  }
+  // Backward compatible: a contract WITHOUT the new keys still loads and the
+  // flags default to false (no spurious underline/strike on legacy contracts).
+  {
+    const auto loaded = load_baked_contract(contract_with(text_node("")));
+    REQUIRE(loaded);
+    const auto r = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+    REQUIRE(r);
+    const auto& t = r.value().commands[2];
+    CHECK(t.font_italic);
+    CHECK_FALSE(t.font_underline);
+    CHECK_FALSE(t.font_strikethrough);
+  }
+  // Present-but-wrong-type is loud-rejected (not silently ignored).
+  CHECK_FALSE(load_baked_contract(contract_with(
+      text_node(R"(,"underline":"yes")"))));
+}
+
 TEST_CASE("Exporter merge text overflow policy is forwarded, not pre-judged",
           "[wysiwyg]") {
   for (const char* policy : {"reject", "clip", "shrink"}) {
@@ -164,6 +204,29 @@ TEST_CASE("Exporter merge text overflow policy is forwarded, not pre-judged",
     CHECK(t.overflow == policy);
     CHECK(t.label == "a value that is far too wide to ever fit the tiny box");
   }
+}
+
+TEST_CASE("Exporter PNG image node loads and renders through the engine",
+          "[wysiwyg]") {
+  // Canonical 1x1 transparent PNG (matches the exporter test's PNG_1x1).
+  const std::string png_b64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAEA"
+      "AAUAAQ0KLbQAAAAASUVORK5CYII=";
+  const std::string node =
+      R"({"kind":"image","box":{"x":12,"y":8,"w":64,"h":48},)"
+      R"("format":"png","aspect":"preserve","flipH":false,"flipV":true,)"
+      R"("data":")" + png_b64 + R"("})";
+  const auto loaded = load_baked_contract(contract_with(node));
+  REQUIRE(loaded);  // engine MUST accept the exporter's image node
+  const auto r = render_to_trace(loaded.value(), RenderTarget{300.0, 96.0});
+  REQUIRE(r);
+  REQUIRE(count_kind(r.value(), EmittedKind::Image) == 1);
+  const auto& cmd = r.value().commands[2];
+  CHECK(cmd.kind == EmittedKind::Image);
+  CHECK_FALSE(cmd.image_data.empty());
+  CHECK(cmd.image_format == "png");
+  CHECK(cmd.flip_v);
+  CHECK(nearly_equal(cmd.device_box.w, 64.0 * 300.0 / 96.0, 0.5));
 }
 
 TEST_CASE("Exporter edges (straight/orthogonal) render through the engine",

@@ -22,12 +22,30 @@ cmake --build src/main/native-print-engine/build --config Debug
 ctest --test-dir src/main/native-print-engine/build -C Debug --output-on-failure
 ```
 
-The cumulative suite passed locally at **94/94** tests after the accuracy-pass
+**Image fix (2026-05-17):** drawio image cells (`shape=image` / `image=` style)
+were wrongly degraded to a bounding box (`ExporterUnsupportedShape`) even though
+the engine renders raster natively. The exporter now bakes embedded **PNG**
+images to a faithful `kind:"image"` contract node (data-URI prefix stripped;
+`aspect`/`flipH`/`flipV` mapped); non-PNG / external-URL / missing images get a
+**specific** `ExporterUnsupportedImage` loud notice + a placeholder box (never
+the generic notice, never silent). Verified end-to-end: a real embedded PNG
+renders through the engine (visual check), not an empty box.
+
+**Text-property fix (2026-05-17):** `underline`/`strikethrough` were dropped at
+every layer (exporter never read drawio `fontStyle` bits 4/8; schema/renderer/
+sink had no field) — italic+underline printed italic-only. Added as additive,
+backward-compatible optional `font.underline`/`font.strikethrough` (absent ⇒
+false; present-but-wrong-type ⇒ loud reject), plumbed exporter → schema →
+renderer → GDI+ (`FontStyleUnderline`/`Strikeout`). Visually verified across
+combos. All other text properties (family/size/bold/italic/color/align/wrap/
+overflow/multiline) were audited and are correct.
+
+The cumulative suite passed locally at **96/96** tests after the accuracy-pass
 audit, the §2 measure-at-the-sink text-layout rework (engine text path is now
 a pure pass-through; real wrap/shrink/align/clip/reject live in the host sink,
 host-e2e-verified), and the WYSIWYG-parity engine net
 (`tests/wysiwyg_parity_tests.cpp`). The web exporter suite passed locally at
-**43/43** via `npm run test:nativeprint-exporter`, including a cross-process
+**54/54** via `npm run test:nativeprint-exporter`, including a cross-process
 test that drives the real engine binary with a complex all-shapes document.
 
 ### WYSIWYG-parity safety contract (tested)

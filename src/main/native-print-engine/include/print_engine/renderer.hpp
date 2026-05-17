@@ -49,6 +49,8 @@ struct EmittedCommand {
   double font_size_px = 0.0;
   int font_weight = 400;
   bool font_italic = false;
+  bool font_underline = false;
+  bool font_strikethrough = false;
   // Text-layout policy. §2 measure-at-the-sink: the engine forwards these
   // verbatim and performs NO wrapping/fitting/positioning; draw_trace() does
   // real layout with device font metrics so preview == print (INV-5).

@@ -134,6 +134,8 @@ RenderResult render_to_trace(
             .font_size_px = node.font_size_px,
             .font_weight = node.font_weight,
             .font_italic = node.font_italic,
+            .font_underline = node.font_underline,
+            .font_strikethrough = node.font_strikethrough,
             .align_h = node.align_h,
             .align_v = node.align_v,
             .wrap = node.merge_wrap,
