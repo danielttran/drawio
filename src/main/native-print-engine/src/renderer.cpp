@@ -234,6 +234,8 @@ RenderResult render_to_trace(
             false,
             node.font_family,
             font_size,
+            node.font_weight,
+            node.font_italic,
             degradation
           });
           continue;
@@ -286,6 +288,8 @@ RenderResult render_to_trace(
             false,
             {},
             0.0,
+            400,
+            false,
             true,
             0,
             0
@@ -318,6 +322,8 @@ RenderResult render_to_trace(
             node.kind == PaintKind::Image ? node.flip_v : false,
             {},
             0.0,
+            400,
+            false,
             node.kind == PaintKind::Svg,
             static_cast<int>(std::lround(device_box.w)),
             static_cast<int>(std::lround(device_box.h))
@@ -351,6 +357,8 @@ RenderResult render_to_trace(
           false,
           {},
           0.0,
+          400,
+          false,
           false
         });
       }

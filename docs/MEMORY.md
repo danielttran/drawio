@@ -29,8 +29,8 @@
 - **`src/main/java/`**: Java backend server servlets.
 - **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
 - **`src/main/native-print-engine/`**: Isolated C++20 native print engine (`docs/PRINT_ENGINE_SPEC_v1.1.md` + `_v2.0.md` bridge) plus its host-integration layer.
-  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `src/main/native-print-engine/SPEC_COVERAGE.md`.
-  - **Status: native print accuracy pass partially landed; CTest 86/86 green plus `npm run test:nativeprint-exporter` 5/5 green.**
+  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `docs/SPEC_COVERAGE.md`; status: `docs/IMPLEMENTATION_STATUS.md`.
+  - **Status: native print accuracy pass partially landed; CTest 87/87 green plus `npm run test:nativeprint-exporter` 5/5 green.**
 
 ---
 
@@ -49,7 +49,7 @@ End-to-end working: launch webapp → design diagram → **File > Native Print**
 - Engine read loop must use low-level `_read`/`read` (fread blocks until buffer full — fatal for small frames).
 - Decisions (user-confirmed, override spec defaults): no Electron; broker is the only engine client; bake is in-scope native subset; block-until-real (no stub milestone); browser↔broker localhost hop is a documented dev-only deviation from spec §3.1.
 
-**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Accuracy pass has landed for §§1, 3, 4, 5, 7 and parts of §§8-9. Still spec-blocked: §2 real text metrics/shaping and §6 hardware-margin policy (both marked `[ESCALATE]`), plus hardware/golden-image validation that needs a real printer/PDF driver harness. Embedded-SVG rendering has its own work order: `docs/PRINT_ENGINE_SVG_TODO.md` (decided: resvg via a hand-owned C ABI in a runtime-loaded Rust cdylib, librsvg+cairo swappable behind the same ABI; engine stays rasterizer-agnostic per INV-1).
+**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Accuracy pass has landed for §§1, 3, 4, 5, 7 and parts of §§8-9, including bold/italic text propagation, tile-stacked preview composition, robust stroke scaling, and physical copy iteration. Still spec-blocked: §2 real text metrics/shaping and §6 hardware-margin policy (both marked `[ESCALATE]`), plus custom-stock protocol shape and hardware/golden-image validation that need spec/harness decisions. Embedded-SVG rendering has its own work order: `docs/PRINT_ENGINE_SVG_TODO.md` (decided: resvg via a hand-owned C ABI in a runtime-loaded Rust cdylib, librsvg+cairo swappable behind the same ABI; engine stays rasterizer-agnostic per INV-1).
 
 ---
 

@@ -47,6 +47,8 @@ struct EmittedCommand {
   bool flip_v = false;
   std::string font_family;
   double font_size_px = 0.0;
+  int font_weight = 400;
+  bool font_italic = false;
   bool degradation_notice = false;
   int raster_width_px = 0;
   int raster_height_px = 0;

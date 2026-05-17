@@ -256,6 +256,18 @@ std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
     Gdiplus::Color surround = gdip_color(paint.stops.back().color);
     INT count = 1;
     brush->SetSurroundColors(&surround, &count);
+    if (paint.stops.size() > 2) {
+      std::vector<Gdiplus::Color> colors;
+      std::vector<Gdiplus::REAL> positions;
+      colors.reserve(paint.stops.size());
+      positions.reserve(paint.stops.size());
+      for (const auto& stop : paint.stops) {
+        colors.push_back(gdip_color(stop.color));
+        positions.push_back(static_cast<Gdiplus::REAL>(stop.offset));
+      }
+      brush->SetInterpolationColors(colors.data(), positions.data(),
+                                    static_cast<INT>(colors.size()));
+    }
     return brush;
   }
   return std::make_unique<Gdiplus::SolidBrush>(Gdiplus::Color(255, 0, 0, 0));
@@ -298,6 +310,24 @@ StyledPen make_pen(const StrokeStyle& stroke,
     styled.pen->SetDashPattern(dash.data(), static_cast<INT>(dash.size()));
   }
   return styled;
+}
+
+double command_scale(const EmittedCommand& c) {
+  const double sx =
+      c.contract_box.w != 0.0 ? c.device_box.w / c.contract_box.w : 0.0;
+  const double sy =
+      c.contract_box.h != 0.0 ? c.device_box.h / c.contract_box.h : 0.0;
+  if (sx > 0.0 && sy > 0.0) return (sx + sy) / 2.0;
+  if (sx > 0.0) return sx;
+  if (sy > 0.0) return sy;
+  return 1.0;
+}
+
+INT font_style_for(const EmittedCommand& c) {
+  INT style = Gdiplus::FontStyleRegular;
+  if (c.font_weight >= 600) style |= Gdiplus::FontStyleBold;
+  if (c.font_italic) style |= Gdiplus::FontStyleItalic;
+  return style;
 }
 
 int base64_value(char ch) {
@@ -456,14 +486,11 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         g.FillPath(brush.get(), &path);
       }
       if (c.stroke.has_value()) {
-        const double scale =
-            c.contract_box.w != 0.0 ? c.device_box.w / c.contract_box.w : 1.0;
-        auto styled_pen = make_pen(*c.stroke, bounds, scale);
+        auto styled_pen = make_pen(*c.stroke, bounds, command_scale(c));
         g.DrawPath(styled_pen.pen.get(), &path);
       }
     } else if (c.kind == EmittedKind::Text) {
-      const double scale =
-          c.contract_box.w != 0.0 ? c.device_box.w / c.contract_box.w : 1.0;
+      const double scale = command_scale(c);
       const std::wstring family =
           widen(c.font_family.empty() ? std::string("Arial") : c.font_family);
       Gdiplus::FontFamily ff(family.c_str());
@@ -480,7 +507,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       }
       const Gdiplus::REAL em = static_cast<Gdiplus::REAL>(
           std::max(1.0, c.font_size_px * scale));
-      Gdiplus::Font font(&use, em, Gdiplus::FontStyleRegular,
+      Gdiplus::Font font(&use, em, font_style_for(c),
                          Gdiplus::UnitPixel);
       Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
@@ -653,19 +680,44 @@ class Win32Services final : public EngineServices {
     if (!rendered) {
       return Result<PreviewOutput, ContractError>::err(rendered.error());
     }
-    int w = 0, h = 0;
-    trace_extent(rendered.value(), w, h);
+    const auto tiles = split_tiles(rendered.value());
+    if (tiles.empty()) {
+      return Result<PreviewOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, "preview",
+          "render trace contained no previewable tiles"});
+    }
+    int w = 0;
+    int h = 0;
+    std::vector<int> tile_heights;
+    tile_heights.reserve(tiles.size());
+    for (const auto& tile : tiles) {
+      int tile_w = 0;
+      int tile_h = 0;
+      trace_extent(tile.trace, tile_w, tile_h);
+      w = std::max(w, tile_w);
+      h += tile_h;
+      tile_heights.push_back(tile_h);
+    }
 
     Gdiplus::Bitmap bmp(w, h, PixelFormat32bppARGB);
     std::vector<DegradationNotice> device_notices;
     {
       Gdiplus::Graphics g(&bmp);
       g.Clear(Gdiplus::Color(255, 255, 255, 255));
-      auto drawn = draw_trace(g, rendered.value());
-      if (!drawn) {
-        return Result<PreviewOutput, ContractError>::err(drawn.error());
+      int y_offset = 0;
+      for (std::size_t index = 0; index < tiles.size(); ++index) {
+        Gdiplus::GraphicsState state = g.Save();
+        g.TranslateTransform(0.0f, static_cast<Gdiplus::REAL>(y_offset));
+        auto drawn = draw_trace(g, tiles[index].trace);
+        g.Restore(state);
+        if (!drawn) {
+          return Result<PreviewOutput, ContractError>::err(drawn.error());
+        }
+        for (const auto& notice : drawn.value().notices) {
+          push_notice_unique(device_notices, notice);
+        }
+        y_offset += tile_heights[index];
       }
-      device_notices = drawn.value().notices;
     }
 
     IStream* stream = nullptr;

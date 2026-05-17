@@ -27,6 +27,17 @@ namespace {
     R"(]}]}})";
 }
 
+[[nodiscard]] std::string styled_text_fixture(int weight, bool italic) {
+  return
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":80,"h":30},"font":{"family":"Arial","sizePx":10,"weight":)"
+    + std::to_string(weight) +
+    R"(,"italic":)" + (italic ? "true" : "false") +
+    R"(,"color":"#cc0000"},"align":{"h":"left","v":"top"},"content":{"type":"static","lines":["Styled"]}})"
+    R"(]}]}})";
+}
+
 } // namespace
 
 TEST_CASE("Phase 2 renders static pre-wrapped lines without fitting") {
@@ -87,4 +98,19 @@ TEST_CASE("Phase 2 missing font name is preserved for device substitution notice
   CHECK(text.font_family == "DefinitelyMissingFont");
   CHECK_FALSE(text.degradation_notice);
   CHECK(rendered.value().notices.empty());
+}
+
+TEST_CASE("Phase 2 preserves text weight italic and color in emitted commands") {
+  const auto loaded = load_baked_contract(styled_text_fixture(700, true));
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+
+  REQUIRE(rendered);
+  const auto& text = rendered.value().commands[2];
+  CHECK(text.font_weight == 700);
+  CHECK(text.font_italic);
+  CHECK(text.text_color.r == 204);
+  CHECK(text.text_color.g == 0);
+  CHECK(text.text_color.b == 0);
 }

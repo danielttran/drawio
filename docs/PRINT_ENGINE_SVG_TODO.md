@@ -27,6 +27,18 @@ not an afterthought.
 - **Loud degradation, never silent.** A missing/incompatible rasterizer DLL
   falls back to the existing `StubbedSvgArtwork` loud notice — the engine still
   prints everything else. SVG never silently vanishes or mis-renders.
+- **SCOPE FENCE — this rasterizer is for embedded `<svg>` artwork shapes
+  ONLY.** It is **not** the path for drawio rich-text labels. drawio rich text
+  is HTML; drawio's own SVG export wraps HTML labels in `<foreignObject>`, and
+  **resvg does not render `foreignObject`** (librsvg's support is also poor).
+  Routing HTML labels through this rasterizer yields blank/garbled text. Rich
+  text has its own work order: `docs/PRINT_ENGINE_RICHTEXT_TODO.md` (TODO #3).
+  If an incoming SVG itself contains `<foreignObject>`, treat it as an
+  unsupported feature (loud-degrade per below) — do not pretend it rendered.
+- **Unsupported SVG features loud-degrade.** resvg covers a static SVG 1.1/2
+  subset: no scripting, no SMIL animation, limited CSS, limited filters, no
+  `foreignObject`. When the shim detects/encounters an unsupported feature it
+  must report it (status → `DegradationNotice`), never silently drop content.
 - Build/test baseline and strict-warning rules: see
   `PRINT_ENGINE_ACCURACY_TODO.md` §0. Keep `ctest` green at every step.
 
@@ -95,7 +107,11 @@ Hand-authored C header under `host/` (e.g. `host/svg_rasterizer_abi.h`):
   builds with `panic = "abort"`); a panic unwinding into C++ is UB and is not
   acceptable.
 - **Determinism:** same SVG + same target size + same DPI ⇒ byte-identical
-  output. Required for INV-5 and for regulated reproducibility.
+  RGBA for **vector** content (required for INV-5). Note SVG-**embedded text**
+  is only deterministic given the same resolved fonts — the font set varies per
+  machine. For regulated reproducibility either pin/ship the font set the shim
+  uses, or record the resolved/substituted fonts in the `jobLog` (ties to §6
+  escalation #2). Do not claim cross-machine byte-equality of SVG text.
 
 ---
 
@@ -114,7 +130,9 @@ Hand-authored C header under `host/` (e.g. `host/svg_rasterizer_abi.h`):
   touched.** That is the entire maintenance benefit you asked for.
 - CMake/build: the Rust crate is NOT a CMake target dependency of the engine
   (that would re-couple builds). It is built separately (cargo) and treated as
-  an optional runtime artifact. Add a CI step that builds it and a C++ test
+  an optional runtime artifact. It lives under `host/` so the INV-1 scan never
+  sees it; add its `target/` to `.gitignore` so the Rust build dir does not
+  pollute the C++ tree. Add a CI step that builds it and a C++ test
   that loads the DLL and resolves every ABI symbol + checks the version
   handshake (loud-fail if a symbol is missing — same philosophy as the protocol
   handshake).
@@ -178,8 +196,10 @@ Documented so the ABI is designed correctly for it from day one:
 
 1. An embedded `<svg>` in a diagram prints as real artwork, crisp at the
    printer's device DPI, correctly positioned/scaled in its box.
-2. Preview and print are byte-identical for the SVG region at the same DPI
-   (deterministic rasterization; INV-5).
+2. The rasterized RGBA buffer is deterministic for a given SVG+size+DPI+fonts
+   and is composited identically into both the preview bitmap and the print DC
+   (INV-5: same pixels into both sinks — not byte-identical *printed* output,
+   which the driver still halftones).
 3. Engine library still contains zero rasterizer concept (INV-1; architecture
    test green).
 4. The **fake-shim swap test passes with no C++ change** — proving librsvg can

@@ -83,6 +83,8 @@ struct PaintNodeSummary {
   std::string svg_aspect;
   std::string font_family;
   double font_size_px = 0.0;
+  int font_weight = 400;
+  bool font_italic = false;
   std::string align_h;
   std::string align_v;
   TextContentType text_content_type = TextContentType::None;

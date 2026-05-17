@@ -939,6 +939,7 @@ private:
     if (!italic) {
       return Result<PaintNodeSummary, ContractError>::err(italic.error());
     }
+    const bool* italic_value = as_bool(*find(*font.value(), "italic"));
     auto color = require_string(*font.value(), "color", path + ".font.color");
     if (!color) {
       return Result<PaintNodeSummary, ContractError>::err(color.error());
@@ -971,6 +972,8 @@ private:
     summary.box = read.value();
     summary.font_family = family.value();
     summary.font_size_px = size_px.value();
+    summary.font_weight = weight.value();
+    summary.font_italic = italic_value != nullptr && *italic_value;
     summary.align_h = align_h.value();
     summary.align_v = align_v.value();
     auto font_rgba = parse_hex_color(color.value(), 1.0, path + ".font.color");
