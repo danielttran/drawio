@@ -28,6 +28,14 @@
   - `mxgraph/src/`: Core mxGraph graph visualization engine source.
 - **`src/main/java/`**: Java backend server servlets.
 - **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
+- **`src/main/native-print-engine/`**: Isolated C++20 native print engine scaffold for `docs/PRINT_ENGINE_SPEC_v1.1.md`.
+  - Current phase: Phases 0-6 have tested C++ slices; production adapters remain for spec-governed open items.
+  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build src/main/native-print-engine/build --config Debug`, `ctest --test-dir src/main/native-print-engine/build -C Debug --output-on-failure`.
+  - Test tooling: Catch2 v3 via CMake FetchContent.
+  - Implemented: baked contract loader, typed contract errors, fixture builder, invariant status, INV-1/INV-2/INV-2a structural architecture checks, schema/version/merge-text/barcode descriptor tests, deterministic Phase 1 trace sink, path parser, world transform, numeric drift tests, Phase 2 static pre-wrapped text rendering/alignment/baseline/font substitution tests.
+  - Phase coverage now includes Phase 3 image/SVG seams, Phase 4 merge text fitting and barcode seam, Phase 5 print/operator/design preview traces, Phase 6 adversarial/fuzz hardening and residual-risk docs.
+  - Latest verification: CMake build green and CTest green 30/30 on three consecutive local runs.
+  - CI wiring: `.github/workflows/native-print-engine.yml`.
 
 ---
 

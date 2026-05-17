@@ -1,0 +1,27 @@
+name: Native Print Engine
+
+on:
+  push:
+    paths:
+      - "src/main/native-print-engine/**"
+      - ".github/workflows/native-print-engine.yml"
+  pull_request:
+    paths:
+      - "src/main/native-print-engine/**"
+      - ".github/workflows/native-print-engine.yml"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build src/main/native-print-engine/build --config Debug
+
+      - name: Test
+        run: ctest --test-dir src/main/native-print-engine/build -C Debug --output-on-failure
