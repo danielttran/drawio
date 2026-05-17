@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace print_engine {
@@ -216,14 +217,6 @@ RenderResult render_to_trace(
           }
           const double baseline_correction = font_size * 0.8;
           const Rect text_box{x, y + baseline_correction, text_width, text_height};
-          const bool missing_font = node.font_family == "DefinitelyMissingFont";
-          if (missing_font) {
-            push_notice_unique(trace.notices, make_notice(
-              DegradationNoticeType::FontSubstitution,
-              page.id,
-              "font substituted: " + node.font_family + " -> Arial"));
-          }
-
           trace.commands.push_back(EmittedCommand{
             EmittedKind::Text,
             text_box,
@@ -231,9 +224,17 @@ RenderResult render_to_trace(
             {},
             join_lines(lines),
             "content-text",
-            missing_font ? "Arial" : node.font_family,
+            std::nullopt,
+            std::nullopt,
+            node.font_color,
+            {},
+            {},
+            {},
+            false,
+            false,
+            node.font_family,
             font_size,
-            missing_font || degradation
+            degradation
           });
           continue;
         }
@@ -275,6 +276,14 @@ RenderResult render_to_trace(
             {},
             label,
             "stub-barcode-diagonal-hatch",
+            std::nullopt,
+            std::nullopt,
+            {},
+            {},
+            {},
+            {},
+            false,
+            false,
             {},
             0.0,
             true,
@@ -299,6 +308,14 @@ RenderResult render_to_trace(
             {},
             node.kind == PaintKind::Image ? node.image_aspect : "SVG ARTWORK STUB",
             node.kind == PaintKind::Image ? "content-image" : "stub-svg-crosshatch",
+            std::nullopt,
+            std::nullopt,
+            {},
+            node.kind == PaintKind::Image ? node.image_data : std::string{},
+            node.kind == PaintKind::Image ? node.image_format : std::string{},
+            node.kind == PaintKind::Image ? node.image_aspect : node.svg_aspect,
+            node.kind == PaintKind::Image ? node.flip_h : false,
+            node.kind == PaintKind::Image ? node.flip_v : false,
             {},
             0.0,
             node.kind == PaintKind::Svg,
@@ -322,8 +339,16 @@ RenderResult render_to_trace(
           node.box,
           transform.apply(node.box),
           parsed.value().commands,
-          node.has_stroke ? "path-stroked" : "path",
+          node.stroke.has_value() ? "path-stroked" : "path",
           "content-path",
+          node.fill,
+          node.stroke,
+          {},
+          {},
+          {},
+          {},
+          false,
+          false,
           {},
           0.0,
           false

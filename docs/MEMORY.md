@@ -30,7 +30,7 @@
 - **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
 - **`src/main/native-print-engine/`**: Isolated C++20 native print engine (`docs/PRINT_ENGINE_SPEC_v1.1.md` + `_v2.0.md` bridge) plus its host-integration layer.
   - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `src/main/native-print-engine/SPEC_COVERAGE.md`.
-  - **Status: full host integration DONE & verified end-to-end; CTest 83/83 green.**
+  - **Status: native print accuracy pass partially landed; CTest 86/86 green plus `npm run test:nativeprint-exporter` 5/5 green.**
 
 ---
 
@@ -40,8 +40,8 @@ End-to-end working: launch webapp → design diagram → **File > Native Print**
 
 **Where things live**
 - Engine library (INV-1-clean, scanned): `include/print_engine/proto*.hpp`, `src/proto.cpp`, `src/proto_adapter.cpp` + `tests/proto*_tests.cpp`.
-- Host (not scanned): `host/host_main.cpp` (framed **stdio** transport), `host/win32_services.cpp` (real EnumPrintersW + GDI+ PNG preview + printer DC w/ AbortDoc), `host/stub_services.cpp` (non-Windows), `host/engine_services_factory.hpp`, `host/tools/{smoke,exporter_e2e}.js`.
-- Webapp: `src/main/webapp/vite.config.mjs` (broker = Vite middleware, 127.0.0.1 + Origin check, temp-file + ReleaseContract), `plugins/nativeprint.js` (UI + mandatory notice-ack gate), `plugins/nativeprint/exporter.js` (bake, native subset, zoom-independent), wired in `index.html`.
+- Host (not scanned): `host/host_main.cpp` (framed **stdio** transport), `host/win32_services.cpp` (real EnumPrintersW + GDI+ PNG preview + printer DC w/ AbortDoc; paint/alpha/gradient, raster PNG, SVG arcs, stock/copies/orientation DEVMODE, per-tile pages, and device-side font-substitution notices), `host/stub_services.cpp` (non-Windows), `host/engine_services_factory.hpp`, `host/tools/{smoke,exporter_e2e}.js`.
+- Webapp: `src/main/webapp/vite.config.mjs` (broker = Vite middleware, 127.0.0.1 + Origin check, temp-file + ReleaseContract), `plugins/nativeprint.js` (UI + mandatory notice-ack gate; preview uses selected stock DPI), `plugins/nativeprint/exporter.js` (Node-tested bake for common shapes, routed edges, arrowheads, edge labels, gradients/opacity/dashes, zoom-independent), wired in `index.html`.
 
 **Load-bearing constraints (do not regress)**
 - INV-1 banned tokens in `include/`+`src/` (incl. comments): draw.io, drawio, mxGraph, mxCell, mxGeometry, mxPerimeter, mxGraphModel, palette, perimeter, edgeRouting, routeEdge, layoutSolver, zOrder. Keep host concepts under `host/`.
@@ -49,7 +49,7 @@ End-to-end working: launch webapp → design diagram → **File > Native Print**
 - Engine read loop must use low-level `_read`/`read` (fread blocks until buffer full — fatal for small frames).
 - Decisions (user-confirmed, override spec defaults): no Electron; broker is the only engine client; bake is in-scope native subset; block-until-real (no stub milestone); browser↔broker localhost hop is a documented dev-only deviation from spec §3.1.
 
-**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Known limitations (NULL DEVMODE → driver-default paper/copies; no hardware-margin compensation; exporter is rect/text/edge subset) are tracked there as §§5, 6, 8.
+**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Accuracy pass has landed for §§1, 3, 4, 5, 7 and parts of §§8-9. Still spec-blocked: §2 real text metrics/shaping and §6 hardware-margin policy (both marked `[ESCALATE]`), plus hardware/golden-image validation that needs a real printer/PDF driver harness. Embedded-SVG rendering has its own work order: `docs/PRINT_ENGINE_SVG_TODO.md` (decided: resvg via a hand-owned C ABI in a runtime-loaded Rust cdylib, librsvg+cairo swappable behind the same ABI; engine stays rasterizer-agnostic per INV-1).
 
 ---
 

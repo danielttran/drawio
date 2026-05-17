@@ -46,8 +46,14 @@
       return;
     }
     var contract;
+    var exporterNotices = [];
     try {
-      contract = window.NativePrintExporter.buildContract(ui.editor.graph);
+      var baked = window.NativePrintExporter.buildResult
+        ? window.NativePrintExporter.buildResult(ui.editor.graph)
+        : { contract: window.NativePrintExporter.buildContract(ui.editor.graph),
+            notices: [] };
+      contract = baked.contract;
+      exporterNotices = baked.notices || [];
     } catch (e) {
       ui.showError('Native Print', 'Bake failed: ' + e.message, 'OK');
       return;
@@ -60,9 +66,8 @@
       'Native Print'));
     root.appendChild(el('div', { style:
       'margin:0 0 8px;color:#777;font-size:11px' },
-      'Native shape subset: rectangles, text and edges render exactly; ' +
-      'other shapes print as their bounding box. Paper/copies use the ' +
-      "printer's driver default in this build."));
+      'Preview is rendered at the selected stock DPI and uses the same native ' +
+      'trace as print. Unsupported bake details are listed below.'));
 
     var rowStyle = 'display:flex;gap:8px;align-items:center;margin:6px 0';
     var pRow = el('div', { style: rowStyle });
@@ -113,6 +118,20 @@
     var printers = [];
     var acks = [];      // one bool per notice; Print enabled when all true
 
+    function selectedStock() {
+      var p = printers[printerSel.selectedIndex];
+      var stocks = p ? p.stocks || [] : [];
+      for (var i = 0; i < stocks.length; i++) {
+        if (stocks[i].id === stockSel.value) return stocks[i];
+      }
+      return stocks[0] || null;
+    }
+
+    function selectedDpi() {
+      var s = selectedStock();
+      return s && s.dpiX ? s.dpiX : 300;
+    }
+
     function refreshGate() {
       var allAck = acks.length === 0 || acks.every(Boolean);
       printBtn.disabled = !allAck || !previewImg.getAttribute('src');
@@ -121,7 +140,8 @@
     function showNotices(notices) {
       acks = [];
       noticeBox.innerHTML = '';
-      if (!notices || notices.length === 0) {
+      var combined = (exporterNotices || []).concat(notices || []);
+      if (combined.length === 0) {
         noticeBox.style.display = 'none';
         refreshGate();
         return;
@@ -129,7 +149,7 @@
       noticeBox.style.display = 'block';
       noticeBox.appendChild(el('div', { style: 'font-weight:bold' },
         'Output degradations — acknowledge each to enable Print:'));
-      notices.forEach(function (n, i) {
+      combined.forEach(function (n, i) {
         acks.push(false);
         var line = el('div', { style: 'margin:4px 0' });
         var cb = el('input', { type: 'checkbox' });
@@ -154,7 +174,7 @@
       rearm();
       status.textContent = 'Rendering preview…';
       rpc({ action: 'preview', contract: contract,
-        dpi: 150 }).then(function (m) {
+        dpi: selectedDpi() }).then(function (m) {
         if (m.result !== 'PreviewResult') {
           status.textContent = 'Preview error: ' +
             (m.error || '') + ' ' + (m.detail || '');
@@ -181,7 +201,7 @@
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
       rearm(); doPreview();
     });
-    stockSel.addEventListener('change', rearm);
+    stockSel.addEventListener('change', function () { rearm(); doPreview(); });
     copies.addEventListener('change', rearm);
 
     cancelBtn.addEventListener('click', function () { ui.hideDialog(); });

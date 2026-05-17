@@ -28,8 +28,17 @@ struct ParsedPath {
   Rect bounds;
 };
 
+struct CubicBezier {
+  Point c1;
+  Point c2;
+  Point end;
+};
+
 using PathParseResult = Result<ParsedPath, ContractError>;
 
 [[nodiscard]] PathParseResult parse_absolute_svg_path(std::string_view path_data);
+[[nodiscard]] std::vector<CubicBezier> arc_to_cubic_beziers(
+  Point start,
+  const std::vector<double>& arc_values);
 
 } // namespace print_engine

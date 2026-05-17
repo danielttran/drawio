@@ -5,6 +5,7 @@
 #include <string>
 
 using print_engine::ContractErrorCode;
+using print_engine::PaintType;
 using print_engine::load_baked_contract;
 
 namespace {
@@ -82,6 +83,45 @@ TEST_CASE("contract validation rejects invalid stroke enums and dash values") {
   const auto bad_dash = load_baked_contract(doc_with_paint(path_with_stroke("butt", "miter", "[1,-2]")));
   REQUIRE_FALSE(bad_dash);
   CHECK(bad_dash.error().code == ContractErrorCode::ContractValueError);
+}
+
+TEST_CASE("contract validation preserves sorted gradient stops and alpha") {
+  const auto result = load_baked_contract(doc_with_paint(
+    R"({"kind":"path","d":"M 0 0 L 10 0 L 10 10 Z","fill":{"type":"linear","stops":[{"offset":1,"color":"#0000ff","alpha":0.25},{"offset":0,"color":"#ff0000","alpha":0.75}]},"stroke":{"paint":{"type":"radial","stops":[{"offset":0,"color":"#ffffff","alpha":1},{"offset":1,"color":"#000000","alpha":0.5}]},"width":2,"cap":"round","join":"bevel","miterLimit":4,"dash":null}})"));
+
+  REQUIRE(result);
+  const auto& node = result.value().pages[0].paint[0];
+  REQUIRE(node.fill.has_value());
+  CHECK(node.fill->type == PaintType::Linear);
+  REQUIRE(node.fill->stops.size() == 2);
+  CHECK(node.fill->stops[0].offset == 0.0);
+  CHECK(node.fill->stops[0].color.r == 255);
+  CHECK(node.fill->stops[0].color.a == 0.75);
+  CHECK(node.fill->stops[1].offset == 1.0);
+  CHECK(node.fill->stops[1].color.b == 255);
+  CHECK(node.fill->stops[1].color.a == 0.25);
+  REQUIRE(node.stroke.has_value());
+  CHECK(node.stroke->paint.type == PaintType::Radial);
+  CHECK(node.stroke->cap == "round");
+  CHECK(node.stroke->join == "bevel");
+  CHECK(node.stroke->dash.empty());
+}
+
+TEST_CASE("contract validation rejects invalid paint colors alpha and stops") {
+  const auto bad_color = load_baked_contract(doc_with_paint(
+    R"({"kind":"path","d":"M 0 0 L 10 10","fill":{"type":"solid","color":"#abcd","alpha":1},"stroke":null})"));
+  REQUIRE_FALSE(bad_color);
+  CHECK(bad_color.error().code == ContractErrorCode::ContractValueError);
+
+  const auto bad_alpha = load_baked_contract(doc_with_paint(
+    R"({"kind":"path","d":"M 0 0 L 10 10","fill":{"type":"solid","color":"#abcdef","alpha":1.2},"stroke":null})"));
+  REQUIRE_FALSE(bad_alpha);
+  CHECK(bad_alpha.error().code == ContractErrorCode::ContractValueError);
+
+  const auto empty_stops = load_baked_contract(doc_with_paint(
+    R"({"kind":"path","d":"M 0 0 L 10 10","fill":{"type":"linear","stops":[]},"stroke":null})"));
+  REQUIRE_FALSE(empty_stops);
+  CHECK(empty_stops.error().code == ContractErrorCode::ContractValueError);
 }
 
 TEST_CASE("contract validation requires barcode merge errors to be loud") {

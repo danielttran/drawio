@@ -29,9 +29,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cwchar>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace print_engine::proto {
@@ -57,6 +60,16 @@ std::string narrow(const std::wstring& w) {
                       s.data(), n, nullptr, nullptr);
   return s;
 }
+
+struct PrinterHandle {
+  HANDLE handle = nullptr;
+  explicit PrinterHandle(HANDLE h = nullptr) : handle(h) {}
+  ~PrinterHandle() {
+    if (handle != nullptr) ClosePrinter(handle);
+  }
+  PrinterHandle(const PrinterHandle&) = delete;
+  PrinterHandle& operator=(const PrinterHandle&) = delete;
+};
 
 // One-process GDI+ token.
 struct GdiplusScope {
@@ -84,6 +97,100 @@ int png_encoder_clsid(CLSID& clsid) {
   return -1;
 }
 
+Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
+    const std::wstring& printer_name,
+    const std::string& stock_id) {
+  HANDLE raw = nullptr;
+  if (!OpenPrinterW(const_cast<LPWSTR>(printer_name.c_str()), &raw, nullptr)) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, narrow(printer_name),
+        "OpenPrinter failed"});
+  }
+  PrinterHandle printer(raw);
+  const LONG needed = DocumentPropertiesW(nullptr, printer.handle,
+                                          const_cast<LPWSTR>(printer_name.c_str()),
+                                          nullptr, nullptr, 0);
+  if (needed <= 0) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, narrow(printer_name),
+        "DocumentProperties size query failed"});
+  }
+  std::vector<std::uint8_t> buffer(static_cast<std::size_t>(needed));
+  auto* devmode = reinterpret_cast<DEVMODEW*>(buffer.data());
+  if (DocumentPropertiesW(nullptr, printer.handle,
+                          const_cast<LPWSTR>(printer_name.c_str()),
+                          devmode, nullptr, DM_OUT_BUFFER) != IDOK) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, narrow(printer_name),
+        "DocumentProperties default fetch failed"});
+  }
+
+  if (!stock_id.empty()) {
+    const int paper_count = DeviceCapabilitiesW(
+        const_cast<LPWSTR>(printer_name.c_str()), nullptr, DC_PAPERNAMES,
+        nullptr, nullptr);
+    if (paper_count <= 0) {
+      return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, stock_id,
+          "printer did not report paper names"});
+    }
+    std::vector<wchar_t> names(static_cast<std::size_t>(paper_count) * 64);
+    std::vector<WORD> paper_ids(static_cast<std::size_t>(paper_count));
+    std::vector<POINT> paper_sizes(static_cast<std::size_t>(paper_count));
+    const int names_count = DeviceCapabilitiesW(
+        const_cast<LPWSTR>(printer_name.c_str()), nullptr, DC_PAPERNAMES,
+        names.data(), nullptr);
+    const int ids_count = DeviceCapabilitiesW(
+        const_cast<LPWSTR>(printer_name.c_str()), nullptr, DC_PAPERS,
+        reinterpret_cast<LPWSTR>(paper_ids.data()), nullptr);
+    const int sizes_count = DeviceCapabilitiesW(
+        const_cast<LPWSTR>(printer_name.c_str()), nullptr, DC_PAPERSIZE,
+        reinterpret_cast<LPWSTR>(paper_sizes.data()), nullptr);
+    if (names_count != paper_count || ids_count != paper_count ||
+        sizes_count != paper_count) {
+      return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, stock_id,
+          "printer paper capability query failed"});
+    }
+    const std::wstring wanted = widen(stock_id);
+    bool found = false;
+    for (int i = 0; i < paper_count; ++i) {
+      const wchar_t* cell = &names[static_cast<std::size_t>(i) * 64];
+      const std::wstring name(cell, wcsnlen(cell, 64));
+      if (name == wanted) {
+        devmode->dmFields |= DM_PAPERSIZE;
+        devmode->dmPaperSize = static_cast<short>(paper_ids[static_cast<std::size_t>(i)]);
+        const POINT size = paper_sizes[static_cast<std::size_t>(i)];
+        if (size.x > 0 && size.y > 0) {
+          devmode->dmFields |= DM_ORIENTATION;
+          devmode->dmOrientation =
+              static_cast<short>(size.x > size.y ? DMORIENT_LANDSCAPE
+                                                 : DMORIENT_PORTRAIT);
+        }
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, stock_id,
+          "requested stock not found"});
+    }
+  }
+
+  devmode->dmFields |= DM_COPIES;
+  devmode->dmCopies = 1;
+  if (DocumentPropertiesW(nullptr, printer.handle,
+                          const_cast<LPWSTR>(printer_name.c_str()),
+                          devmode, devmode,
+                          DM_IN_BUFFER | DM_OUT_BUFFER) != IDOK) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, narrow(printer_name),
+        "DocumentProperties merge failed"});
+  }
+  return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
+}
+
 // Map a contract-space point to device pixels using the affine implied by a
 // command's contract_box -> device_box (uniform scale + translate; see
 // renderer.cpp make_world_transform).
@@ -102,6 +209,148 @@ Affine affine_for(const Rect& contract_box, const Rect& device_box) {
   a.tx = device_box.x - contract_box.x * a.sx;
   a.ty = device_box.y - contract_box.y * a.sy;
   return a;
+}
+
+BYTE byte_alpha(double a) {
+  return static_cast<BYTE>(std::clamp(std::lround(a * 255.0), 0L, 255L));
+}
+
+Gdiplus::Color gdip_color(const Rgba& c) {
+  return Gdiplus::Color(byte_alpha(c.a),
+                        static_cast<BYTE>(std::clamp(c.r, 0, 255)),
+                        static_cast<BYTE>(std::clamp(c.g, 0, 255)),
+                        static_cast<BYTE>(std::clamp(c.b, 0, 255)));
+}
+
+std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
+                                            const Gdiplus::RectF& bounds) {
+  if (paint.type == PaintType::Solid) {
+    return std::make_unique<Gdiplus::SolidBrush>(gdip_color(paint.solid));
+  }
+  if (paint.type == PaintType::Linear && !paint.stops.empty()) {
+    const Gdiplus::Color first = gdip_color(paint.stops.front().color);
+    const Gdiplus::Color last = gdip_color(paint.stops.back().color);
+    auto brush = std::make_unique<Gdiplus::LinearGradientBrush>(
+        Gdiplus::PointF(bounds.X, bounds.Y),
+        Gdiplus::PointF(bounds.X + bounds.Width, bounds.Y),
+        first, last);
+    if (paint.stops.size() > 2) {
+      std::vector<Gdiplus::Color> colors;
+      std::vector<Gdiplus::REAL> positions;
+      colors.reserve(paint.stops.size());
+      positions.reserve(paint.stops.size());
+      for (const auto& stop : paint.stops) {
+        colors.push_back(gdip_color(stop.color));
+        positions.push_back(static_cast<Gdiplus::REAL>(stop.offset));
+      }
+      brush->SetInterpolationColors(colors.data(), positions.data(),
+                                    static_cast<INT>(colors.size()));
+    }
+    return brush;
+  }
+  if (paint.type == PaintType::Radial && !paint.stops.empty()) {
+    Gdiplus::GraphicsPath ellipse;
+    ellipse.AddEllipse(bounds);
+    auto brush = std::make_unique<Gdiplus::PathGradientBrush>(&ellipse);
+    brush->SetCenterColor(gdip_color(paint.stops.front().color));
+    Gdiplus::Color surround = gdip_color(paint.stops.back().color);
+    INT count = 1;
+    brush->SetSurroundColors(&surround, &count);
+    return brush;
+  }
+  return std::make_unique<Gdiplus::SolidBrush>(Gdiplus::Color(255, 0, 0, 0));
+}
+
+Gdiplus::LineCap line_cap(const std::string& cap) {
+  if (cap == "round") return Gdiplus::LineCapRound;
+  if (cap == "square") return Gdiplus::LineCapSquare;
+  return Gdiplus::LineCapFlat;
+}
+
+Gdiplus::LineJoin line_join(const std::string& join) {
+  if (join == "round") return Gdiplus::LineJoinRound;
+  if (join == "bevel") return Gdiplus::LineJoinBevel;
+  return Gdiplus::LineJoinMiter;
+}
+
+struct StyledPen {
+  std::unique_ptr<Gdiplus::Brush> brush;
+  std::unique_ptr<Gdiplus::Pen> pen;
+};
+
+StyledPen make_pen(const StrokeStyle& stroke,
+                   const Gdiplus::RectF& bounds,
+                   double scale) {
+  StyledPen styled;
+  styled.brush = make_brush(stroke.paint, bounds);
+  styled.pen = std::make_unique<Gdiplus::Pen>(
+      styled.brush.get(), static_cast<Gdiplus::REAL>(stroke.width * scale));
+  styled.pen->SetStartCap(line_cap(stroke.cap));
+  styled.pen->SetEndCap(line_cap(stroke.cap));
+  styled.pen->SetLineJoin(line_join(stroke.join));
+  styled.pen->SetMiterLimit(static_cast<Gdiplus::REAL>(stroke.miter_limit));
+  if (!stroke.dash.empty()) {
+    std::vector<Gdiplus::REAL> dash;
+    dash.reserve(stroke.dash.size());
+    for (const double value : stroke.dash) {
+      dash.push_back(static_cast<Gdiplus::REAL>(value));
+    }
+    styled.pen->SetDashPattern(dash.data(), static_cast<INT>(dash.size()));
+  }
+  return styled;
+}
+
+int base64_value(char ch) {
+  if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+  if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+  if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+  if (ch == '+') return 62;
+  if (ch == '/') return 63;
+  return -1;
+}
+
+bool decode_base64(const std::string& text, std::vector<std::uint8_t>& out) {
+  if (text.empty() || text.size() % 4 != 0) return false;
+  out.clear();
+  for (std::size_t index = 0; index < text.size(); index += 4) {
+    const int a = base64_value(text[index]);
+    const int b = base64_value(text[index + 1]);
+    const int c = text[index + 2] == '=' ? -1 : base64_value(text[index + 2]);
+    const int d = text[index + 3] == '=' ? -1 : base64_value(text[index + 3]);
+    if (a < 0 || b < 0 || (text[index + 2] != '=' && c < 0) ||
+        (text[index + 3] != '=' && d < 0)) {
+      return false;
+    }
+    out.push_back(static_cast<std::uint8_t>((a << 2) | (b >> 4)));
+    if (text[index + 2] != '=') {
+      out.push_back(static_cast<std::uint8_t>(((b & 0x0f) << 4) | (c >> 2)));
+    }
+    if (text[index + 3] != '=') {
+      out.push_back(static_cast<std::uint8_t>(((c & 0x03) << 6) | d));
+    }
+  }
+  return true;
+}
+
+Gdiplus::RectF image_destination(const EmittedCommand& c,
+                                 Gdiplus::REAL src_w,
+                                 Gdiplus::REAL src_h) {
+  Gdiplus::RectF dst(
+      static_cast<Gdiplus::REAL>(c.device_box.x),
+      static_cast<Gdiplus::REAL>(c.device_box.y),
+      static_cast<Gdiplus::REAL>(c.device_box.w),
+      static_cast<Gdiplus::REAL>(c.device_box.h));
+  if (c.image_aspect != "preserve" || src_w <= 0.0f || src_h <= 0.0f ||
+      dst.Width <= 0.0f || dst.Height <= 0.0f) {
+    return dst;
+  }
+  const Gdiplus::REAL scale =
+      std::min(dst.Width / src_w, dst.Height / src_h);
+  const Gdiplus::REAL w = src_w * scale;
+  const Gdiplus::REAL h = src_h * scale;
+  return Gdiplus::RectF(dst.X + (dst.Width - w) / 2.0f,
+                        dst.Y + (dst.Height - h) / 2.0f,
+                        w, h);
 }
 
 void add_path_command(Gdiplus::GraphicsPath& path, const PathCommand& cmd,
@@ -133,11 +382,24 @@ void add_path_command(Gdiplus::GraphicsPath& path, const PathCommand& cmd,
       }
       break;
     case PathCommandKind::ArcTo:
-      // Degenerate arc -> chord; full arc support is out of the native subset.
       if (v.size() >= 7) {
-        Gdiplus::PointF p = a.map(v[5], v[6]);
-        path.AddLine(cur, p);
-        cur = p;
+        const Point start_contract{
+            (cur.X - static_cast<Gdiplus::REAL>(a.tx)) / static_cast<Gdiplus::REAL>(a.sx),
+            (cur.Y - static_cast<Gdiplus::REAL>(a.ty)) / static_cast<Gdiplus::REAL>(a.sy)};
+        const auto cubics = arc_to_cubic_beziers(start_contract, v);
+        if (cubics.empty()) {
+          Gdiplus::PointF p = a.map(v[5], v[6]);
+          path.AddLine(cur, p);
+          cur = p;
+        } else {
+          for (const auto& cubic : cubics) {
+            Gdiplus::PointF c1 = a.map(cubic.c1.x, cubic.c1.y);
+            Gdiplus::PointF c2 = a.map(cubic.c2.x, cubic.c2.y);
+            Gdiplus::PointF p = a.map(cubic.end.x, cubic.end.y);
+            path.AddBezier(cur, c1, c2, p);
+            cur = p;
+          }
+        }
       }
       break;
     case PathCommandKind::Close:
@@ -147,26 +409,57 @@ void add_path_command(Gdiplus::GraphicsPath& path, const PathCommand& cmd,
   }
 }
 
+struct DrawResult {
+  std::vector<DegradationNotice> notices;
+};
+
+void push_notice_unique(std::vector<DegradationNotice>& notices,
+                        DegradationNotice notice) {
+  const auto duplicate = std::find_if(
+      notices.begin(), notices.end(), [&notice](const DegradationNotice& n) {
+        return n.type == notice.type && n.page_id == notice.page_id &&
+               n.detail == notice.detail;
+      });
+  if (duplicate == notices.end()) {
+    notices.push_back(std::move(notice));
+  }
+}
+
 // Draw one render trace onto a Graphics already translated so device (0,0) is
 // the page origin. Shared by preview and print so they cannot diverge (INV-5).
-void draw_trace(Gdiplus::Graphics& g, const RenderTrace& trace) {
+Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
+                                             const RenderTrace& trace) {
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
   Gdiplus::SolidBrush black(Gdiplus::Color(255, 0, 0, 0));
-  Gdiplus::Pen pen(Gdiplus::Color(255, 0, 0, 0), 1.0f);
+  Gdiplus::Pen black_pen(Gdiplus::Color(255, 0, 0, 0), 1.0f);
+  DrawResult result;
+  std::string current_page_id;
 
   for (const auto& c : trace.commands) {
-    if (c.kind == EmittedKind::Path) {
+    if (c.kind == EmittedKind::StartTile) {
+      current_page_id = c.label;
+    } else if (c.kind == EmittedKind::Path) {
       const Affine a = affine_for(c.contract_box, c.device_box);
       Gdiplus::GraphicsPath path;
       Gdiplus::PointF cur(0, 0), start(0, 0);
       for (const auto& pc : c.path_commands) {
         add_path_command(path, pc, a, cur, start);
       }
-      if (c.style_signature == "path-stroked") {
-        g.DrawPath(&pen, &path);
-      } else {
-        g.DrawPath(&pen, &path);
+      Gdiplus::RectF bounds(
+          static_cast<Gdiplus::REAL>(c.device_box.x),
+          static_cast<Gdiplus::REAL>(c.device_box.y),
+          static_cast<Gdiplus::REAL>(c.device_box.w),
+          static_cast<Gdiplus::REAL>(c.device_box.h));
+      if (c.fill.has_value()) {
+        auto brush = make_brush(*c.fill, bounds);
+        g.FillPath(brush.get(), &path);
+      }
+      if (c.stroke.has_value()) {
+        const double scale =
+            c.contract_box.w != 0.0 ? c.device_box.w / c.contract_box.w : 1.0;
+        auto styled_pen = make_pen(*c.stroke, bounds, scale);
+        g.DrawPath(styled_pen.pen.get(), &path);
       }
     } else if (c.kind == EmittedKind::Text) {
       const double scale =
@@ -175,8 +468,16 @@ void draw_trace(Gdiplus::Graphics& g, const RenderTrace& trace) {
           widen(c.font_family.empty() ? std::string("Arial") : c.font_family);
       Gdiplus::FontFamily ff(family.c_str());
       Gdiplus::FontFamily arial(L"Arial");
-      const Gdiplus::FontFamily& use =
-          ff.IsAvailable() ? ff : arial;
+      const bool font_available = ff.IsAvailable();
+      const Gdiplus::FontFamily& use = font_available ? ff : arial;
+      if (!font_available) {
+        push_notice_unique(result.notices, DegradationNotice{
+            DegradationNoticeType::FontSubstitution,
+            current_page_id,
+            "font substituted: " + c.font_family + " -> Arial",
+            {},
+            {}});
+      }
       const Gdiplus::REAL em = static_cast<Gdiplus::REAL>(
           std::max(1.0, c.font_size_px * scale));
       Gdiplus::Font font(&use, em, Gdiplus::FontStyleRegular,
@@ -187,7 +488,8 @@ void draw_trace(Gdiplus::Graphics& g, const RenderTrace& trace) {
           static_cast<Gdiplus::REAL>(c.device_box.w),
           static_cast<Gdiplus::REAL>(c.device_box.h));
       const std::wstring text = widen(c.label);
-      g.DrawString(text.c_str(), -1, &font, box, nullptr, &black);
+      Gdiplus::SolidBrush text_brush(gdip_color(c.text_color));
+      g.DrawString(text.c_str(), -1, &font, box, nullptr, &text_brush);
     } else if (c.kind == EmittedKind::Barcode || c.kind == EmittedKind::Svg) {
       // Loud stub: hatched box + the stub label so the operator sees it is
       // NOT real artwork (the matching DegradationNotice is in trace.notices).
@@ -200,7 +502,7 @@ void draw_trace(Gdiplus::Graphics& g, const RenderTrace& trace) {
                                 Gdiplus::Color(255, 0, 0, 0),
                                 Gdiplus::Color(0, 255, 255, 255));
       g.FillRectangle(&hatch, box);
-      g.DrawRectangle(&pen, box);
+      g.DrawRectangle(&black_pen, box);
       Gdiplus::FontFamily arial(L"Arial");
       Gdiplus::Font font(&arial, 10.0f, Gdiplus::FontStyleRegular,
                          Gdiplus::UnitPixel);
@@ -212,9 +514,95 @@ void draw_trace(Gdiplus::Graphics& g, const RenderTrace& trace) {
           static_cast<Gdiplus::REAL>(c.device_box.y),
           static_cast<Gdiplus::REAL>(c.device_box.w),
           static_cast<Gdiplus::REAL>(c.device_box.h));
-      g.DrawRectangle(&pen, box);  // raster bytes not in trace; subset = box
+      std::vector<std::uint8_t> bytes;
+      if (!decode_base64(c.image_data, bytes)) {
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, "image",
+            "image data is not valid base64"});
+      }
+      HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+      if (mem == nullptr) {
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, "image",
+            "image memory allocation failed"});
+      }
+      void* dest = GlobalLock(mem);
+      std::memcpy(dest, bytes.data(), bytes.size());
+      GlobalUnlock(mem);
+      IStream* stream = nullptr;
+      if (CreateStreamOnHGlobal(mem, TRUE, &stream) != S_OK) {
+        GlobalFree(mem);
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, "image",
+            "image stream creation failed"});
+      }
+      Gdiplus::Bitmap bitmap(stream);
+      if (bitmap.GetLastStatus() != Gdiplus::Ok) {
+        stream->Release();
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, "image",
+            "GDI+ bitmap decode failed"});
+      }
+      Gdiplus::GraphicsState state = g.Save();
+      if (c.flip_h || c.flip_v) {
+        const Gdiplus::REAL cx = box.X + box.Width / 2.0f;
+        const Gdiplus::REAL cy = box.Y + box.Height / 2.0f;
+        g.TranslateTransform(cx, cy);
+        g.ScaleTransform(c.flip_h ? -1.0f : 1.0f, c.flip_v ? -1.0f : 1.0f);
+        g.TranslateTransform(-cx, -cy);
+      }
+      const Gdiplus::RectF dst = image_destination(
+          c,
+          static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
+          static_cast<Gdiplus::REAL>(bitmap.GetHeight()));
+      g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
+                  static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
+                  static_cast<Gdiplus::REAL>(bitmap.GetHeight()),
+                  Gdiplus::UnitPixel);
+      g.Restore(state);
+      stream->Release();
     }
   }
+  return Result<DrawResult, ContractError>::ok(std::move(result));
+}
+
+struct TileTrace {
+  std::string page_id;
+  int tile_index = 0;
+  RenderTrace trace;
+};
+
+std::vector<TileTrace> split_tiles(const RenderTrace& trace) {
+  std::vector<TileTrace> tiles;
+  TileTrace current;
+  bool in_tile = false;
+  std::string current_page;
+  int current_page_tile_index = 0;
+  for (const auto& command : trace.commands) {
+    if (command.kind == EmittedKind::StartTile) {
+      if (command.label != current_page) {
+        current_page = command.label;
+        current_page_tile_index = 0;
+      }
+      current = TileTrace{};
+      current.page_id = command.label;
+      current.tile_index = current_page_tile_index++;
+      current.trace.notices = trace.notices;
+      current.trace.commands.push_back(command);
+      in_tile = true;
+      continue;
+    }
+    if (!in_tile) {
+      continue;
+    }
+    current.trace.commands.push_back(command);
+    if (command.kind == EmittedKind::EndTile) {
+      tiles.push_back(std::move(current));
+      current = TileTrace{};
+      in_tile = false;
+    }
+  }
+  return tiles;
 }
 
 // Total device extent across all tiles (tiles stacked vertically for preview).
@@ -269,10 +657,15 @@ class Win32Services final : public EngineServices {
     trace_extent(rendered.value(), w, h);
 
     Gdiplus::Bitmap bmp(w, h, PixelFormat32bppARGB);
+    std::vector<DegradationNotice> device_notices;
     {
       Gdiplus::Graphics g(&bmp);
       g.Clear(Gdiplus::Color(255, 255, 255, 255));
-      draw_trace(g, rendered.value());
+      auto drawn = draw_trace(g, rendered.value());
+      if (!drawn) {
+        return Result<PreviewOutput, ContractError>::err(drawn.error());
+      }
+      device_notices = drawn.value().notices;
     }
 
     IStream* stream = nullptr;
@@ -310,7 +703,10 @@ class Win32Services final : public EngineServices {
     stream->Release();
     po.width_px = w;
     po.height_px = h;
-    po.notices = rendered.value().notices;
+    po.notices.insert(po.notices.begin(), rendered.value().notices.begin(),
+                      rendered.value().notices.end());
+    po.notices.insert(po.notices.end(), device_notices.begin(),
+                      device_notices.end());
     return Result<PreviewOutput, ContractError>::ok(std::move(po));
   }
 
@@ -320,7 +716,14 @@ class Win32Services final : public EngineServices {
       const std::string& printer_id, const std::string& stock_id,
       int copies) override {
     const std::wstring wname = widen(printer_id);
-    HDC hdc = CreateDCW(L"WINSPOOL", wname.c_str(), nullptr, nullptr);
+    const int n_copies = std::max(1, copies);
+    auto devmode_buffer = merged_devmode_for(wname, stock_id);
+    if (!devmode_buffer) {
+      return Result<PrintOutput, ContractError>::err(devmode_buffer.error());
+    }
+    std::vector<std::uint8_t> devmode_data = devmode_buffer.value();
+    auto* devmode = reinterpret_cast<DEVMODEW*>(devmode_data.data());
+    HDC hdc = CreateDCW(L"WINSPOOL", wname.c_str(), nullptr, devmode);
     if (hdc == nullptr) {
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id,
@@ -337,9 +740,16 @@ class Win32Services final : public EngineServices {
     DOCINFOW di{};
     di.cbSize = sizeof(di);
     di.lpszDocName = L"draw.io native print";
-    const int n_copies = std::max(1, copies);
     bool aborted = false;
     std::string fail_detail;
+    std::vector<DegradationNotice> device_notices;
+    const auto tiles = split_tiles(rendered.value());
+    if (tiles.empty()) {
+      DeleteDC(hdc);
+      return Result<PrintOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, printer_id,
+          "render trace contained no printable tiles"});
+    }
 
     if (StartDocW(hdc, &di) <= 0) {
       DeleteDC(hdc);
@@ -347,19 +757,36 @@ class Win32Services final : public EngineServices {
           ContractErrorCode::PrintDeviceError, printer_id, "StartDoc failed"});
     }
     for (int copy = 0; copy < n_copies && !aborted; ++copy) {
-      if (StartPage(hdc) <= 0) {
-        aborted = true;
-        fail_detail = "StartPage failed";
-        break;
-      }
-      {
-        Gdiplus::Graphics g(hdc);
-        draw_trace(g, rendered.value());
-      }
-      if (EndPage(hdc) <= 0) {
-        aborted = true;
-        fail_detail = "EndPage failed";
-        break;
+      for (const auto& tile : tiles) {
+        if (StartPage(hdc) <= 0) {
+          aborted = true;
+          fail_detail = "StartPage failed at copy=" + std::to_string(copy + 1) +
+                        " page=" + tile.page_id +
+                        " tile=" + std::to_string(tile.tile_index);
+          break;
+        }
+        {
+          Gdiplus::Graphics g(hdc);
+          auto drawn = draw_trace(g, tile.trace);
+          if (!drawn) {
+            aborted = true;
+            fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
+                          " page=" + tile.page_id +
+                          " tile=" + std::to_string(tile.tile_index) +
+                          ": " + drawn.error().message;
+            break;
+          }
+          for (const auto& notice : drawn.value().notices) {
+            push_notice_unique(device_notices, notice);
+          }
+        }
+        if (EndPage(hdc) <= 0) {
+          aborted = true;
+          fail_detail = "EndPage failed at copy=" + std::to_string(copy + 1) +
+                        " page=" + tile.page_id +
+                        " tile=" + std::to_string(tile.tile_index);
+          break;
+        }
       }
     }
     if (aborted) {
@@ -374,6 +801,8 @@ class Win32Services final : public EngineServices {
     PrintOutput job;
     job.job_id = "win32-" + printer_id;
     job.notices = rendered.value().notices;
+    job.notices.insert(job.notices.end(), device_notices.begin(),
+                       device_notices.end());
     job.job_log = Json::object();
     job.job_log.set("engineVersion", Json::str("native-print-engine"));
     job.job_log.set("printerId", Json::str(printer_id));

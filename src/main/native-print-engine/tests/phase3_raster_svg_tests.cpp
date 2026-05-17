@@ -40,6 +40,11 @@ TEST_CASE("Phase 3 emits raster image nodes through the shared transform") {
   const auto& image = rendered.value().commands[2];
   CHECK(image.kind == EmittedKind::Image);
   CHECK(image.label == "preserve");
+  CHECK(image.image_format == "png");
+  CHECK(image.image_data == "iVBORw==");
+  CHECK(image.image_aspect == "preserve");
+  CHECK(image.flip_h);
+  CHECK_FALSE(image.flip_v);
   CHECK(nearly_equal(image.device_box.w, 100.0, 0.0001));
   CHECK(nearly_equal(image.device_box.h, 50.0, 0.0001));
 }

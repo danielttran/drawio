@@ -8,6 +8,7 @@ using print_engine::EmittedKind;
 using print_engine::PaintKind;
 using print_engine::PathCommandKind;
 using print_engine::RenderTarget;
+using print_engine::arc_to_cubic_beziers;
 using print_engine::load_baked_contract;
 using print_engine::nearly_equal;
 using print_engine::render_to_trace;
@@ -42,6 +43,17 @@ TEST_CASE("Phase 1 emits path nodes through a single world transform") {
   CHECK(nearly_equal(rendered.value().commands[2].contract_box.y, 5.0, 0.0001));
   CHECK(nearly_equal(rendered.value().commands[2].device_box.w, 93.75, 0.0001));
   CHECK(nearly_equal(rendered.value().commands[2].device_box.h, 46.875, 0.0001));
+  REQUIRE(rendered.value().commands[2].fill.has_value());
+  CHECK(rendered.value().commands[2].fill->type == print_engine::PaintType::Solid);
+  CHECK(rendered.value().commands[2].fill->solid.r == 255);
+  CHECK(rendered.value().commands[2].fill->solid.a == 1.0);
+  REQUIRE(rendered.value().commands[2].stroke.has_value());
+  CHECK(rendered.value().commands[2].stroke->width == 2.0);
+  CHECK(rendered.value().commands[2].stroke->cap == "butt");
+  CHECK(rendered.value().commands[2].stroke->join == "miter");
+  REQUIRE(rendered.value().commands[2].stroke->dash.size() == 2);
+  CHECK(rendered.value().commands[2].stroke->dash[0] == 1.0);
+  CHECK(rendered.value().commands[2].stroke->dash[1] == 2.0);
 }
 
 TEST_CASE("Phase 1 numeric drift stays below half a device dot at print DPIs") {
@@ -91,6 +103,23 @@ TEST_CASE("Phase 1 parses arc path commands without recomputing structural geome
   CHECK(commands[1].kind == PathCommandKind::ArcTo);
   REQUIRE(commands[1].values.size() == 7);
   CHECK(commands[1].values[0] == 8.0);
+}
+
+TEST_CASE("Phase 1 converts SVG arcs to cubic segments with bounded radial error") {
+  const auto first = arc_to_cubic_beziers(print_engine::Point{1.0, 0.0}, {1.0, 1.0, 0.0, 0.0, 1.0, -1.0, 0.0});
+  const auto second = arc_to_cubic_beziers(print_engine::Point{-1.0, 0.0}, {1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0});
+
+  REQUIRE(first.size() == 2);
+  REQUIRE(second.size() == 2);
+  CHECK(nearly_equal(first.back().end.x, -1.0, 0.0001));
+  CHECK(nearly_equal(first.back().end.y, 0.0, 0.0001));
+  CHECK(nearly_equal(second.back().end.x, 1.0, 0.0001));
+  CHECK(nearly_equal(second.back().end.y, 0.0, 0.0001));
+
+  for (const auto& segment : first) {
+    const double radius = std::sqrt(segment.end.x * segment.end.x + segment.end.y * segment.end.y);
+    CHECK(nearly_equal(radius, 1.0, 0.0001));
+  }
 }
 
 TEST_CASE("Phase 1 refuses malformed path data as a typed contract error") {

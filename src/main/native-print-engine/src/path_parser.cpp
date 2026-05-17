@@ -10,6 +10,19 @@
 namespace print_engine {
 namespace {
 
+inline constexpr double Pi = 3.14159265358979323846264338327950288;
+
+[[nodiscard]] double radians(double degrees) {
+  return degrees * Pi / 180.0;
+}
+
+[[nodiscard]] Point rotate(Point p, double cos_phi, double sin_phi) {
+  return Point{
+    p.x * cos_phi - p.y * sin_phi,
+    p.x * sin_phi + p.y * cos_phi
+  };
+}
+
 class PathParser {
 public:
   explicit PathParser(std::string_view input) : input_(input) {}
@@ -218,6 +231,100 @@ private:
 
 PathParseResult parse_absolute_svg_path(std::string_view path_data) {
   return PathParser(path_data).parse();
+}
+
+std::vector<CubicBezier> arc_to_cubic_beziers(
+    Point start,
+    const std::vector<double>& arc_values) {
+  if (arc_values.size() < 7) {
+    return {};
+  }
+
+  double rx = std::abs(arc_values[0]);
+  double ry = std::abs(arc_values[1]);
+  const double phi = radians(arc_values[2]);
+  const bool large_arc = std::abs(arc_values[3]) > 0.5;
+  const bool sweep = std::abs(arc_values[4]) > 0.5;
+  const Point end{arc_values[5], arc_values[6]};
+  if (rx == 0.0 || ry == 0.0 || (start.x == end.x && start.y == end.y)) {
+    return {};
+  }
+
+  const double cos_phi = std::cos(phi);
+  const double sin_phi = std::sin(phi);
+  const double dx = (start.x - end.x) / 2.0;
+  const double dy = (start.y - end.y) / 2.0;
+  const Point p1p{
+    cos_phi * dx + sin_phi * dy,
+    -sin_phi * dx + cos_phi * dy
+  };
+
+  const double lambda = (p1p.x * p1p.x) / (rx * rx) + (p1p.y * p1p.y) / (ry * ry);
+  if (lambda > 1.0) {
+    const double scale = std::sqrt(lambda);
+    rx *= scale;
+    ry *= scale;
+  }
+
+  const double rx2 = rx * rx;
+  const double ry2 = ry * ry;
+  const double x1p2 = p1p.x * p1p.x;
+  const double y1p2 = p1p.y * p1p.y;
+  const double denom = rx2 * y1p2 + ry2 * x1p2;
+  if (denom == 0.0) {
+    return {};
+  }
+  const double sign = large_arc == sweep ? -1.0 : 1.0;
+  const double factor = sign * std::sqrt(std::max(0.0, (rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2) / denom));
+  const Point cp{
+    factor * (rx * p1p.y / ry),
+    factor * (-ry * p1p.x / rx)
+  };
+  const Point center{
+    cos_phi * cp.x - sin_phi * cp.y + (start.x + end.x) / 2.0,
+    sin_phi * cp.x + cos_phi * cp.y + (start.y + end.y) / 2.0
+  };
+
+  auto angle_between = [](Point u, Point v) {
+    const double dot = u.x * v.x + u.y * v.y;
+    const double len = std::sqrt((u.x * u.x + u.y * u.y) * (v.x * v.x + v.y * v.y));
+    const double ratio = len == 0.0 ? 1.0 : std::clamp(dot / len, -1.0, 1.0);
+    const double sign = (u.x * v.y - u.y * v.x) < 0.0 ? -1.0 : 1.0;
+    return sign * std::acos(ratio);
+  };
+
+  const Point v1{(p1p.x - cp.x) / rx, (p1p.y - cp.y) / ry};
+  const Point v2{(-p1p.x - cp.x) / rx, (-p1p.y - cp.y) / ry};
+  double theta1 = angle_between(Point{1.0, 0.0}, v1);
+  double delta = angle_between(v1, v2);
+  if (!sweep && delta > 0.0) {
+    delta -= 2.0 * Pi;
+  } else if (sweep && delta < 0.0) {
+    delta += 2.0 * Pi;
+  }
+
+  const int segments = std::max(1, static_cast<int>(std::ceil(std::abs(delta) / (Pi / 2.0))));
+  const double delta_segment = delta / static_cast<double>(segments);
+  std::vector<CubicBezier> cubics;
+  cubics.reserve(static_cast<std::size_t>(segments));
+  for (int i = 0; i < segments; ++i) {
+    const double t1 = theta1 + static_cast<double>(i) * delta_segment;
+    const double t2 = t1 + delta_segment;
+    const double alpha = 4.0 / 3.0 * std::tan((t2 - t1) / 4.0);
+    const Point p0{rx * std::cos(t1), ry * std::sin(t1)};
+    const Point p3{rx * std::cos(t2), ry * std::sin(t2)};
+    const Point c1{p0.x - alpha * rx * std::sin(t1), p0.y + alpha * ry * std::cos(t1)};
+    const Point c2{p3.x + alpha * rx * std::sin(t2), p3.y - alpha * ry * std::cos(t2)};
+    const Point rc1 = rotate(c1, cos_phi, sin_phi);
+    const Point rc2 = rotate(c2, cos_phi, sin_phi);
+    const Point rend = rotate(p3, cos_phi, sin_phi);
+    cubics.push_back(CubicBezier{
+      Point{rc1.x + center.x, rc1.y + center.y},
+      Point{rc2.x + center.x, rc2.y + center.y},
+      Point{rend.x + center.x, rend.y + center.y}
+    });
+  }
+  return cubics;
 }
 
 } // namespace print_engine

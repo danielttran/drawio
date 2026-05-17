@@ -43,6 +43,10 @@ TEST_CASE("Phase 2 renders static pre-wrapped lines without fitting") {
   CHECK(text.font_family == "Arial");
   CHECK(text.font_size_px == 10.0);
   CHECK(nearly_equal(text.contract_box.y, 28.0, 0.0001));
+  CHECK(text.text_color.r == 0);
+  CHECK(text.text_color.g == 0);
+  CHECK(text.text_color.b == 0);
+  CHECK(text.text_color.a == 1.0);
 }
 
 TEST_CASE("Phase 2 applies deterministic horizontal alignment") {
@@ -72,7 +76,7 @@ TEST_CASE("Phase 2 applies deterministic vertical alignment and baseline correct
   CHECK(nearly_equal(text.device_box.y, 34.0 * 300.0 / 96.0, 0.0001));
 }
 
-TEST_CASE("Phase 2 missing font emits deterministic substitution notice") {
+TEST_CASE("Phase 2 missing font name is preserved for device substitution notice") {
   const auto loaded = load_baked_contract(static_text_fixture("DefinitelyMissingFont"));
   REQUIRE(loaded);
 
@@ -80,6 +84,7 @@ TEST_CASE("Phase 2 missing font emits deterministic substitution notice") {
 
   REQUIRE(rendered);
   const auto& text = rendered.value().commands[2];
-  CHECK(text.font_family == "Arial");
-  CHECK(text.degradation_notice);
+  CHECK(text.font_family == "DefinitelyMissingFont");
+  CHECK_FALSE(text.degradation_notice);
+  CHECK(rendered.value().notices.empty());
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "print_engine/geometry.hpp"
@@ -28,6 +29,40 @@ enum class BarcodeValueType {
   None,
   Static,
   Merge
+};
+
+enum class PaintType {
+  None,
+  Solid,
+  Linear,
+  Radial
+};
+
+struct Rgba {
+  int r = 0;
+  int g = 0;
+  int b = 0;
+  double a = 1.0;
+};
+
+struct PaintStop {
+  double offset = 0.0;
+  Rgba color;
+};
+
+struct Paint {
+  PaintType type = PaintType::None;
+  Rgba solid;
+  std::vector<PaintStop> stops;
+};
+
+struct StrokeStyle {
+  Paint paint;
+  double width = 0.0;
+  std::string cap;
+  std::string join;
+  double miter_limit = 0.0;
+  std::vector<double> dash;
 };
 
 struct SchemaVersion {
@@ -61,9 +96,9 @@ struct PaintNodeSummary {
   BarcodeValueType barcode_value_type = BarcodeValueType::None;
   std::string barcode_symbology;
   std::string barcode_static_value;
-  bool has_fill = false;
-  bool has_stroke = false;
-  double stroke_width = 0.0;
+  std::optional<Paint> fill;
+  std::optional<StrokeStyle> stroke;
+  Rgba font_color;
 };
 
 struct TileSummary {

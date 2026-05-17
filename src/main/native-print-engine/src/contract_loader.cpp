@@ -491,6 +491,44 @@ private:
   return false;
 }
 
+[[nodiscard]] int hex_value(char ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return ch - 'a' + 10;
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return ch - 'A' + 10;
+  }
+  return -1;
+}
+
+[[nodiscard]] Result<Rgba, ContractError> parse_hex_color(
+    const std::string& value,
+    double alpha,
+    std::string path) {
+  if (value.size() != 7 || value[0] != '#') {
+    return Result<Rgba, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, std::move(path), "color must be #rrggbb"));
+  }
+  int values[6] = {};
+  for (std::size_t index = 1; index < value.size(); ++index) {
+    const int parsed = hex_value(value[index]);
+    if (parsed < 0) {
+      return Result<Rgba, ContractError>::err(
+        error(ContractErrorCode::ContractValueError, std::move(path), "color must be #rrggbb"));
+    }
+    values[index - 1] = parsed;
+  }
+  return Result<Rgba, ContractError>::ok(Rgba{
+    values[0] * 16 + values[1],
+    values[2] * 16 + values[3],
+    values[4] * 16 + values[5],
+    alpha
+  });
+}
+
 [[nodiscard]] Result<Unit, ContractError> reject_key(
     const JsonObject& object,
     std::string_view key,
@@ -549,136 +587,188 @@ private:
   return Result<Rect, ContractError>::ok(Rect{x.value(), y.value(), w.value(), h.value()});
 }
 
-[[nodiscard]] Result<Unit, ContractError> validate_paint(const JsonObject& paint, std::string path) {
+[[nodiscard]] Result<Paint, ContractError> read_paint(const JsonObject& paint, std::string path) {
   auto type = require_string(paint, "type", path + ".type");
   if (!type) {
-    return Result<Unit, ContractError>::err(type.error());
+    return Result<Paint, ContractError>::err(type.error());
   }
 
   if (type.value() == "solid") {
     auto color = require_string(paint, "color", path + ".color");
     if (!color) {
-      return Result<Unit, ContractError>::err(color.error());
+      return Result<Paint, ContractError>::err(color.error());
     }
     auto alpha = require_number(paint, "alpha", path + ".alpha");
     if (!alpha) {
-      return Result<Unit, ContractError>::err(alpha.error());
+      return Result<Paint, ContractError>::err(alpha.error());
     }
     if (alpha.value() < 0.0 || alpha.value() > 1.0) {
-      return Result<Unit, ContractError>::err(
+      return Result<Paint, ContractError>::err(
         error(ContractErrorCode::ContractValueError, path + ".alpha", "alpha must be 0..1"));
     }
-    return Result<Unit, ContractError>::ok(Unit{});
+    auto rgba = parse_hex_color(color.value(), alpha.value(), path + ".color");
+    if (!rgba) {
+      return Result<Paint, ContractError>::err(rgba.error());
+    }
+    Paint result;
+    result.type = PaintType::Solid;
+    result.solid = rgba.value();
+    return Result<Paint, ContractError>::ok(std::move(result));
   }
 
   if (type.value() == "linear" || type.value() == "radial") {
     auto stops = require_array(paint, "stops", path + ".stops");
     if (!stops) {
-      return Result<Unit, ContractError>::err(stops.error());
+      return Result<Paint, ContractError>::err(stops.error());
     }
     if (stops.value()->empty()) {
-      return Result<Unit, ContractError>::err(
+      return Result<Paint, ContractError>::err(
         error(ContractErrorCode::ContractValueError, path + ".stops", "paint needs at least one stop"));
     }
-    return Result<Unit, ContractError>::ok(Unit{});
+    Paint result;
+    result.type = type.value() == "linear" ? PaintType::Linear : PaintType::Radial;
+    for (std::size_t index = 0; index < stops.value()->size(); ++index) {
+      const std::string stop_path = path + ".stops[" + std::to_string(index) + "]";
+      const JsonObject* stop = as_object((*stops.value())[index]);
+      if (stop == nullptr) {
+        return Result<Paint, ContractError>::err(
+          error(ContractErrorCode::ContractShapeError, stop_path, "expected paint stop object"));
+      }
+      auto offset = require_number(*stop, "offset", stop_path + ".offset");
+      if (!offset) {
+        return Result<Paint, ContractError>::err(offset.error());
+      }
+      if (offset.value() < 0.0 || offset.value() > 1.0) {
+        return Result<Paint, ContractError>::err(
+          error(ContractErrorCode::ContractValueError, stop_path + ".offset", "stop offset must be 0..1"));
+      }
+      auto color = require_string(*stop, "color", stop_path + ".color");
+      if (!color) {
+        return Result<Paint, ContractError>::err(color.error());
+      }
+      double alpha_value = 1.0;
+      if (const JsonValue* alpha = find(*stop, "alpha")) {
+        const double* parsed = as_number(*alpha);
+        if (parsed == nullptr || *parsed < 0.0 || *parsed > 1.0) {
+          return Result<Paint, ContractError>::err(
+            error(ContractErrorCode::ContractValueError, stop_path + ".alpha", "alpha must be 0..1"));
+        }
+        alpha_value = *parsed;
+      }
+      auto rgba = parse_hex_color(color.value(), alpha_value, stop_path + ".color");
+      if (!rgba) {
+        return Result<Paint, ContractError>::err(rgba.error());
+      }
+      result.stops.push_back(PaintStop{offset.value(), rgba.value()});
+    }
+    std::sort(result.stops.begin(), result.stops.end(), [](const PaintStop& a, const PaintStop& b) {
+      return a.offset < b.offset;
+    });
+    return Result<Paint, ContractError>::ok(std::move(result));
   }
 
-  return Result<Unit, ContractError>::err(
+  return Result<Paint, ContractError>::err(
     error(ContractErrorCode::ContractEnumError, path + ".type", "unknown paint type"));
 }
 
-[[nodiscard]] Result<double, ContractError> validate_optional_stroke(
+[[nodiscard]] Result<std::optional<StrokeStyle>, ContractError> read_optional_stroke(
     const JsonObject& node,
-    std::string path,
-    bool& has_stroke) {
+    std::string path) {
   const JsonValue* stroke_value = find(node, "stroke");
   if (stroke_value == nullptr || std::holds_alternative<std::nullptr_t>(stroke_value->storage)) {
-    has_stroke = false;
-    return Result<double, ContractError>::ok(0.0);
+    return Result<std::optional<StrokeStyle>, ContractError>::ok(std::nullopt);
   }
   const JsonObject* stroke = as_object(*stroke_value);
   if (stroke == nullptr) {
-    return Result<double, ContractError>::err(
+    return Result<std::optional<StrokeStyle>, ContractError>::err(
       error(ContractErrorCode::ContractShapeError, path, "expected stroke object or null"));
   }
   auto paint = require_object(*stroke, "paint", path + ".paint");
   if (!paint) {
-    return Result<double, ContractError>::err(paint.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(paint.error());
   }
-  auto valid_paint = validate_paint(*paint.value(), path + ".paint");
-  if (!valid_paint) {
-    return Result<double, ContractError>::err(valid_paint.error());
+  auto parsed_paint = read_paint(*paint.value(), path + ".paint");
+  if (!parsed_paint) {
+    return Result<std::optional<StrokeStyle>, ContractError>::err(parsed_paint.error());
   }
   auto width = require_number(*stroke, "width", path + ".width");
   if (!width) {
-    return Result<double, ContractError>::err(width.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(width.error());
   }
   auto positive_width = require_positive(width.value(), path + ".width", "stroke width must be positive");
   if (!positive_width) {
-    return Result<double, ContractError>::err(positive_width.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(positive_width.error());
   }
   auto cap = require_string(*stroke, "cap", path + ".cap");
   if (!cap) {
-    return Result<double, ContractError>::err(cap.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(cap.error());
   }
   if (!is_one_of(cap.value(), {"butt", "round", "square"})) {
-    return Result<double, ContractError>::err(
+    return Result<std::optional<StrokeStyle>, ContractError>::err(
       error(ContractErrorCode::ContractEnumError, path + ".cap", "unknown stroke cap"));
   }
   auto join = require_string(*stroke, "join", path + ".join");
   if (!join) {
-    return Result<double, ContractError>::err(join.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(join.error());
   }
   if (!is_one_of(join.value(), {"miter", "round", "bevel"})) {
-    return Result<double, ContractError>::err(
+    return Result<std::optional<StrokeStyle>, ContractError>::err(
       error(ContractErrorCode::ContractEnumError, path + ".join", "unknown stroke join"));
   }
   auto miter = require_number(*stroke, "miterLimit", path + ".miterLimit");
   if (!miter) {
-    return Result<double, ContractError>::err(miter.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(miter.error());
   }
   auto positive_miter = require_positive(miter.value(), path + ".miterLimit", "miterLimit must be positive");
   if (!positive_miter) {
-    return Result<double, ContractError>::err(positive_miter.error());
+    return Result<std::optional<StrokeStyle>, ContractError>::err(positive_miter.error());
   }
   const JsonValue* dash_value = find(*stroke, "dash");
   if (dash_value == nullptr) {
-    return Result<double, ContractError>::err(
+    return Result<std::optional<StrokeStyle>, ContractError>::err(
       error(ContractErrorCode::ContractShapeError, path + ".dash", "dash is required"));
   }
+  std::vector<double> dash_values;
   if (!std::holds_alternative<std::nullptr_t>(dash_value->storage)) {
     const JsonArray* dash = as_array(*dash_value);
     if (dash == nullptr) {
-      return Result<double, ContractError>::err(
+      return Result<std::optional<StrokeStyle>, ContractError>::err(
         error(ContractErrorCode::ContractShapeError, path + ".dash", "dash must be an array or null"));
     }
     for (std::size_t index = 0; index < dash->size(); ++index) {
       const double* number = as_number((*dash)[index]);
       if (number == nullptr || *number <= 0.0 || !std::isfinite(*number)) {
-        return Result<double, ContractError>::err(
+        return Result<std::optional<StrokeStyle>, ContractError>::err(
           error(ContractErrorCode::ContractValueError, path + ".dash[" + std::to_string(index) + "]", "dash entries must be positive numbers"));
       }
+      dash_values.push_back(*number);
     }
   }
-  has_stroke = true;
-  return Result<double, ContractError>::ok(width.value());
+  StrokeStyle style;
+  style.paint = parsed_paint.value();
+  style.width = width.value();
+  style.cap = cap.value();
+  style.join = join.value();
+  style.miter_limit = miter.value();
+  style.dash = std::move(dash_values);
+  return Result<std::optional<StrokeStyle>, ContractError>::ok(std::move(style));
 }
 
-[[nodiscard]] Result<bool, ContractError> validate_optional_fill(const JsonObject& node, std::string path) {
+[[nodiscard]] Result<std::optional<Paint>, ContractError> read_optional_fill(const JsonObject& node, std::string path) {
   const JsonValue* fill_value = find(node, "fill");
   if (fill_value == nullptr || std::holds_alternative<std::nullptr_t>(fill_value->storage)) {
-    return Result<bool, ContractError>::ok(false);
+    return Result<std::optional<Paint>, ContractError>::ok(std::nullopt);
   }
   const JsonObject* fill = as_object(*fill_value);
   if (fill == nullptr) {
-    return Result<bool, ContractError>::err(
+    return Result<std::optional<Paint>, ContractError>::err(
       error(ContractErrorCode::ContractShapeError, path, "expected fill object or null"));
   }
-  auto valid = validate_paint(*fill, path);
-  if (!valid) {
-    return Result<bool, ContractError>::err(valid.error());
+  auto parsed = read_paint(*fill, path);
+  if (!parsed) {
+    return Result<std::optional<Paint>, ContractError>::err(parsed.error());
   }
-  return Result<bool, ContractError>::ok(true);
+  return Result<std::optional<Paint>, ContractError>::ok(parsed.value());
 }
 
 [[nodiscard]] Result<Unit, ContractError> validate_text_content(
@@ -796,21 +886,19 @@ private:
       parse_error.path = path + ".d";
       return Result<PaintNodeSummary, ContractError>::err(parse_error);
     }
-    auto fill = validate_optional_fill(node, path + ".fill");
+    auto fill = read_optional_fill(node, path + ".fill");
     if (!fill) {
       return Result<PaintNodeSummary, ContractError>::err(fill.error());
     }
-    bool has_stroke = false;
-    auto stroke_width = validate_optional_stroke(node, path + ".stroke", has_stroke);
-    if (!stroke_width) {
-      return Result<PaintNodeSummary, ContractError>::err(stroke_width.error());
+    auto stroke = read_optional_stroke(node, path + ".stroke");
+    if (!stroke) {
+      return Result<PaintNodeSummary, ContractError>::err(stroke.error());
     }
     PaintNodeSummary summary{PaintKind::Path};
     summary.box = parsed.value().bounds;
     summary.path_data = d.value();
-    summary.has_fill = fill.value();
-    summary.has_stroke = has_stroke;
-    summary.stroke_width = stroke_width.value();
+    summary.fill = fill.value();
+    summary.stroke = stroke.value();
     return Result<PaintNodeSummary, ContractError>::ok(std::move(summary));
   }
 
@@ -885,6 +973,11 @@ private:
     summary.font_size_px = size_px.value();
     summary.align_h = align_h.value();
     summary.align_v = align_v.value();
+    auto font_rgba = parse_hex_color(color.value(), 1.0, path + ".font.color");
+    if (!font_rgba) {
+      return Result<PaintNodeSummary, ContractError>::err(font_rgba.error());
+    }
+    summary.font_color = font_rgba.value();
 
     auto content_type = require_string(*content.value(), "type", path + ".content.type");
     if (!content_type) {
