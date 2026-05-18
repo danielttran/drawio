@@ -22,13 +22,15 @@ enum class PaintKind {
 enum class TextContentType {
   None,
   Static,
-  Merge
+  Merge,
+  Rich
 };
 
 enum class BarcodeValueType {
   None,
   Static,
-  Merge
+  Merge,
+  Rich
 };
 
 enum class PaintType {
@@ -70,6 +72,25 @@ struct SchemaVersion {
   int minor = 0;
 };
 
+
+
+struct RichRun {
+  std::string text;
+  std::string font_family;
+  double size_px = 0.0;
+  int weight = 400;
+  bool italic = false;
+  bool underline = false;
+  bool strikethrough = false;
+  Rgba color;
+};
+
+struct RichParagraph {
+  std::string align;
+  double indent_px = 0.0;
+  std::vector<RichRun> runs;
+};
+
 struct PaintNodeSummary {
   PaintKind kind;
   Rect box;
@@ -91,6 +112,7 @@ struct PaintNodeSummary {
   std::string align_v;
   TextContentType text_content_type = TextContentType::None;
   std::vector<std::string> static_lines;
+  std::vector<RichParagraph> rich_paragraphs;
   std::string merge_key;
   std::string merge_sample;
   int merge_max_len = 0;
@@ -125,6 +147,7 @@ struct BakedDocument {
   bool has_merge_text = false;
   bool has_barcode = false;
   bool has_degradation_notice = false;
+  bool has_rich_text = false;
 };
 
 } // namespace print_engine

@@ -196,7 +196,8 @@ NativeSurfaceResult render_to_native_surface_trace(
       command.contract_box,
       command.device_box,
       command.label,
-      command.style_signature
+      command.style_signature,
+      command.rich_paragraphs
     });
   }
 

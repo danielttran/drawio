@@ -505,6 +505,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       Gdiplus::FontFamily arial(L"Arial");
       const bool font_available = ff.IsAvailable();
       const Gdiplus::FontFamily& use = font_available ? ff : arial;
+      std::set<std::string> rich_missing_fonts;
       if (!font_available) {
         push_notice_unique(result.notices, DegradationNotice{
             DegradationNoticeType::FontSubstitution,
@@ -528,13 +529,27 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
 
       // Hard line breaks from the contract are honored verbatim.
       std::vector<std::wstring> paragraphs;
-      {
+      std::vector<std::string> paragraph_align;
+      std::vector<double> paragraph_indent;
+      if (!c.rich_paragraphs.empty()) {
+        for (const auto& p : c.rich_paragraphs) {
+          std::wstring line;
+          for (const auto& r : p.runs) {
+            line += widen(r.text);
+          }
+          paragraphs.push_back(std::move(line));
+          paragraph_align.push_back(p.align.empty() ? c.align_h : p.align);
+          paragraph_indent.push_back(std::max(0.0, p.indent_px * scale));
+        }
+      } else {
         const std::wstring all = widen(c.label);
         std::size_t pos = 0;
         while (true) {
           const std::size_t nl = all.find(L'\n', pos);
           paragraphs.push_back(all.substr(
               pos, nl == std::wstring::npos ? std::wstring::npos : nl - pos));
+          paragraph_align.push_back(c.align_h);
+          paragraph_indent.push_back(0.0);
           if (nl == std::wstring::npos) break;
           pos = nl + 1;
         }
@@ -542,8 +557,39 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       const bool do_wrap = (c.wrap == "word");
       const int style = font_style_for(c);
 
+      struct RichLineStyle {
+        std::wstring family;
+        int style = 0;
+        double em = 0.0;
+        Gdiplus::Color color;
+      };
+      const double base_node_em = std::max(1.0, c.font_size_px * scale);
+      auto style_for_para = [&](std::size_t pi, double em_factor) -> RichLineStyle {
+        RichLineStyle out{family, style, base_node_em * em_factor, gdip_color(c.text_color)};
+        if (!c.rich_paragraphs.empty() && pi < c.rich_paragraphs.size() &&
+            !c.rich_paragraphs[pi].runs.empty()) {
+          const auto& run = c.rich_paragraphs[pi].runs[0];
+          out.family = widen(run.font_family.empty() ? std::string("Arial") : run.font_family);
+          out.style = 0;
+          if (run.weight >= 600) out.style |= Gdiplus::FontStyleBold;
+          if (run.italic) out.style |= Gdiplus::FontStyleItalic;
+          out.color = gdip_color(run.color);
+          out.em = std::max(1.0, run.size_px * scale * em_factor);
+        }
+        return out;
+      };
+
+      auto style_for_run = [&](const RichRun& run, double em_factor) -> RichLineStyle {
+        RichLineStyle out{widen(run.font_family.empty() ? std::string("Arial") : run.font_family), 0,
+                          std::max(1.0, run.size_px * scale * em_factor), gdip_color(run.color)};
+        if (run.weight >= 600) out.style |= Gdiplus::FontStyleBold;
+        if (run.italic) out.style |= Gdiplus::FontStyleItalic;
+        return out;
+      };
+
       auto measure_w = [&](const Gdiplus::Font& f,
                            const std::wstring& s) -> double {
+
         if (s.empty()) return 0.0;
         Gdiplus::RectF bb;
         g.MeasureString(s.c_str(), -1, &f,
@@ -551,57 +597,174 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         return bb.Width;
       };
 
+      struct Seg {
+        std::wstring text;
+        std::size_t para = 0;
+        RichLineStyle st;
+        bool underline = false;
+        bool strikethrough = false;
+      };
+      struct SegMetrics {
+        double width = 0.0;
+        double height = 0.0;
+        double ascent = 0.0;
+        double descent = 0.0;
+      };
+      struct Line {
+        std::vector<Seg> segs;
+        std::size_t para = 0;
+        double width = 0.0;
+        double height = 0.0;
+      };
       struct Layout {
-        std::vector<std::wstring> lines;
+        std::vector<Line> lines;
         double line_h = 0.0;
         double block_w = 0.0;
         double block_h = 0.0;
       };
+
+      auto measure_seg = [&](const Seg& seg) -> SegMetrics {
+        SegMetrics m;
+        Gdiplus::FontFamily ff_line(seg.st.family.c_str());
+        const Gdiplus::FontFamily& use_line = ff_line.IsAvailable() ? ff_line : arial;
+        Gdiplus::Font fm(&use_line, static_cast<Gdiplus::REAL>(seg.st.em), seg.st.style,
+                         Gdiplus::UnitPixel);
+        m.width = measure_w(fm, seg.text);
+        m.height = fm.GetHeight(&g);
+        const auto emh = use_line.GetEmHeight(seg.st.style);
+        const auto asc = use_line.GetCellAscent(seg.st.style);
+        if (emh > 0) {
+          m.ascent = seg.st.em * (static_cast<double>(asc) / static_cast<double>(emh));
+          const auto des = use_line.GetCellDescent(seg.st.style);
+          m.descent = seg.st.em * (static_cast<double>(des) / static_cast<double>(emh));
+        } else {
+          m.ascent = m.height * 0.8;
+          m.descent = std::max(1.0, m.height - m.ascent);
+        }
+        return m;
+      };
+
       auto build = [&](double em) -> Layout {
         Layout L;
         Gdiplus::Font f(&use, static_cast<Gdiplus::REAL>(em), style,
                         Gdiplus::UnitPixel);
         L.line_h = f.GetHeight(&g);
-        for (const auto& para : paragraphs) {
-          if (!do_wrap || para.empty()) {
-            L.lines.push_back(para);
-            continue;
-          }
-          std::wstring cur;
-          std::size_t i = 0;
-          while (i < para.size()) {
-            std::size_t sp = para.find(L' ', i);
-            const std::wstring word = para.substr(
-                i, sp == std::wstring::npos ? std::wstring::npos : sp - i);
-            const std::wstring cand = cur.empty() ? word : cur + L" " + word;
-            if (cur.empty() ||
-                measure_w(f, cand) <= static_cast<double>(box.Width)) {
-              cur = cand;
-            } else {
+
+        if (!c.rich_paragraphs.empty()) {
+          for (std::size_t pi = 0; pi < c.rich_paragraphs.size(); ++pi) {
+            const auto& para = c.rich_paragraphs[pi];
+            const double indent = pi < paragraph_indent.size() ? paragraph_indent[pi] : 0.0;
+            const double avail = std::max(1.0, static_cast<double>(box.Width) - indent);
+            Line cur; cur.para = pi;
+            if (para.runs.empty()) {
+              cur.height = L.line_h;
               L.lines.push_back(cur);
-              cur = word;
+              continue;
             }
-            if (sp == std::wstring::npos) break;
-            i = sp + 1;
+            for (const auto& run : para.runs) {
+              const auto st = style_for_run(run, em / base_node_em);
+              std::wstring txt = widen(run.text);
+              std::size_t pos = 0;
+              while (pos <= txt.size()) {
+                std::size_t sp = txt.find(L' ', pos);
+                std::wstring tok = txt.substr(pos, sp == std::wstring::npos ? std::wstring::npos : sp - pos);
+                if (sp != std::wstring::npos) tok += L" ";
+                if (tok.empty() && sp == std::wstring::npos) break;
+                Seg seg{tok, pi, st, run.underline, run.strikethrough};
+                auto m = measure_seg(seg);
+                const double w = m.width;
+                const double h = m.height;
+                if (do_wrap && !cur.segs.empty() && (cur.width + w) > avail) {
+                  L.lines.push_back(cur);
+                  cur = Line{}; cur.para = pi;
+                }
+                cur.segs.push_back(seg);
+                cur.width += w;
+                cur.height = std::max(cur.height, h);
+                if (sp == std::wstring::npos) break;
+                pos = sp + 1;
+              }
+            }
+            if (!cur.segs.empty() || para.runs.empty()) L.lines.push_back(cur);
           }
-          L.lines.push_back(cur);
+        } else {
+          for (std::size_t pi = 0; pi < paragraphs.size(); ++pi) {
+            const auto& para = paragraphs[pi];
+            const double indent = pi < paragraph_indent.size() ? paragraph_indent[pi] : 0.0;
+            const double avail = std::max(1.0, static_cast<double>(box.Width) - indent);
+            Line cur; cur.para = pi;
+            if (!do_wrap || para.empty()) {
+              const auto st = style_for_para(pi, em / base_node_em);
+              Seg seg{para, pi, st, false, false};
+              auto m = measure_seg(seg);
+              const double w = m.width;
+              const double h = m.height;
+              cur.segs.push_back(seg); cur.width = w; cur.height = h;
+              L.lines.push_back(cur);
+              continue;
+            }
+            std::wstring curw;
+            std::size_t i = 0;
+            while (i < para.size()) {
+              std::size_t sp = para.find(L' ', i);
+              const std::wstring word = para.substr(i, sp == std::wstring::npos ? std::wstring::npos : sp - i);
+              const std::wstring cand = curw.empty() ? word : curw + L" " + word;
+              const auto st = style_for_para(pi, em / base_node_em);
+              Seg test{cand, pi, st, false, false};
+              auto tm = measure_seg(test);
+            const double tw = tm.width;
+              if (curw.empty() || tw <= avail) {
+                curw = cand;
+              } else {
+                Seg seg{curw, pi, st, false, false};
+                auto m = measure_seg(seg);
+                const double w = m.width;
+                const double h = m.height;
+                cur.segs.push_back(seg); cur.width = w; cur.height = h;
+                L.lines.push_back(cur);
+                cur = Line{}; cur.para = pi;
+                curw = word;
+              }
+              if (sp == std::wstring::npos) break;
+              i = sp + 1;
+            }
+            const auto st = style_for_para(pi, em / base_node_em);
+            Seg seg{curw, pi, st, false, false};
+            auto m = measure_seg(seg);
+            const double w = m.width;
+            const double h = m.height;
+            cur.segs.push_back(seg); cur.width = w; cur.height = h;
+            L.lines.push_back(cur);
+          }
         }
-        L.block_h = static_cast<double>(L.lines.size()) * L.line_h;
+
         for (const auto& ln : L.lines) {
-          Gdiplus::Font fm(&use, static_cast<Gdiplus::REAL>(em), style,
-                           Gdiplus::UnitPixel);
-          L.block_w = std::max(L.block_w, measure_w(fm, ln));
+          L.block_h += ln.height > 0.0 ? ln.height : L.line_h;
+          L.block_w = std::max(L.block_w, ln.width);
         }
         return L;
       };
-
-      double em = std::max(1.0, c.font_size_px * scale);
-      const double floor_em = std::max(1.0, c.shrink_floor_px * scale);
+      double em = base_node_em;
+      double floor_em = std::max(1.0, c.shrink_floor_px * scale);
+      double floor_factor = floor_em / std::max(1.0, base_node_em);
+      if (!c.rich_paragraphs.empty() && c.shrink_floor_px > 0.0) {
+        double min_run_px = 1.0e9;
+        for (const auto& p : c.rich_paragraphs) {
+          for (const auto& r : p.runs) {
+            min_run_px = std::min(min_run_px, std::max(1.0, r.size_px * scale));
+          }
+        }
+        if (min_run_px < 1.0e8) {
+          floor_factor = std::max(0.0, (c.shrink_floor_px * scale) / min_run_px);
+          floor_em = std::max(1.0, base_node_em * floor_factor);
+        }
+      }
       Layout lay = build(em);
       if (c.overflow == "shrink") {
         while ((lay.block_h > box.Height || lay.block_w > box.Width) &&
                em > floor_em) {
-          em = std::max(floor_em, em - std::max(0.5, em * 0.06));
+          const double next = em - std::max(0.5, em * 0.06);
+          em = std::max(base_node_em * floor_factor, std::max(floor_em, next));
           lay = build(em);
         }
       }
@@ -631,21 +794,64 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       if (c.overflow == "clip") {
         g.SetClip(box);
       }
-      Gdiplus::Font font(&use, static_cast<Gdiplus::REAL>(em), style,
-                         Gdiplus::UnitPixel);
-      for (const auto& ln : lay.lines) {
-        const double w = measure_w(font, ln);
-        double x = box.X;
-        if (c.align_h == "center") {
-          x = box.X + (static_cast<double>(box.Width) - w) / 2.0;
-        } else if (c.align_h == "right") {
-          x = box.X + static_cast<double>(box.Width) - w;
+      for (std::size_t line_index = 0; line_index < lay.lines.size(); ++line_index) {
+        const auto& line = lay.lines[line_index];
+        const std::size_t pi = line.para;
+        const double indent = pi < paragraph_indent.size() ? paragraph_indent[pi] : 0.0;
+        const double avail_w = std::max(1.0, static_cast<double>(box.Width) - indent);
+        double x = box.X + indent;
+        const std::string h = pi < paragraph_align.size() ? paragraph_align[pi] : c.align_h;
+        if (h == "center") x = box.X + indent + (avail_w - line.width) / 2.0;
+        else if (h == "right") x = box.X + indent + avail_w - line.width;
+
+        double line_max_ascent = 0.0;
+        std::vector<SegMetrics> segm;
+        segm.reserve(line.segs.size());
+        for (const auto& seg : line.segs) {
+          auto m = measure_seg(seg);
+          line_max_ascent = std::max(line_max_ascent, m.ascent);
+          segm.push_back(m);
         }
-        g.DrawString(ln.c_str(), -1, &font,
-                     Gdiplus::PointF(static_cast<Gdiplus::REAL>(x),
-                                     static_cast<Gdiplus::REAL>(y)),
-                     fmt.get(), &text_brush);
-        y += lay.line_h;
+        for (std::size_t si = 0; si < line.segs.size(); ++si) {
+          const auto& seg = line.segs[si];
+          const auto& m = segm[si];
+          Gdiplus::SolidBrush seg_brush(seg.st.color);
+          Gdiplus::FontFamily seg_ff(seg.st.family.c_str());
+          const bool seg_font_available = seg_ff.IsAvailable();
+          const Gdiplus::FontFamily& seg_use = seg_font_available ? seg_ff : arial;
+          if (!seg_font_available) {
+            const std::string missing = narrow(seg.st.family);
+            if (rich_missing_fonts.insert(missing).second) {
+              push_notice_unique(result.notices, DegradationNotice{
+                  DegradationNoticeType::FontSubstitution,
+                  current_page_id,
+                  "font substituted: " + missing + " -> Arial",
+                  {},
+                  {}});
+            }
+          }
+          Gdiplus::Font seg_font(&seg_use, static_cast<Gdiplus::REAL>(seg.st.em), seg.st.style, Gdiplus::UnitPixel);
+          const double dy = std::max(0.0, line_max_ascent - m.ascent);
+          const double draw_y = y + dy;
+          g.DrawString(seg.text.c_str(), -1, &seg_font,
+                       Gdiplus::PointF(static_cast<Gdiplus::REAL>(x), static_cast<Gdiplus::REAL>(draw_y)),
+                       fmt.get(), &seg_brush);
+          const double thickness = std::max(1.0, seg.st.em * 0.06);
+          Gdiplus::Pen deco_pen(seg.st.color, static_cast<Gdiplus::REAL>(thickness));
+          const double baseline_y = draw_y + m.ascent;
+          if (seg.underline) {
+            const double uy = baseline_y + m.descent * 0.25;
+            g.DrawLine(&deco_pen, static_cast<Gdiplus::REAL>(x), static_cast<Gdiplus::REAL>(uy),
+                       static_cast<Gdiplus::REAL>(x + m.width), static_cast<Gdiplus::REAL>(uy));
+          }
+          if (seg.strikethrough) {
+            const double sy = draw_y + m.ascent * 0.5;
+            g.DrawLine(&deco_pen, static_cast<Gdiplus::REAL>(x), static_cast<Gdiplus::REAL>(sy),
+                       static_cast<Gdiplus::REAL>(x + m.width), static_cast<Gdiplus::REAL>(sy));
+          }
+          x += m.width;
+        }
+        y += (line.height > 0.0 ? line.height : lay.line_h);
       }
       g.Restore(clip_state);
     } else if (c.kind == EmittedKind::Barcode || c.kind == EmittedKind::Svg) {

@@ -79,3 +79,6 @@ The following are intentionally not claimed as complete because the spec itself 
 - Concrete SVG rasterizer library and license clearance.
 - Real enLabel barcode SDK adapter and exact symbology/params.
 - Radial-gradient pixel characterization under the eventual deterministic bitmap sink.
+
+
+| rich text paragraphs/runs (drawio HTML labels) | Partially covered | exporter rich extraction + contract loader rich validation + renderer/native bridge forwarding + sink paragraph style/align/indent; full mixed-run baseline/wrap goldens pending |

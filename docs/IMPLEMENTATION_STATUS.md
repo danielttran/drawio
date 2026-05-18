@@ -77,3 +77,12 @@ These are not inferred in code because the spec says they must be escalated or d
 - Custom stock protocol/UI shape for dimensions that do not map to a named printer paper ID.
 
 See `SPEC_COVERAGE.md` for the full section-by-section coverage matrix.
+
+
+## Rich-text (HTML labels) progress
+
+- Additive contract support for `content.type:"rich"` is implemented in loader with validation and loud enum refusal for unknown content types.
+- Exporter emits rich paragraphs/runs for HTML labels with feature-flag kill switch and fallback static path.
+- Renderer and native bridge forward `rich_paragraphs` through emitted/native draw commands.
+- Win32 sink now consumes rich paragraph alignment/indent and applies paragraph run style for line measurement and draw with rich font-substitution notices.
+- Remaining: full mixed-run line layout (run-by-run wrapping, baseline alignment, explicit underline/strikethrough line drawing), plus golden suite/hardware validation.

@@ -790,6 +790,10 @@ private:
   return Result<std::optional<Paint>, ContractError>::ok(parsed.value());
 }
 
+[[nodiscard]] Result<std::vector<RichParagraph>, ContractError> read_rich_paragraphs(
+    const JsonObject& content,
+    std::string path);
+
 [[nodiscard]] Result<Unit, ContractError> validate_text_content(
     const JsonObject& content,
     BakedDocument& document,
@@ -809,6 +813,17 @@ private:
       if (!rejected) {
         return rejected;
       }
+    }
+    return Result<Unit, ContractError>::ok(Unit{});
+  }
+
+  if (type.value() == "rich") {
+    document.has_rich_text = true;
+    auto paragraphs = read_rich_paragraphs(content, path);
+    if (!paragraphs) return Result<Unit, ContractError>::err(paragraphs.error());
+    for (const char* key : {"lines", "key", "sample", "maxLen", "wrap", "overflow", "shrinkFloorPx"}) {
+      auto rejected = reject_key(content, key, path + "." + std::string(key));
+      if (!rejected) return rejected;
     }
     return Result<Unit, ContractError>::ok(Unit{});
   }
@@ -862,6 +877,67 @@ private:
   }
 
   return Result<Unit, ContractError>::ok(Unit{});
+}
+
+[[nodiscard]] Result<std::vector<RichParagraph>, ContractError> read_rich_paragraphs(
+    const JsonObject& content,
+    std::string path) {
+  auto paragraphs = require_array(content, "paragraphs", path + ".paragraphs");
+  if (!paragraphs) {
+    return Result<std::vector<RichParagraph>, ContractError>::err(paragraphs.error());
+  }
+  if (paragraphs.value()->empty()) {
+    return Result<std::vector<RichParagraph>, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, path + ".paragraphs", "paragraphs must not be empty"));
+  }
+  std::vector<RichParagraph> out;
+  for (std::size_t i = 0; i < paragraphs.value()->size(); ++i) {
+    const auto item_path = path + ".paragraphs[" + std::to_string(i) + "]";
+    const JsonObject* para = as_object((*paragraphs.value())[i]);
+    if (para == nullptr) {
+      return Result<std::vector<RichParagraph>, ContractError>::err(
+        error(ContractErrorCode::ContractShapeError, item_path, "expected paragraph object"));
+    }
+    auto align = require_string(*para, "align", item_path + ".align");
+    if (!align) return Result<std::vector<RichParagraph>, ContractError>::err(align.error());
+    if (!is_one_of(align.value(), {"left", "center", "right"})) {
+      return Result<std::vector<RichParagraph>, ContractError>::err(
+        error(ContractErrorCode::ContractEnumError, item_path + ".align", "unknown paragraph alignment"));
+    }
+    RichParagraph rp; rp.align = align.value();
+    const JsonValue* indent_v = find(*para, "indentPx");
+    if (indent_v != nullptr) {
+      const double* n = as_number(*indent_v);
+      if (n == nullptr || *n < 0.0) {
+        return Result<std::vector<RichParagraph>, ContractError>::err(
+          error(ContractErrorCode::ContractValueError, item_path + ".indentPx", "indentPx must be >= 0"));
+      }
+      rp.indent_px = *n;
+    }
+    auto runs = require_array(*para, "runs", item_path + ".runs");
+    if (!runs) return Result<std::vector<RichParagraph>, ContractError>::err(runs.error());
+    for (std::size_t r = 0; r < runs.value()->size(); ++r) {
+      const auto run_path = item_path + ".runs[" + std::to_string(r) + "]";
+      const JsonObject* run = as_object((*runs.value())[r]);
+      if (run == nullptr) {
+        return Result<std::vector<RichParagraph>, ContractError>::err(
+          error(ContractErrorCode::ContractShapeError, run_path, "expected run object"));
+      }
+      RichRun rr;
+      auto text = require_string(*run, "text", run_path + ".text"); if (!text) return Result<std::vector<RichParagraph>, ContractError>::err(text.error()); rr.text = text.value();
+      auto fam = require_string(*run, "fontFamily", run_path + ".fontFamily"); if (!fam) return Result<std::vector<RichParagraph>, ContractError>::err(fam.error()); rr.font_family = fam.value();
+      auto sp = require_number(*run, "sizePx", run_path + ".sizePx"); if (!sp) return Result<std::vector<RichParagraph>, ContractError>::err(sp.error()); if (sp.value() <= 0.0) return Result<std::vector<RichParagraph>, ContractError>::err(error(ContractErrorCode::ContractValueError, run_path + ".sizePx", "sizePx must be positive")); rr.size_px = sp.value();
+      auto wt = require_int(*run, "weight", run_path + ".weight"); if (!wt) return Result<std::vector<RichParagraph>, ContractError>::err(wt.error()); rr.weight = wt.value();
+      auto it = require_bool(*run, "italic", run_path + ".italic"); if (!it) return Result<std::vector<RichParagraph>, ContractError>::err(it.error()); rr.italic = it.value();
+      auto ul = require_bool(*run, "underline", run_path + ".underline"); if (!ul) return Result<std::vector<RichParagraph>, ContractError>::err(ul.error()); rr.underline = ul.value();
+      auto st = require_bool(*run, "strikethrough", run_path + ".strikethrough"); if (!st) return Result<std::vector<RichParagraph>, ContractError>::err(st.error()); rr.strikethrough = st.value();
+      auto col = require_string(*run, "color", run_path + ".color"); if (!col) return Result<std::vector<RichParagraph>, ContractError>::err(col.error());
+      auto rgba = parse_hex_color(col.value(), 1.0, run_path + ".color"); if (!rgba) return Result<std::vector<RichParagraph>, ContractError>::err(rgba.error()); rr.color = rgba.value();
+      rp.runs.push_back(std::move(rr));
+    }
+    out.push_back(std::move(rp));
+  }
+  return Result<std::vector<RichParagraph>, ContractError>::ok(std::move(out));
 }
 
 [[nodiscard]] Result<std::vector<std::string>, ContractError> read_static_lines(
@@ -1024,7 +1100,14 @@ private:
       }
       summary.text_content_type = TextContentType::Static;
       summary.static_lines = lines.value();
-    } else {
+    } else if (content_type.value() == "rich") {
+      auto paras = read_rich_paragraphs(*content.value(), path + ".content");
+      if (!paras) {
+        return Result<PaintNodeSummary, ContractError>::err(paras.error());
+      }
+      summary.text_content_type = TextContentType::Rich;
+      summary.rich_paragraphs = std::move(paras.value());
+    } else if (content_type.value() == "merge") {
       summary.text_content_type = TextContentType::Merge;
       summary.merge_key = require_string(*content.value(), "key", path + ".content.key").value();
       summary.merge_sample = require_string(*content.value(), "sample", path + ".content.sample").value();
@@ -1034,6 +1117,9 @@ private:
       if (summary.merge_overflow == "shrink") {
         summary.shrink_floor_px = require_number(*content.value(), "shrinkFloorPx", path + ".content.shrinkFloorPx").value();
       }
+    } else {
+      return Result<PaintNodeSummary, ContractError>::err(
+        error(ContractErrorCode::ContractEnumError, path + ".content.type", "unknown text content type"));
     }
     return Result<PaintNodeSummary, ContractError>::ok(summary);
   }

@@ -63,3 +63,9 @@ End-to-end working: launch webapp → design diagram → **File > Native Print**
 1. **Never make upstream contributions**: Commit and push only to your fork (`danielttran/drawio`).
 2. **Build bats over make**: If there is a `build.bat` present, use it. Do not use make.
 3. **Save tokens**: Keep this `MEMORY.md` updated so future turns can quickly understand the active state and repository design.
+
+
+## Rich-text implementation progress (2026-05-18)
+- Landed: exporter rich extraction/flag/fallback; contract rich validation; renderer/native bridge forwarding of `rich_paragraphs`; sink paragraph align/indent + paragraph-run style measurement/draw + rich font-substitution notices; loader unknown-type hard refusal.
+- Audit fix (2026-05-18): rich underline/strikethrough now bind to each emitted text segment directly (instead of style-heuristic run lookup), preventing decoration bleed/miss when multiple runs share family/size but differ in flags.
+- Still open: full mixed-run intra-line layout (run-level wrap/advance/baseline), rich golden suite + host e2e/hardware validation.

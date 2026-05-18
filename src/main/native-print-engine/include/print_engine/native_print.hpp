@@ -44,6 +44,7 @@ struct NativeDrawCommand {
   Rect device_box;
   std::string label;
   std::string style_signature;
+  std::vector<RichParagraph> rich_paragraphs;
 };
 
 struct NativeSurfaceTrace {
