@@ -2,6 +2,7 @@
 #include "print_engine/renderer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 using print_engine::EmittedKind;
 using print_engine::RenderTarget;
@@ -157,7 +158,7 @@ TEST_CASE("Phase 2 rich text preserves paragraphs and run metrics in trace", "[r
     R"({"kind":"text","box":{"x":10,"y":20,"w":120,"h":50},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[)"
     R"({"align":"left","indentPx":8,"runs":[{"text":"A big","fontFamily":"Arial","sizePx":18,"weight":700,"italic":false,"underline":true,"strikethrough":false,"color":"#112233"},{"text":" run","fontFamily":"Arial","sizePx":10,"weight":400,"italic":true,"underline":false,"strikethrough":true,"color":"#445566"}]},)"
     R"({"align":"right","runs":[{"text":"tail","fontFamily":"Times New Roman","sizePx":11,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#778899"}]})"
-    R"]}})]}]}})";
+    R"(]}}]}]}})";
 
   const auto loaded = load_baked_contract(json);
   REQUIRE(loaded);

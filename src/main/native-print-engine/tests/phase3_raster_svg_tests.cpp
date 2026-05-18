@@ -82,3 +82,24 @@ TEST_CASE("Phase 3 retains SVG source and emits loud stub geometry at consumer D
   CHECK(print_svg.raster_width_px == 80);
   CHECK(nearly_equal(preview_svg.contract_box.w, print_svg.contract_box.w, 0.0001));
 }
+
+TEST_CASE("SVG TODO#2 phase 2: opaque svg source bytes are ferried to the sink "
+          "verbatim and identically for preview and print while still stubbed") {
+  const auto loaded = load_baked_contract(svg_fixture());
+  REQUIRE(loaded);
+
+  const auto preview = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  const auto print = render_to_trace(loaded.value(), RenderTarget{384.0, 96.0});
+  REQUIRE(preview);
+  REQUIRE(print);
+
+  const auto& preview_svg = preview.value().commands[2];
+  const auto& print_svg = print.value().commands[2];
+  REQUIRE(preview_svg.kind == EmittedKind::Svg);
+  // Engine ferries the base64 bytes verbatim (never parses/decodes them).
+  CHECK(preview_svg.svg_source == "PHN2Zz48L3N2Zz4=");
+  // INV-5: same opaque bytes reach both sinks regardless of device DPI.
+  CHECK(preview_svg.svg_source == print_svg.svg_source);
+  // Phase 2 keeps the loud stub until the rasterizer is wired (phase 5).
+  CHECK(preview_svg.degradation_notice);
+}

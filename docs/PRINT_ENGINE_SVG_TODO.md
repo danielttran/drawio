@@ -10,6 +10,24 @@ not an afterthought.
 
 ---
 
+## Status (2026-05-18)
+
+- **Scope narrowed by owner:** host print is GDI+ → Windows-exclusive. The
+  loader is LoadLibraryW-only; CMake gates the loader + fake-shim swap test on
+  WIN32 (same pattern as `win32_services.cpp`). No POSIX path.
+- **Phase 2 DONE & tested** (engine ferries opaque `svg_source` bytes,
+  INV-1/INV-5 clean; SVG still loud-stubbed).
+- **Phase 3 DONE** (Windows-only, not built in the Linux dev env): ABI header
+  `host/svg_rasterizer_abi.h`, `ISvgRasterizer`/`SvgRasterizerDll`, fake-shim +
+  WIN32-gated `tests/svg_rasterizer_abi_tests.cpp`.
+- **Phase 4 DONE & smoke-validated**: `host/svg-rasterizer/` resvg-0.47 cdylib,
+  panic-safe, builds clean; ephemeral dlopen smoke passes.
+- **Remaining:** Phase 5 (wire `draw_trace()` Svg branch — needs a Windows
+  build to validate), Phase 6 (golden + CI + jobLog), and the §6 escalations
+  (loud-stub posture; SVG-embedded-font notice) before the stub is lifted.
+
+---
+
 ## 0. Non-negotiables specific to this work
 
 - **INV-1:** the engine library (`include/`, `src/`) must never name `resvg`,

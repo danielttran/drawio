@@ -152,7 +152,8 @@ NativeSurfaceResult render_to_native_surface_trace(
     {},
     {},
     "TextAntiAlias|HighQualityBicubic|SmoothingAntiAlias|PixelOffsetHalf",
-    "surface-config"
+    "surface-config",
+    {}
   });
 
   for (const auto& page : document.pages) {
@@ -174,7 +175,8 @@ NativeSurfaceResult render_to_native_surface_trace(
         command.contract_box,
         command.device_box,
         "clip+transform container",
-        "container"
+        "container",
+        {}
       });
       continue;
     }
@@ -184,7 +186,8 @@ NativeSurfaceResult render_to_native_surface_trace(
         command.contract_box,
         command.device_box,
         "clip+transform container",
-        "container"
+        "container",
+        {}
       });
       continue;
     }

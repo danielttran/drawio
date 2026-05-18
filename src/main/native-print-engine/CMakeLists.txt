@@ -9,7 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
   add_compile_options(/W4 /WX /permissive-)
 else()
-  add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+  # Canonical build is MSVC /W4 /WX. -Wmissing-field-initializers (an opinionated
+  # -Wextra warning, not in -Wall) fires on partial aggregate inits where omitted
+  # members are deterministically value-initialized; MSVC /W4 does not flag this.
+  # Suppress it for GCC/Clang parity rather than diverge the two toolchains.
+  add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-missing-field-initializers)
 endif()
 
 add_library(print_engine_contract
@@ -37,6 +41,15 @@ else()
   set(PRINT_ENGINE_HOST_SERVICES host/stub_services.cpp)
 endif()
 
+# Windows-only SVG-rasterizer ABI loader. The host print path is GDI+ and
+# therefore Windows-exclusive, so the loader (LoadLibraryW) compiles only on
+# WIN32, exactly like win32_services.cpp.
+if(WIN32)
+  add_library(print_engine_host_svg STATIC host/svg_rasterizer.cpp)
+  target_include_directories(print_engine_host_svg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/host)
+  target_link_libraries(print_engine_host_svg PUBLIC print_engine_contract)
+endif()
+
 add_executable(print_engine_host
   host/host_main.cpp
   ${PRINT_ENGINE_HOST_SERVICES}
@@ -44,7 +57,15 @@ add_executable(print_engine_host
 target_include_directories(print_engine_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
 target_link_libraries(print_engine_host PRIVATE print_engine_contract)
 if(WIN32)
+  target_link_libraries(print_engine_host PRIVATE print_engine_host_svg)
   target_link_libraries(print_engine_host PRIVATE gdiplus winspool gdi32 user32 ole32)
+
+  # Fake backend cdylib implementing svg_rasterizer_abi.h: the §5 swap
+  # acceptance fixture (proves the ABI is backend-agnostic). Test scaffolding
+  # only -- never shipped.
+  enable_language(C)
+  add_library(fake_svg_rasterizer MODULE host/test_support/fake_svg_rasterizer.c)
+  set_target_properties(fake_svg_rasterizer PROPERTIES PREFIX "")
 endif()
 
 include(CTest)
@@ -87,4 +108,22 @@ if(BUILD_TESTING)
 
   include(Catch)
   catch_discover_tests(print_engine_contract_tests)
+
+  # Windows-only: ABI handshake + fake-shim swap acceptance test for the SVG
+  # rasterizer loader. Not built on non-Windows (the loader is Win32-only).
+  if(WIN32)
+    add_executable(print_engine_host_tests tests/svg_rasterizer_abi_tests.cpp)
+    target_include_directories(print_engine_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
+    target_link_libraries(print_engine_host_tests
+      PRIVATE print_engine_host_svg Catch2::Catch2WithMain)
+    add_dependencies(print_engine_host_tests fake_svg_rasterizer)
+    # Copy the fake backend next to the test exe and load it by bare name.
+    # (Baking $<TARGET_FILE> into a C string macro would inject Windows-path
+    # backslashes as invalid escape sequences under MSVC.)
+    add_custom_command(TARGET print_engine_host_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:fake_svg_rasterizer>
+        $<TARGET_FILE_DIR:print_engine_host_tests>)
+    catch_discover_tests(print_engine_host_tests)
+  endif()
 endif()

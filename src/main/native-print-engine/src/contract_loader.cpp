@@ -928,9 +928,9 @@ private:
       auto fam = require_string(*run, "fontFamily", run_path + ".fontFamily"); if (!fam) return Result<std::vector<RichParagraph>, ContractError>::err(fam.error()); rr.font_family = fam.value();
       auto sp = require_number(*run, "sizePx", run_path + ".sizePx"); if (!sp) return Result<std::vector<RichParagraph>, ContractError>::err(sp.error()); if (sp.value() <= 0.0) return Result<std::vector<RichParagraph>, ContractError>::err(error(ContractErrorCode::ContractValueError, run_path + ".sizePx", "sizePx must be positive")); rr.size_px = sp.value();
       auto wt = require_int(*run, "weight", run_path + ".weight"); if (!wt) return Result<std::vector<RichParagraph>, ContractError>::err(wt.error()); rr.weight = wt.value();
-      auto it = require_bool(*run, "italic", run_path + ".italic"); if (!it) return Result<std::vector<RichParagraph>, ContractError>::err(it.error()); rr.italic = it.value();
-      auto ul = require_bool(*run, "underline", run_path + ".underline"); if (!ul) return Result<std::vector<RichParagraph>, ContractError>::err(ul.error()); rr.underline = ul.value();
-      auto st = require_bool(*run, "strikethrough", run_path + ".strikethrough"); if (!st) return Result<std::vector<RichParagraph>, ContractError>::err(st.error()); rr.strikethrough = st.value();
+      auto it = read_bool(*run, "italic", run_path + ".italic"); if (!it) return Result<std::vector<RichParagraph>, ContractError>::err(it.error()); rr.italic = it.value();
+      auto ul = read_bool(*run, "underline", run_path + ".underline"); if (!ul) return Result<std::vector<RichParagraph>, ContractError>::err(ul.error()); rr.underline = ul.value();
+      auto st = read_bool(*run, "strikethrough", run_path + ".strikethrough"); if (!st) return Result<std::vector<RichParagraph>, ContractError>::err(st.error()); rr.strikethrough = st.value();
       auto col = require_string(*run, "color", run_path + ".color"); if (!col) return Result<std::vector<RichParagraph>, ContractError>::err(col.error());
       auto rgba = parse_hex_color(col.value(), 1.0, run_path + ".color"); if (!rgba) return Result<std::vector<RichParagraph>, ContractError>::err(rgba.error()); rr.color = rgba.value();
       rp.runs.push_back(std::move(rr));
@@ -989,7 +989,8 @@ private:
     if (!stroke) {
       return Result<PaintNodeSummary, ContractError>::err(stroke.error());
     }
-    PaintNodeSummary summary{PaintKind::Path};
+    PaintNodeSummary summary{};
+    summary.kind = PaintKind::Path;
     summary.box = parsed.value().bounds;
     summary.path_data = d.value();
     summary.fill = fill.value();
@@ -1073,7 +1074,8 @@ private:
     if (!read) {
       return Result<PaintNodeSummary, ContractError>::err(read.error());
     }
-    PaintNodeSummary summary{PaintKind::Text};
+    PaintNodeSummary summary{};
+    summary.kind = PaintKind::Text;
     summary.box = read.value();
     summary.font_family = family.value();
     summary.font_size_px = size_px.value();
@@ -1180,7 +1182,8 @@ private:
     if (!read) {
       return Result<PaintNodeSummary, ContractError>::err(read.error());
     }
-    PaintNodeSummary summary{PaintKind::Image};
+    PaintNodeSummary summary{};
+    summary.kind = PaintKind::Image;
     summary.box = read.value();
     summary.image_format = format.value();
     summary.image_data = data.value();
@@ -1221,7 +1224,8 @@ private:
     if (!read) {
       return Result<PaintNodeSummary, ContractError>::err(read.error());
     }
-    PaintNodeSummary summary{PaintKind::Svg};
+    PaintNodeSummary summary{};
+    summary.kind = PaintKind::Svg;
     summary.box = read.value();
     summary.svg_source = source.value();
     summary.svg_aspect = aspect.value();
@@ -1284,7 +1288,8 @@ private:
     if (!read) {
       return Result<PaintNodeSummary, ContractError>::err(read.error());
     }
-    PaintNodeSummary summary{PaintKind::Barcode};
+    PaintNodeSummary summary{};
+    summary.kind = PaintKind::Barcode;
     summary.box = read.value();
     summary.barcode_symbology = symbology.value();
     if (type.value() == "merge") {

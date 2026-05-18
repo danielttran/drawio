@@ -12,6 +12,7 @@
 #include "print_engine/renderer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <string>
 
@@ -284,7 +285,7 @@ TEST_CASE("Rich text preview==print structural parity for mixed runs", "[wysiwyg
   const std::string rich_node =
     R"({"kind":"text","box":{"x":10,"y":10,"w":140,"h":40},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[)"
     R"({"align":"left","runs":[{"text":"Bold ","fontFamily":"Arial","sizePx":14,"weight":700,"italic":false,"underline":true,"strikethrough":false,"color":"#ff0000"},{"text":"small","fontFamily":"Arial","sizePx":10,"weight":400,"italic":true,"underline":false,"strikethrough":true,"color":"#0000ff"}]},)"
-    R"({"align":"right","runs":[{"text":"tail","fontFamily":"Times New Roman","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#008000"}]})]}})";
+    R"({"align":"right","runs":[{"text":"tail","fontFamily":"Times New Roman","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#008000"}]}]}})";
 
   const auto loaded = load_baked_contract(contract_with(rich_node, 220, 120));
   REQUIRE(loaded);
@@ -294,10 +295,21 @@ TEST_CASE("Rich text preview==print structural parity for mixed runs", "[wysiwyg
   REQUIRE(preview);
   REQUIRE(print);
 
-  REQUIRE(preview.value().commands.size() == print.value().commands.size());
+  // render_print_trace wraps the shared trace with StartDocument/EndDocument
+  // lifecycle commands by design; strip them so the structural parity check
+  // compares the drawable commands (the INV-5 guarantee), not the wrapper.
+  std::vector<print_engine::EmittedCommand> print_drawable;
+  for (const auto& c : print.value().commands) {
+    if (c.kind == EmittedKind::StartDocument || c.kind == EmittedKind::EndDocument) {
+      continue;
+    }
+    print_drawable.push_back(c);
+  }
+
+  REQUIRE(preview.value().commands.size() == print_drawable.size());
   for (std::size_t i = 0; i < preview.value().commands.size(); ++i) {
     const auto& a = preview.value().commands[i];
-    const auto& b = print.value().commands[i];
+    const auto& b = print_drawable[i];
     CHECK(a.kind == b.kind);
     CHECK(a.style_signature == b.style_signature);
     if (a.kind == EmittedKind::Text) {
