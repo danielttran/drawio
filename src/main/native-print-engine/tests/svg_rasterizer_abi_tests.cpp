@@ -4,27 +4,35 @@
 // (librsvg+cairo can later replace resvg by swapping the DLL only).
 //
 // Built/run only on WIN32 (the loader is LoadLibraryW-only because the host
-// print path is GDI+ / Windows-exclusive).
+// print path is GDI+ / Windows-exclusive). CMake copies the fake backend next
+// to this test exe; it is loaded by bare name via the default DLL search path
+// (the application directory is searched first), so no host-path string is
+// baked into the build.
 
 #include "svg_rasterizer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <filesystem>
-
 using print_engine::host::SvgRasterizerDll;
 using print_engine::host::SvgRasterStatus;
+
+namespace {
+// Bare name: resolved from the test exe's own directory (LoadLibrary search
+// order step 1), where CMake's POST_BUILD copy places it.
+constexpr const char* kFakeBackend = "fake_svg_rasterizer.dll";
+}  // namespace
 
 TEST_CASE("SVG rasterizer loader: missing DLL refuses loudly (loud-stub path)") {
   auto r = SvgRasterizerDll::load("definitely-not-a-real-rasterizer.dll");
   CHECK(r == nullptr);  // caller falls back to the loud StubbedSvgArtwork
 }
 
-TEST_CASE("SVG rasterizer loader: fake backend passes the ABI handshake") {
-  const std::filesystem::path dll = FAKE_SVG_RASTERIZER_PATH;
-  REQUIRE(std::filesystem::exists(dll));
+TEST_CASE("SVG rasterizer loader: empty path refuses") {
+  CHECK(SvgRasterizerDll::load("") == nullptr);
+}
 
-  auto r = SvgRasterizerDll::load(dll);
+TEST_CASE("SVG rasterizer loader: fake backend passes the ABI handshake") {
+  auto r = SvgRasterizerDll::load(kFakeBackend);
   REQUIRE(r != nullptr);
   CHECK(r->available());
   CHECK(r->backend_id() == "fake-solid 1.0");
@@ -32,7 +40,7 @@ TEST_CASE("SVG rasterizer loader: fake backend passes the ABI handshake") {
 
 TEST_CASE("SVG rasterizer loader: fake backend renders the pinned pixel "
           "contract with no C++ change (swap acceptance)") {
-  auto r = SvgRasterizerDll::load(std::filesystem::path(FAKE_SVG_RASTERIZER_PATH));
+  auto r = SvgRasterizerDll::load(kFakeBackend);
   REQUIRE(r != nullptr);
 
   const std::string svg = "<svg xmlns='http://www.w3.org/2000/svg'/>";
@@ -54,7 +62,7 @@ TEST_CASE("SVG rasterizer loader: fake backend renders the pinned pixel "
 }
 
 TEST_CASE("SVG rasterizer loader: empty SVG / zero box is a loud failure") {
-  auto r = SvgRasterizerDll::load(std::filesystem::path(FAKE_SVG_RASTERIZER_PATH));
+  auto r = SvgRasterizerDll::load(kFakeBackend);
   REQUIRE(r != nullptr);
 
   CHECK_FALSE(r->render("", 4, 3, 96.0).ok());

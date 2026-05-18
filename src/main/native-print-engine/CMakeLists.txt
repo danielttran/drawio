@@ -116,9 +116,14 @@ if(BUILD_TESTING)
     target_include_directories(print_engine_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
     target_link_libraries(print_engine_host_tests
       PRIVATE print_engine_host_svg Catch2::Catch2WithMain)
-    target_compile_definitions(print_engine_host_tests PRIVATE
-      FAKE_SVG_RASTERIZER_PATH="$<TARGET_FILE:fake_svg_rasterizer>")
     add_dependencies(print_engine_host_tests fake_svg_rasterizer)
+    # Copy the fake backend next to the test exe and load it by bare name.
+    # (Baking $<TARGET_FILE> into a C string macro would inject Windows-path
+    # backslashes as invalid escape sequences under MSVC.)
+    add_custom_command(TARGET print_engine_host_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:fake_svg_rasterizer>
+        $<TARGET_FILE_DIR:print_engine_host_tests>)
     catch_discover_tests(print_engine_host_tests)
   endif()
 endif()

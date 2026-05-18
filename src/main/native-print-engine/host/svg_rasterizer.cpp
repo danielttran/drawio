@@ -15,10 +15,12 @@
 namespace print_engine::host {
 namespace {
 
+// FARPROC -> typed function pointer. Single reinterpret_cast (function ptr to
+// function ptr) is the warning-clean MSVC idiom; routing through void* is a
+// function->object pointer cast that /W4 /WX /permissive- rejects.
 template <typename Fn>
 Fn resolve(HMODULE handle, const char* name) {
-  return reinterpret_cast<Fn>(
-      reinterpret_cast<void*>(::GetProcAddress(handle, name)));
+  return reinterpret_cast<Fn>(::GetProcAddress(handle, name));
 }
 
 SvgRasterStatus map_status(std::int32_t code) {
@@ -112,7 +114,8 @@ SvgRasterResult SvgRasterizerDll::render(const std::string& svg_bytes,
     result.message = "svg measure failed";
     return result;
   }
-  if (out_len == 0 || out_len != static_cast<std::size_t>(out_w) * out_h * 4) {
+  if (out_len == 0 ||
+      out_len != static_cast<std::size_t>(out_w) * out_h * 4u) {
     result.status = SvgRasterStatus::Internal;
     result.message = "backend reported inconsistent buffer length";
     return result;
