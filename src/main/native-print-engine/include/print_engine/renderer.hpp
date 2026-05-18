@@ -43,6 +43,9 @@ struct EmittedCommand {
   std::string image_data;
   std::string image_format;
   std::string image_aspect;
+  // Opaque embedded-SVG artwork bytes, ferried verbatim to the host sink.
+  // The engine never parses or rasterizes these (INV-1).
+  std::string svg_source;
   bool flip_h = false;
   bool flip_v = false;
   std::string font_family;

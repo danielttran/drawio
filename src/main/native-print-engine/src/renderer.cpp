@@ -220,6 +220,8 @@ RenderResult render_to_trace(
                                                           : std::string{},
             .image_aspect = node.kind == PaintKind::Image ? node.image_aspect
                                                           : node.svg_aspect,
+            .svg_source = node.kind == PaintKind::Svg ? node.svg_source
+                                                      : std::string{},
             .flip_h = node.kind == PaintKind::Image ? node.flip_h : false,
             .flip_v = node.kind == PaintKind::Image ? node.flip_v : false,
             .degradation_notice = node.kind == PaintKind::Svg,
