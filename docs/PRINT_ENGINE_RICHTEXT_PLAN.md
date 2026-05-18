@@ -174,8 +174,8 @@ Add a third `content.type`. `static`/`merge` byte-unchanged.
   "paragraphs": [
     {
       "align": "left|center|right",          // per-paragraph horizontal
-      "listMarker": "none|bullet|number",     // optional, default "none"
-      "runs": [
+      "indentPx": <num >= 0>,                 // optional, default 0 (list hang)
+      "runs": [                                // MAY be empty -> blank line
         {
           "text": "<string, no newlines>",
           "fontFamily": "<string>",
@@ -193,10 +193,22 @@ Add a third `content.type`. `static`/`merge` byte-unchanged.
 ```
 
 Notes:
+- **Blank lines are real (WYSIWYG).** An empty paragraph (`runs: []`, or a
+  single whitespace run) is **valid** and the sink must still advance one line
+  height. Double `<br>` / empty `<div>` → an empty paragraph. The loader MUST
+  NOT require `runs` non-empty (see §8); WYSIWYG fidelity (G2) depends on this.
 - Hard line breaks within a paragraph are modeled as separate paragraphs (the
-  sink already treats each as a measured line); `<br>` → new paragraph with the
-  inherited run style. Vertical/horizontal block alignment still comes from the
-  existing `align{h,v}` (paragraph `align` overrides `h` per paragraph).
+  sink already treats each as a measured line). `<br>` → new paragraph that
+  **inherits the containing block's `align` and the current run style** (it is
+  not reset to the default).
+- **List markers are baked as text, not interpreted.** The engine/sink stay
+  list-agnostic (INV-1, no stateful numbering in the sink). The *exporter*
+  emits the literal marker ("• ", "1. ", "a. ") as the **first run** of the
+  paragraph and sets `indentPx` for the hanging indent. There is no
+  `listMarker` enum — numbering is computed once, in the exporter, from the DOM.
+- Block vertical alignment still comes from the existing top-level `align.v`.
+  Top-level `align.h` is the block default; **per-paragraph `align` overrides
+  it** and is the value the sink must use for each line (see §9).
 - Run fields mirror the existing `font` object names so the sink reuses the
   same `font_style_for`/family/colour code.
 - **Appendix A delta:** add the `rich` content alternative under the `text`
@@ -210,58 +222,92 @@ Notes:
 Replace flatten-only with a model builder, behind an internal capability flag
 (`richText`, default on; off → current plain behavior, for bisecting).
 
-1. **Find the rendered label node.** Prefer `state.text && state.text.node`
-   (the mxText DOM mxGraph rendered). If absent (headless), build a detached
-   element from `graph.getLabel(cell)` for the §5 tokenizer fallback.
-2. **Resolve the base run** from the cell's drawio style (family, sizePx from
-   `fontSize`, weight from `fontStyle&1`, italic `&2`, underline `&4`, strike
-   `&8`, color `fontColor`) — this is the inherited default for text nodes that
-   carry no explicit CSS.
-3. **DOM walk** (never regex on the live path). Depth-first over the label node:
+1. **Gate rich vs plain.** Use `graph.isHtmlLabel(cell)` (Graph.js ≈L360). If
+   false, the label is plain — keep the existing `static` path unchanged
+   (do not emit `rich`). Only HTML labels go through the builder.
+2. **Find the rich *content* node — not the wrapper.** `state.text` is the
+   mxText shape; `state.text.node` is a **positioning wrapper**, the rich
+   markup is **nested inside it** (mxText resolves the content element itself —
+   it is `node.firstChild.firstChild` in the HTML-label case; see
+   `shape/mxText.js` ≈L463–470). **Reuse mxText's own resolved content node;
+   do not hard-code the nesting** (it differs by dialect and drawio version).
+   Rooting the walk at the wrapper would pollute `getComputedStyle` with the
+   wrapper's layout styles. The `<object label="…">` value wrapper is already
+   resolved by drawio before render, so the rendered content node is correct;
+   the §5 fallback uses `graph.getLabel(cell)` which also resolves it.
+   `getComputedStyle` requires the node be attached & rendered (true at bake
+   time) — if not, take the §5 tokenizer path and emit `RichApproximate`.
+3. **Resolve the base run** from the cell's resolved drawio style (family,
+   sizePx from `fontSize`, weight from `fontStyle&1`, italic `&2`, underline
+   `&4`, strike `&8`, color `fontColor`) — inherited default for text/nodes
+   carrying no explicit CSS.
+4. **DOM walk** (never regex on the live path). Depth-first over the content
+   node:
    - Text node → push a run: text = node data with **HTML whitespace
-     collapsing** (runs of space/tab/newline → single space; leading/trailing
-     per CSS `white-space:normal`; respect `pre`/`nowrap` if drawio set it);
-     style = `getComputedStyle(parentElement)` mapped to run fields
-     (`font-weight≥600`→700, `font-style:italic`, `text-decoration-line`
-     contains `underline`/`line-through`, `font-family` first family,
-     `font-size` px, `color`→`#rrggbb`).
-   - `<br>` → end current paragraph, start a new one inheriting the current run
-     style.
-   - Block element (`div`,`p`,`li`,header) → flush/begin a paragraph; read its
-     computed `text-align` for the paragraph `align`; `li` sets `listMarker`
-     from the `ul`/`ol` parent (single level; nested → degrade notice).
+     collapsing driven by the element's computed `white-space`** (read it —
+     drawio sets `whiteSpace=wrap|nowrap`; do not assume `normal`): for
+     `normal/nowrap` collapse runs of space/tab/newline → single space and trim
+     per CSS; for `pre*` preserve. Style = `getComputedStyle(parentElement)`
+     mapped to run fields: `font-weight ≥ 600 → 700 else 400`;
+     `font-style:italic`; `text-decoration-line` (computed, not the `text-
+     decoration` shorthand) contains `underline`/`line-through`; `font-family`
+     first resolved family; `font-size` already px; **`color` is returned as
+     `rgb(...)`/`rgba(...)` by `getComputedStyle` — convert to `#rrggbb`** (the
+     existing `hex()` only handles `#`; add an `rgb()` parser; drop CSS alpha
+     with a `RichApproximate` notice since the run colour model is opaque).
+   - `<br>` → end current paragraph, start a new one **inheriting the
+     containing block's `align`** and the current run style.
+   - Block element (`div`,`p`,`li`,header) → flush/begin a paragraph; paragraph
+     `align` = computed `text-align` of that block. For `li`: compute the
+     marker **in the exporter** ("• " for `ul`; the running counter "1. ",
+     "2. " … for `ol`, honoring `start`/`type`) and emit it as the paragraph's
+     **first run** (base style), set `indentPx`. **Single level only**; a
+     nested `ul/ol` → `RichUnsupported` notice + best-effort flat runs.
+   - An empty block / consecutive `<br>` → an **empty paragraph** (`runs: []`)
+     — preserved (blank line, §6).
    - Skip & **notice** unsupported nodes (`img`, `table`, `sub`, `sup`,
-     background-color spans, etc.) via `degradation('RichUnsupported', …,
+     background-highlight spans, etc.) via `degradation('RichUnsupported', …,
      cell.id)`; still emit their text as a best-effort plain run.
-4. **Normalize:** drop empty runs; merge adjacent runs with identical style;
-   drop empty trailing paragraphs; ensure ≥1 paragraph (empty label already
-   short-circuits before `textNode`).
-5. **Emit** `content:{type:'rich', paragraphs:[…]}` from `textNode()`; keep the
-   existing top-level `font`/`align` as the block default + back-compat for any
-   consumer reading only those. Edge labels use the same builder (replace the
-   `edgeLabelBox` heuristic width with the rendered label node's measured
-   bounds when available — more accurate box).
-6. **Tests:** extend `exporter.test.mjs` with a jsdom/fake-DOM matrix
+5. **Normalize:** merge adjacent runs with identical style; **keep** empty
+   paragraphs (blank lines); drop a single trailing empty paragraph only if it
+   is an artifact of a final block close (match drawio's own trailing-newline
+   behavior — verify against a live label, do not guess); ensure ≥1 paragraph.
+6. **Emit** `content:{type:'rich', paragraphs:[…]}` from `textNode()`; keep the
+   existing top-level `font`/`align` as the block default + back-compat for
+   consumers reading only those.
+7. **Edge labels — keep the box, enrich only the content (v1).** Reuse the
+   existing `edgeLabelBox()` geometry unchanged; only swap its `content` to
+   `rich`. Replacing the box with measured DOM bounds requires converting
+   client-rect px back through `origin`/`scale` and risks regressing edge-label
+   placement — **explicitly deferred / out of scope for v1** (revisit only with
+   a dedicated test).
+8. **Tests:** extend `exporter.test.mjs` with a jsdom/fake-DOM matrix
    (bold/italic/underline/strike, multi-color, mixed sizes, multi-paragraph
-   mixed align, single-level list, nested-list degrade, img-in-label degrade,
-   whitespace collapsing, `<font>` vs CSS precedence, edge labels). Node-pure
-   where possible; browser e2e for the live-node path.
+   mixed align, single-level ol numbering + bullet, nested-list degrade,
+   img-in-label degrade, **blank line via double `<br>`**, whitespace
+   collapsing incl. `white-space:nowrap`, **`rgb()`/`rgba()` → `#rrggbb`**,
+   `<font>` vs CSS precedence, `<br>` inherits block align, edge labels keep
+   box). Node-pure where possible; browser e2e for the live-node path.
 
 ---
 
 ## 8. Engine changes (`include/`, `src/`) — stays HTML-free
 
-1. **`contract_loader.cpp` `validate_text_content()`** (≈L817 region): add a
-   `type=="rich"` branch *before* the unknown-enum error. Validate:
-   `paragraphs` is a non-empty array; each paragraph has `align∈{left,center,
-   right}`, optional `listMarker∈{none,bullet,number}`, `runs` non-empty; each
-   run has non-empty handling for `text` (string), `sizePx>0`, `weight` int,
-   bools, `color` `#rrggbb`. Reject `static`/`merge`-only fields on a `rich`
-   node (mirror the existing cross-field rejection style). Populate a new
-   `TextContentType::Rich` + a `std::vector<RichParagraph>` on
-   `PaintNodeSummary` (additive struct fields; keep the C++20 designated-init
-   pattern that §2 left in place). Set a `document.has_rich_text` flag for
-   notice/telemetry parity.
+1. **`contract_loader.cpp` `validate_text_content()`** (function at L793): the
+   `rich` branch goes **after the `static` block and immediately before the
+   `if (type.value() != "merge")` enum-reject guard at ≈L816–818** (so an
+   unknown type still falls through to `ContractEnumError "unknown text content
+   type"`). Use the existing primitives (`require_array` L284, `require_string`
+   L301, `reject_key` L551). Validate: `paragraphs` is a **non-empty** array;
+   each paragraph has `align ∈ {left,center,right}`, optional `indentPx ≥ 0`,
+   and a `runs` array that **MAY be empty** (empty = blank line — do **not**
+   reject it; §6 / WYSIWYG G2 depend on this); each present run has `text` (string,
+   may be empty), `sizePx > 0`, `weight` int, the three bools, `color`
+   `#rrggbb`. Reject `static`/`merge`-only keys on a `rich` node via
+   `reject_key` (mirror the `static` block at ≈L808). Populate a new
+   `TextContentType::Rich` + `std::vector<RichParagraph>` on `PaintNodeSummary`
+   (additive fields; keep the C++20 designated-init pattern §2 left in place).
+   Set `document.has_rich_text` for notice/telemetry parity.
 2. **`renderer.cpp` `render_to_trace()`** (≈L126–144): for `Rich`, **forward
    the runs verbatim** into the `EmittedCommand` — *no layout in the engine*
    (preserve measure-at-the-sink and INV-1). Extend `EmittedCommand`/
@@ -290,21 +336,40 @@ code path runs unchanged.
    `MeasureString`+`GenericTypographic`+`MeasureTrailingSpaces` flags (§2
    parity) but measure each run with *its own* font; a line's width = Σ run
    widths.
-3. **Run-aware `build(emScale)`** replacing the single-font lambda: walk
-   paragraphs; within a paragraph, word-wrap **across runs** when
-   `wrap=="word"` — accumulate words carrying their run identity, break when
-   the measured candidate width exceeds `box.Width`; `line_h` = max run height
-   on that line (`Font::GetHeight`); `block_w`/`block_h` from the laid lines;
-   list markers emitted as a leading run with hanging indent.
-4. **Shrink-to-fit** (≈L601–607): scale **all** runs' `em` by the same factor
-   in the existing loop (uniform scale preserves relative sizing → still
-   WYSIWYG); same `floor_em`, same loud `MergeOverflowError`/`MergeClip`/clip
-   semantics (§2 unchanged).
+3. **Run-aware `build(emFactor)`** replacing the single-font lambda. `emFactor`
+   is a **uniform scale applied to every run's own size** (not a single em — a
+   refinement vs the §2 single-font lambda; rename accordingly). Walk
+   paragraphs; within a paragraph word-wrap **across runs** when `wrap=="word"`
+   — accumulate words carrying their run identity, break when the measured
+   candidate width (Σ per-run widths) exceeds `box.Width − indentPx`.
+   - **Blank line:** a paragraph with no runs (or only whitespace) still
+     produces **one line** whose `line_h` = the base-font height at the current
+     factor (use the node's top-level `font`). It must occupy vertical space
+     (WYSIWYG, §6).
+   - **`line_h` = the max run height on that line** (`Font::GetHeight` per run).
+   - Record, per laid line, the **max ascent** over its runs (from
+     `FontFamily::GetCellAscent`/`GetEmHeight`) — needed for baseline alignment
+     in step 5. `block_w`/`block_h` from the laid lines.
+4. **Shrink-to-fit** (≈L601–607): the loop now decrements **`emFactor`** (start
+   1.0). Every run scales by the same factor (relative sizing preserved →
+   WYSIWYG). **Floor:** stop when reducing further would push the **smallest
+   run** below `shrink_floor_px·scale` (define the floor in factor terms:
+   `floor_factor = (shrink_floor_px·scale) / min_run_px`); same loud
+   `MergeOverflowError` / `MergeClip` / clip semantics as §2 (unchanged).
 5. **Vertical block align** (≈L624–629) unchanged (uses `block_h`).
-   **Per-line horizontal align** unchanged but x advances run-by-run:
-   `DrawString` each run at the running x with its own font/brush;
-   **underline/strikethrough drawn as lines** (GDI+ underline is unreliable
-   across arbitrary fonts — draw a 1·scale rule at the run baseline metrics).
+   **Horizontal align is now per-paragraph:** for each line use **that
+   paragraph's `align`** (NOT the single `c.align_h`; `c.align_h` is only the
+   block default / non-rich path). Line start x = box.X + `indentPx`, then
+   `+ (boxW−indentPx − lineW)·{0|½|1}` for left/center/right.
+   **Mixed-size baseline alignment (required for WYSIWYG):** runs of different
+   sizes on one line MUST share a baseline. Draw each run at
+   `y = lineTop + (lineMaxAscent − runAscent)` (do **not** draw all runs at the
+   same top y — that top-aligns glyphs and looks broken). Advance x run-by-run
+   by each run's measured width; each run uses its own cached font/brush.
+   **Underline/strikethrough are drawn as lines** (GDI+ underline unreliable
+   across fonts): underline at the run baseline + descent fraction,
+   strikethrough at ~0.5 ascent, thickness ≈ max(1, em·scale·0.06), in the run
+   colour.
 6. **INV-5:** still one `draw_trace`; preview and print emit identical run draw
    calls at the same DPI.
 
