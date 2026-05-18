@@ -9,7 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
   add_compile_options(/W4 /WX /permissive-)
 else()
-  add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+  # Canonical build is MSVC /W4 /WX. -Wmissing-field-initializers (an opinionated
+  # -Wextra warning, not in -Wall) fires on partial aggregate inits where omitted
+  # members are deterministically value-initialized; MSVC /W4 does not flag this.
+  # Suppress it for GCC/Clang parity rather than diverge the two toolchains.
+  add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-missing-field-initializers)
 endif()
 
 add_library(print_engine_contract
