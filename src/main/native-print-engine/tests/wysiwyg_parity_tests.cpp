@@ -279,3 +279,35 @@ TEST_CASE("The safety net is real: a non-conformant contract is loud-rejected",
     path_node("M 0 0 l 10 10 z");  // lowercase relative commands
   CHECK_FALSE(load_baked_contract(contract_with(relative_path)));
 }
+
+TEST_CASE("Rich text preview==print structural parity for mixed runs", "[wysiwyg][rich]") {
+  const std::string rich_node =
+    R"({"kind":"text","box":{"x":10,"y":10,"w":140,"h":40},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[)"
+    R"({"align":"left","runs":[{"text":"Bold ","fontFamily":"Arial","sizePx":14,"weight":700,"italic":false,"underline":true,"strikethrough":false,"color":"#ff0000"},{"text":"small","fontFamily":"Arial","sizePx":10,"weight":400,"italic":true,"underline":false,"strikethrough":true,"color":"#0000ff"}]},)"
+    R"({"align":"right","runs":[{"text":"tail","fontFamily":"Times New Roman","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#008000"}]})]}})";
+
+  const auto loaded = load_baked_contract(contract_with(rich_node, 220, 120));
+  REQUIRE(loaded);
+
+  const auto preview = render_operator_preview_trace(loaded.value(), RenderTarget{300.0, 96.0}, {});
+  const auto print = render_print_trace(loaded.value(), RenderTarget{300.0, 96.0}, {});
+  REQUIRE(preview);
+  REQUIRE(print);
+
+  REQUIRE(preview.value().commands.size() == print.value().commands.size());
+  for (std::size_t i = 0; i < preview.value().commands.size(); ++i) {
+    const auto& a = preview.value().commands[i];
+    const auto& b = print.value().commands[i];
+    CHECK(a.kind == b.kind);
+    CHECK(a.style_signature == b.style_signature);
+    if (a.kind == EmittedKind::Text) {
+      CHECK(a.label == b.label);
+      CHECK(a.rich_paragraphs.size() == b.rich_paragraphs.size());
+      CHECK(a.rich_paragraphs[0].runs.size() == b.rich_paragraphs[0].runs.size());
+      CHECK(a.rich_paragraphs[0].runs[0].text == b.rich_paragraphs[0].runs[0].text);
+      CHECK(a.rich_paragraphs[1].align == b.rich_paragraphs[1].align);
+      CHECK(a.device_box.w == Catch::Approx(b.device_box.w).margin(0.01));
+      CHECK(a.device_box.h == Catch::Approx(b.device_box.h).margin(0.01));
+    }
+  }
+}

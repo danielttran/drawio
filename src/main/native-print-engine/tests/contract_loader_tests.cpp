@@ -77,3 +77,29 @@ TEST_CASE("unknown paint node kind is a typed enum refusal") {
   REQUIRE_FALSE(result);
   CHECK(result.error().code == ContractErrorCode::ContractEnumError);
 }
+
+
+TEST_CASE("rich text content is accepted as additive schema") {
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[)"
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},"font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[{"align":"left","runs":[{"text":"A","fontFamily":"Arial","sizePx":8,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#112233"}]},{"align":"center","runs":[]}]}})"
+    R"(]}]}})";
+
+  const auto result = load_baked_contract(json);
+  REQUIRE(result);
+  REQUIRE(result.value().pages[0].paint.size() == 1);
+  CHECK(result.value().has_rich_text);
+}
+
+TEST_CASE("rich text invalid paragraph alignment is refused") {
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[)"
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},"font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[{"align":"justify","runs":[]}]}})"
+    R"(]}]}})";
+
+  const auto result = load_baked_contract(json);
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == ContractErrorCode::ContractEnumError);
+}

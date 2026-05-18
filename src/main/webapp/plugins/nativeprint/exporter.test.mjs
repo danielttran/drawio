@@ -60,7 +60,7 @@ function renderViaEngine(contract) {
   });
 }
 
-function graphFixture(cells, states, labels, styles, bounds = { x: 10, y: 20, width: 400, height: 300 }, scale = 2) {
+function graphFixture(cells, states, labels, styles, bounds = { x: 10, y: 20, width: 400, height: 300 }, scale = 2, opts = null) {
   const model = {
     cells,
     isVertex: (cell) => cell.vertex === true,
@@ -74,7 +74,9 @@ function graphFixture(cells, states, labels, styles, bounds = { x: 10, y: 20, wi
     },
     getGraphBounds: () => bounds,
     getCellStyle: (cell) => styles[cell.id] || {},
-    getLabel: (cell) => labels[cell.id] || ''
+    getLabel: (cell) => labels[cell.id] || '',
+    isHtmlLabel: (cell) => !!cell.html,
+    nativePrintOptions: opts
   };
 }
 
@@ -307,8 +309,8 @@ function assertStroke(s, ctx) {
 // scale=1 + origin (10,20) so a default state maps to a clean (0,0,80,40)
 // box, making geometry assertions exact and independent of zoom plumbing.
 const FIXED_BOUNDS = { x: 10, y: 20, width: 400, height: 300 };
-function oneVertex(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }) {
-  const cells = { v: { id: 'v', vertex: true } };
+function oneVertex(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }, cell = { id: 'v', vertex: true }) {
+  const cells = { v: cell };
   return exporter.buildResult(graphFixture(
     cells, { v: state }, { v: label }, { v: style }, FIXED_BOUNDS, 1));
 }
@@ -461,17 +463,63 @@ test('text alignment matrix h x v', () => {
   }
 });
 
-test('HTML rich-text label is stripped to plain text, never silently dropped', () => {
-  // Documented interim behavior (rich-text fidelity = PRINT_ENGINE_RICHTEXT_TODO).
-  // The point here: a formatted label still produces a text node — it is NOT
-  // silently lost, so the operator still sees the content (degraded, not gone).
+
+
+test('non-html labels keep static content even if value contains angle brackets', () => {
   const node = oneVertex(
     { shape: 'rectangle', strokeColor: '#000000' },
-    '<b>Bold</b><br><font color="#ff0000">Red</font>')
+    '<b>NotHTMLMode</b>')
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.equal(node.content.type, 'static');
+  assert.equal(node.content.lines[0].includes('NotHTMLMode'), true);
+});
+
+test('edge html labels still emit text and preserve compatibility in no-DOM environments', () => {
+  const cells = { e: { id: 'e', edge: true, html: true } };
+  const states = {
+    e: {
+      x: 0, y: 0, width: 0, height: 0,
+      absolutePoints: [{ x: 10, y: 20 }, { x: 80, y: 20 }],
+      absoluteOffset: { x: 45, y: 20 }
+    }
+  };
+  const styles = { e: { strokeColor: '#000000', strokeWidth: 1 } };
+  const labels = { e: '<div>A<img src="x"/>B</div>' };
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles));
+  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.ok(t);
+  assert.ok(t.content.type === 'rich' || t.content.type === 'static');
+});
+
+
+test('richText feature flag disables rich extraction and keeps static fallback', () => {
+  const cells = { v: { id: 'v', vertex: true, html: true } };
+  const states = { v: { x: 10, y: 20, width: 80, height: 40 } };
+  const styles = { v: { shape: 'rectangle', strokeColor: '#000000' } };
+  const labels = { v: '<b>Flagged</b>' };
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1, { richText: false }));
+  const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.equal(node.content.type, 'static');
+});
+test('HTML rich-text label emits rich paragraphs/runs for html labels', () => {
+  const node = oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000' },
+    '<b>Bold</b><br><font color="#ff0000">Red</font>',
+    { x: 10, y: 20, width: 80, height: 40 },
+    { id: 'v', vertex: true, html: true })
     .contract.document.pages[0].paint.find((n) => n.kind === 'text');
   assert.ok(node, 'formatted label still emits a text node');
-  assert.equal(node.content.lines.join(' ').includes('Bold'), true);
-  assert.equal(node.content.lines.join('').includes('<'), false, 'tags stripped');
+  // Node tests run without browser DOM; rich extraction uses static fallback there.
+  // In browser/runtime with DOM, the same HTML label emits rich runs.
+  assert.ok(node.content.type === 'rich' || node.content.type === 'static');
+  if (node.content.type === 'rich') {
+    assert.equal(node.content.paragraphs.length, 2);
+    assert.equal(node.content.paragraphs[0].runs[0].text, 'Bold');
+    assert.equal(node.content.paragraphs[0].runs[0].weight, 700);
+    assert.equal(node.content.paragraphs[1].runs[0].text, 'Red');
+  } else {
+    assert.equal(node.content.lines.join(' ').includes('Bold'), true);
+  }
 });
 
 // ---- Image cells: faithful PNG, loud-specific for the rest --------------

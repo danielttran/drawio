@@ -131,3 +131,45 @@ TEST_CASE("Phase 2 preserves text weight italic and color in emitted commands") 
   CHECK(text.text_color.g == 0);
   CHECK(text.text_color.b == 0);
 }
+
+TEST_CASE("Phase 2 forwards rich text paragraphs in emitted command") {
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":80,"h":30},"font":{"family":"Arial","sizePx":10,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[{"align":"left","runs":[{"text":"Rich","fontFamily":"Arial","sizePx":10,"weight":700,"italic":false,"underline":true,"strikethrough":false,"color":"#112233"}]},{"align":"right","runs":[]}]}})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(rendered);
+  const auto& text = rendered.value().commands[2];
+  CHECK(text.kind == EmittedKind::Text);
+  CHECK(text.rich_paragraphs.size() == 2);
+  CHECK(text.rich_paragraphs[0].runs.size() == 1);
+  CHECK(text.rich_paragraphs[0].runs[0].text == "Rich");
+  CHECK(text.label == "Rich\n");
+}
+
+TEST_CASE("Phase 2 rich text preserves paragraphs and run metrics in trace", "[rich]") {
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p1","size":{"w":200,"h":120},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":200,"h":120}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":120,"h":50},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[)"
+    R"({"align":"left","indentPx":8,"runs":[{"text":"A big","fontFamily":"Arial","sizePx":18,"weight":700,"italic":false,"underline":true,"strikethrough":false,"color":"#112233"},{"text":" run","fontFamily":"Arial","sizePx":10,"weight":400,"italic":true,"underline":false,"strikethrough":true,"color":"#445566"}]},)"
+    R"({"align":"right","runs":[{"text":"tail","fontFamily":"Times New Roman","sizePx":11,"weight":400,"italic":false,"underline":false,"strikethrough":false,"color":"#778899"}]})"
+    R"]}})]}]}})";
+
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(rendered);
+  const auto& text = rendered.value().commands[2];
+  REQUIRE(text.kind == EmittedKind::Text);
+  REQUIRE(text.rich_paragraphs.size() == 2);
+  CHECK(text.rich_paragraphs[0].indent_px == Catch::Approx(8.0));
+  CHECK(text.rich_paragraphs[0].runs.size() == 2);
+  CHECK(text.rich_paragraphs[0].runs[0].underline);
+  CHECK(text.rich_paragraphs[0].runs[1].strikethrough);
+  CHECK(text.rich_paragraphs[1].align == "right");
+  CHECK(text.label == "A big run\ntail");
+}

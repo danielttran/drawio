@@ -382,3 +382,25 @@ TEST_CASE("Phase 7 v2 native image decode failure is typed and loud") {
   REQUIRE_FALSE(surface);
   CHECK(surface.error().code == ContractErrorCode::ImageDecodeError);
 }
+
+TEST_CASE("Phase 7 v2 native surface forwards rich paragraphs on text commands") {
+  const std::string rich =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":80,"h":30},"font":{"family":"Arial","sizePx":10,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"rich","paragraphs":[{"align":"left","runs":[{"text":"Hi","fontFamily":"Arial","sizePx":10,"weight":700,"italic":false,"underline":false,"strikethrough":false,"color":"#112233"}]}]}})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(rich);
+  REQUIRE(loaded);
+  const auto surface = render_to_native_surface_trace(loaded.value(), RenderTarget{96.0, 96.0}, {}, true);
+  REQUIRE(surface);
+  bool saw_text = false;
+  for (const auto& c : surface.value().commands) {
+    if (c.kind == NativeDrawKind::DrawText) {
+      saw_text = true;
+      REQUIRE(c.rich_paragraphs.size() == 1);
+      REQUIRE(c.rich_paragraphs[0].runs.size() == 1);
+      CHECK(c.rich_paragraphs[0].runs[0].text == "Hi");
+    }
+  }
+  CHECK(saw_text);
+}

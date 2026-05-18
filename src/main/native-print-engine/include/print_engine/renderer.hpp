@@ -51,6 +51,7 @@ struct EmittedCommand {
   bool font_italic = false;
   bool font_underline = false;
   bool font_strikethrough = false;
+  std::vector<RichParagraph> rich_paragraphs;
   // Text-layout policy. §2 measure-at-the-sink: the engine forwards these
   // verbatim and performs NO wrapping/fitting/positioning; draw_trace() does
   // real layout with device font metrics so preview == print (INV-5).

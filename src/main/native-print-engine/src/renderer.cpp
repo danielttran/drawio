@@ -119,6 +119,15 @@ RenderResult render_to_trace(
               });
             }
             text = value;
+          } else if (node.text_content_type == TextContentType::Rich) {
+            std::ostringstream rich_text;
+            for (std::size_t p = 0; p < node.rich_paragraphs.size(); ++p) {
+              if (p > 0) rich_text << "\n";
+              for (const auto& run : node.rich_paragraphs[p].runs) {
+                rich_text << run.text;
+              }
+            }
+            text = rich_text.str();
           } else {
             text = join_lines(node.static_lines);  // hard line breaks kept
           }
@@ -136,6 +145,7 @@ RenderResult render_to_trace(
             .font_italic = node.font_italic,
             .font_underline = node.font_underline,
             .font_strikethrough = node.font_strikethrough,
+            .rich_paragraphs = node.rich_paragraphs,
             .align_h = node.align_h,
             .align_v = node.align_v,
             .wrap = node.merge_wrap,

@@ -213,6 +213,178 @@
     return 'top';
   }
 
+
+
+  function rgbToHex(color) {
+    if (typeof color !== 'string') return null;
+    var v = color.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(v)) return v;
+    var m = /^rgba?\(([^)]+)\)$/.exec(v);
+    if (!m) return null;
+    var parts = m[1].split(',').map(function (x) { return x.trim(); });
+    if (parts.length < 3) return null;
+    var r = Math.max(0, Math.min(255, parseInt(parts[0], 10) || 0));
+    var g = Math.max(0, Math.min(255, parseInt(parts[1], 10) || 0));
+    var b = Math.max(0, Math.min(255, parseInt(parts[2], 10) || 0));
+    return '#' + [r, g, b].map(function (n) { return n.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  function resolveRichContentRoot(state) {
+    var wrapper = state && state.text && state.text.node ? state.text.node : null;
+    if (!wrapper || !wrapper.childNodes) return null;
+    var node = wrapper;
+    // Walk through common single-child wrappers produced by mxText/layout.
+    while (node && node.childNodes && node.childNodes.length === 1 && node.firstChild && node.firstChild.nodeType === 1) {
+      node = node.firstChild;
+    }
+    if (node && node.nodeType === 1 && node !== wrapper) return node;
+    // Fallback: first element descendant under wrapper.
+    for (var i = 0; i < wrapper.childNodes.length; i++) {
+      if (wrapper.childNodes[i] && wrapper.childNodes[i].nodeType === 1) return wrapper.childNodes[i];
+    }
+    return null;
+  }
+
+
+  function mergeAdjacentRichRuns(paragraphs) {
+    for (var p = 0; p < paragraphs.length; p++) {
+      var runs = paragraphs[p].runs || [];
+      if (runs.length < 2) continue;
+      var merged = [runs[0]];
+      for (var i = 1; i < runs.length; i++) {
+        var prev = merged[merged.length - 1];
+        var cur = runs[i];
+        var sameStyle = prev.fontFamily === cur.fontFamily &&
+          prev.sizePx === cur.sizePx &&
+          prev.weight === cur.weight &&
+          prev.italic === cur.italic &&
+          prev.underline === cur.underline &&
+          prev.strikethrough === cur.strikethrough &&
+          prev.color === cur.color;
+        if (sameStyle) prev.text += cur.text;
+        else merged.push(cur);
+      }
+      paragraphs[p].runs = merged;
+    }
+  }
+
+
+  function richTextEnabled(graph) {
+    var opts = graph && graph.nativePrintOptions ? graph.nativePrintOptions : null;
+    return !(opts && opts.richText === false);
+  }
+
+  function richContent(graph, cell, state, style, notices) {
+    if (!richTextEnabled(graph)) return null;
+    if (!graph || typeof graph.isHtmlLabel !== 'function' || !graph.isHtmlLabel(cell)) return null;
+    var s = graph.getLabel(cell);
+    if (s == null) return null;
+    var doc = root.document;
+    var host = null;
+    var useFallback = false;
+    var alphaNotice = false;
+    host = resolveRichContentRoot(state);
+    if (!host && doc && doc.createElement) {
+      host = doc.createElement('div');
+      host.innerHTML = String(s);
+      useFallback = true;
+      if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rich text live DOM not available; using detached parser', cell.id));
+    } else {
+      return null;
+    }
+    var base = {
+      family: style.fontFamily || 'Arial',
+      sizePx: number(style.fontSize, 12) || 12,
+      weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
+      italic: ((parseInt(style.fontStyle || 0, 10) || 0) & 2) !== 0,
+      underline: ((parseInt(style.fontStyle || 0, 10) || 0) & 4) !== 0,
+      strikethrough: ((parseInt(style.fontStyle || 0, 10) || 0) & 8) !== 0,
+      color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000'
+    };
+    var paras = [{ align: alignH(style.align), indentPx: 0, runs: [] }];
+    function cur() { return paras[paras.length - 1]; }
+    function addRun(txt, st) {
+      if (txt == null || txt === '') return;
+      cur().runs.push({
+        text: String(txt), fontFamily: st.family, sizePx: st.sizePx, weight: st.weight,
+        italic: !!st.italic, underline: !!st.underline, strikethrough: !!st.strikethrough, color: st.color
+      });
+    }
+    function br() { paras.push({ align: cur().align, indentPx: cur().indentPx, runs: [] }); }
+    function cssStyle(el, inherited) {
+      if (!doc || typeof root.getComputedStyle !== 'function' || !el || el.nodeType !== 1) return inherited;
+      var cs = root.getComputedStyle(el);
+      if (!cs) return inherited;
+      var next = Object.assign({}, inherited);
+      var fam = (cs.fontFamily || '').split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+      if (fam) next.family = fam;
+      var sz = parseFloat(cs.fontSize || '');
+      if (Number.isFinite(sz) && sz > 0) next.sizePx = sz;
+      var wt = parseInt(cs.fontWeight, 10);
+      if (Number.isFinite(wt)) next.weight = wt >= 600 ? 700 : 400;
+      next.italic = (cs.fontStyle || '').toLowerCase() === 'italic';
+      var dec = (cs.textDecorationLine || cs.textDecoration || '').toLowerCase();
+      next.underline = dec.indexOf('underline') >= 0;
+      next.strikethrough = dec.indexOf('line-through') >= 0;
+      var rgb = rgbToHex(cs.color || '');
+      if (rgb) next.color = rgb;
+      if (!alphaNotice && typeof cs.color === 'string' && cs.color.toLowerCase().indexOf('rgba(') === 0 && notices) {
+        if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rgba text color alpha dropped for rich text run', cell.id));
+        alphaNotice = true;
+      }
+      return next;
+    }
+    function collapseText(text, ws) {
+      if (ws && ws.indexOf('pre') === 0) return text;
+      return text.replace(/[\t\n\r ]+/g, ' ');
+    }
+    function walk(node, st, blockAlign, whiteSpace) {
+      if (node.nodeType === 3) { addRun(collapseText(node.nodeValue, whiteSpace), st); return; }
+      if (node.nodeType !== 1) return;
+      var tag = String(node.tagName || '').toLowerCase();
+      if (tag === 'br') { br(); cur().align = blockAlign; return; }
+      var ns = cssStyle(node, Object.assign({}, st));
+      var ws = whiteSpace;
+      if (doc && typeof root.getComputedStyle === 'function') {
+        var cs = root.getComputedStyle(node);
+        if (cs && cs.whiteSpace) ws = cs.whiteSpace.toLowerCase();
+      }
+      if (tag === 'b' || tag === 'strong') ns.weight = 700;
+      if (tag === 'i' || tag === 'em') ns.italic = true;
+      if (tag === 'u') ns.underline = true;
+      if (tag === 's' || tag === 'strike' || tag === 'del') ns.strikethrough = true;
+      if (tag === 'font') {
+        if (node.getAttribute('face')) ns.family = node.getAttribute('face');
+        if (node.getAttribute('size')) ns.sizePx = Math.max(1, parseFloat(node.getAttribute('size')) || ns.sizePx);
+        if (node.getAttribute('color')) {
+          var fc = rgbToHex(node.getAttribute('color')) || (isPaintable(node.getAttribute('color')) ? hex(node.getAttribute('color')) : null);
+          if (fc) ns.color = fc;
+        }
+      }
+      if (tag === 'p' || tag === 'div' || tag === 'li') {
+        if (cur().runs.length > 0) br();
+        var al = node.style && node.style.textAlign ? alignH(node.style.textAlign) : cur().align;
+        cur().align = al;
+        blockAlign = al;
+      }
+      if (tag === 'img' || tag === 'table' || tag === 'sub' || tag === 'sup') {
+        if (Array.isArray(notices)) notices.push(degradation('RichUnsupported', 'unsupported rich-text tag <' + tag + '> flattened', cell.id));
+      }
+      for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i], ns, blockAlign, ws);
+      if ((tag === 'p' || tag === 'div') && node !== host && paras.length && cur().runs.length > 0) br();
+    }
+    var startWs = 'normal';
+    if (!useFallback && doc && typeof root.getComputedStyle === 'function') {
+      var hostCs = root.getComputedStyle(host);
+      if (hostCs && hostCs.whiteSpace) startWs = hostCs.whiteSpace.toLowerCase();
+    }
+    for (var i = 0; i < host.childNodes.length; i++) walk(host.childNodes[i], base, paras[0].align, startWs);
+    mergeAdjacentRichRuns(paras);
+    if (paras.length > 1 && paras[paras.length - 1].runs.length === 0) paras.pop();
+    if (paras.length === 0) paras = [{ align: alignH(style.align), indentPx: 0, runs: [] }];
+    return { type: 'rich', paragraphs: paras };
+  }
+
   function plainLabel(graph, cell) {
     var s = graph.getLabel(cell);
     if (s == null) return '';
@@ -226,7 +398,7 @@
     return s;
   }
 
-  function textNode(style, box, label) {
+  function textNode(graph, cell, state, style, box, label, notices) {
     var fs = number(style.fontSize, 12);
     // drawio fontStyle bitmask: 1=bold, 2=italic, 4=underline, 8=strikethrough.
     var fst = parseInt(style.fontStyle || 0, 10) || 0;
@@ -243,7 +415,7 @@
         color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000'
       },
       align: { h: alignH(style.align), v: alignV(style.verticalAlign) },
-      content: { type: 'static', lines: String(label).split('\n') }
+      content: richContent(graph, cell, state, style, notices) || { type: 'static', lines: String(label).split('\n') }
     };
   }
 
@@ -335,7 +507,7 @@
       var style = graph.getCellStyle(cell) || state.style || {};
 
       if (model.isEdge(cell)) {
-        emitEdge(graph, cell, state, style, origin, scale, paint);
+        emitEdge(graph, cell, state, style, origin, scale, paint, notices);
         return;
       }
       emitVertex(graph, cell, state, style, origin, scale, paint, notices);
@@ -384,7 +556,7 @@
           stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
         });
       }
-      if (label !== '') paint.push(textNode(style, box, label));
+      if (label !== '') paint.push(textNode(graph, cell, state, style, box, label, notices));
       return;
     }
 
@@ -401,10 +573,10 @@
       stroke: strokeOf(style)
     });
 
-    if (label !== '') paint.push(textNode(style, box, label));
+    if (label !== '') paint.push(textNode(graph, cell, state, style, box, label, notices));
   }
 
-  function emitEdge(graph, cell, state, style, origin, scale, paint) {
+  function emitEdge(graph, cell, state, style, origin, scale, paint, notices) {
     var raw = state.absolutePoints || [];
     var points = [];
     for (var i = 0; i < raw.length; i++) {
@@ -432,7 +604,7 @@
 
     var label = plainLabel(graph, cell);
     if (label !== '') {
-      paint.push(textNode(style, edgeLabelBox(state, style, origin, scale, label), label));
+      paint.push(textNode(graph, cell, state, style, edgeLabelBox(state, style, origin, scale, label), label, notices));
     }
   }
 
