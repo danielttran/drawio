@@ -324,6 +324,501 @@
     return '#' + [r, g, b].map(function (n) { return n.toString(16).padStart(2, '0'); }).join('');
   }
 
+  // ---------------------------------------------------------------------------
+  // Universal shape harvesting — the "solve it once and for all".
+  //
+  // The exporter used to re-derive geometry for a hand-picked set of named
+  // shapes; everything else (umlActor, hexagon, BPMN/AWS/Azure/mscae, custom
+  // stencils, ...) fell back to a bounding box + ExporterUnsupportedShape.
+  // That can never scale to drawio's stencil catalogue.
+  //
+  // But drawio/mxGraph has ALREADY rendered every shape — whatever its kind —
+  // into the live SVG DOM at `state.shape.node`, as plain vector primitives
+  // with on-screen-accurate (theme-resolved) paint. So instead of reinventing
+  // each shape we transcribe the geometry drawio already computed: walk the
+  // rendered primitives, bake every transform (pan/zoom/rotation/flip) into
+  // absolute, scale-independent path coordinates, and resolve fill/stroke from
+  // the live computed style. The result is byte-faithful WYSIWYG for ANY
+  // shape. Runs only where a live SVG shape node exists (the drawio
+  // renderer); the Node test harness has no DOM, so the named-shape/bbox path
+  // below is used there and stays unchanged.
+
+  function mMul(P, Q) {
+    return {
+      a: P.a * Q.a + P.c * Q.b, b: P.b * Q.a + P.d * Q.b,
+      c: P.a * Q.c + P.c * Q.d, d: P.b * Q.c + P.d * Q.d,
+      e: P.a * Q.e + P.c * Q.f + P.e, f: P.b * Q.e + P.d * Q.f + P.f
+    };
+  }
+
+  function mInv(M) {
+    var det = M.a * M.d - M.b * M.c;
+    if (!det || !Number.isFinite(det)) return null;
+    var ia = M.d / det, ib = -M.b / det, ic = -M.c / det, id = M.a / det;
+    return { a: ia, b: ib, c: ic, d: id,
+      e: -(ia * M.e + ic * M.f), f: -(ib * M.e + id * M.f) };
+  }
+
+  function mPt(M, x, y) {
+    return { x: M.a * x + M.c * y + M.e, y: M.b * x + M.d * y + M.f };
+  }
+
+  function svgMat(m) {
+    return m ? { a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f } : null;
+  }
+
+  // Transform from an element's local space to the FINAL contract space.
+  // inv(parentCTM) * elementCTM removes everything up to (and including) the
+  // shape node's parent — leaving the shape node's own transform (rotation /
+  // flip) plus any nested group transforms — which lands us in the same
+  // absolute view-pixel space as state.x/y. The leading Norm then maps that
+  // to origin-relative, scale-independent contract units (matching scaledBox).
+  function harvestMatrix(el, shapeNode, origin, scale) {
+    try {
+      var parent = shapeNode.parentNode;
+      if (!parent || typeof el.getCTM !== 'function' ||
+        typeof parent.getCTM !== 'function') return null;
+      var ec = svgMat(el.getCTM()), pc = svgMat(parent.getCTM());
+      if (!ec || !pc) return null;
+      var pinv = mInv(pc);
+      if (!pinv) return null;
+      var Norm = { a: 1 / scale, b: 0, c: 0, d: 1 / scale,
+        e: -origin.x / scale, f: -origin.y / scale };
+      return mMul(Norm, mMul(pinv, ec));
+    } catch (e) { return null; }
+  }
+
+  function clampByte(v) {
+    var s = String(v).trim();
+    var n = s.indexOf('%') >= 0
+      ? parseFloat(s) / 100 * 255 : parseFloat(s);
+    return Math.max(0, Math.min(255, Math.round(Number.isFinite(n) ? n : 0)));
+  }
+
+  function toHex2(n) { return n.toString(16).padStart(2, '0'); }
+
+  // CSS color (computed-style form) -> { hex, alpha } | { none:true } | null.
+  // null means "not a color we can represent" (caller skips that paint).
+  function colorParts(c) {
+    if (typeof c !== 'string') return null;
+    var s = c.trim().toLowerCase();
+    if (s === '' || s === 'none' || s === 'transparent') return { none: true };
+    if (/^#[0-9a-f]{3}$/.test(s)) return { hex: hex(s), alpha: 1 };
+    if (/^#[0-9a-f]{6}$/.test(s)) return { hex: s, alpha: 1 };
+    var m = /^rgba?\(([^)]+)\)$/.exec(s);
+    if (m) {
+      var pr = m[1].split(/[ ,/]+/).filter(function (x) { return x !== ''; });
+      if (pr.length < 3) return null;
+      var al = pr.length > 3 ? parseFloat(pr[3]) : 1;
+      return {
+        hex: '#' + toHex2(clampByte(pr[0])) + toHex2(clampByte(pr[1])) +
+          toHex2(clampByte(pr[2])),
+        alpha: clamp01(Number.isFinite(al) ? al : 1)
+      };
+    }
+    return null;
+  }
+
+  function resolveGradient(ref, el) {
+    try {
+      var m = /url\(\s*["']?#([^"')]+)["']?\s*\)/i.exec(ref || '');
+      if (!m) return null;
+      var doc = (el.ownerSVGElement && el.ownerSVGElement.ownerDocument) ||
+        root.document;
+      var g = doc && doc.getElementById ? doc.getElementById(m[1]) : null;
+      if (!g) return null;
+      var tag = String(g.tagName || '').toLowerCase();
+      var kids = g.getElementsByTagName('stop');
+      var stops = [];
+      for (var i = 0; i < kids.length; i++) {
+        var st = kids[i];
+        var cs = root.getComputedStyle ? root.getComputedStyle(st) : null;
+        var off = st.getAttribute('offset') || '0';
+        off = off.indexOf('%') >= 0 ? parseFloat(off) / 100 : parseFloat(off);
+        var col = (cs && cs.stopColor) || st.getAttribute('stop-color') ||
+          '#000000';
+        var so = (cs && cs.stopOpacity != null && cs.stopOpacity !== '')
+          ? cs.stopOpacity : st.getAttribute('stop-opacity');
+        var cp = colorParts(col);
+        if (!cp || cp.none) continue;
+        stops.push({
+          offset: clamp01(Number.isFinite(off) ? off : 0),
+          color: cp.hex,
+          alpha: clamp01((so == null ? 1 : parseFloat(so)) * cp.alpha)
+        });
+      }
+      if (!stops.length) return null;
+      return { type: tag.indexOf('radial') >= 0 ? 'radial' : 'linear',
+        stops: stops };
+    } catch (e) { return null; }
+  }
+
+  // Resolve the element's effective paint exactly as the screen shows it.
+  // strokeWidth/dash are in scaled view px (mxSvgCanvas baked the zoom in);
+  // divide by `scale` so the contract stays zoom-independent like the rest.
+  function elementPaint(el, scale) {
+    var cs = root.getComputedStyle ? root.getComputedStyle(el) : null;
+    var get = function (prop, attr) {
+      if (cs && cs[prop] != null && cs[prop] !== '') return cs[prop];
+      var a = el.getAttribute(attr);
+      return a == null ? '' : a;
+    };
+    var go = parseFloat(get('opacity', 'opacity'));
+    if (!Number.isFinite(go)) go = 1;
+
+    var fill = null;
+    var fillRaw = get('fill', 'fill');
+    if (fillRaw && /url\(/i.test(fillRaw)) {
+      fill = resolveGradient(fillRaw, el);
+    } else {
+      var fp = colorParts(fillRaw === '' ? 'none' : fillRaw);
+      if (fp && !fp.none) {
+        var fo = parseFloat(get('fillOpacity', 'fill-opacity'));
+        fill = solid(fp.hex,
+          clamp01(fp.alpha * (Number.isFinite(fo) ? fo : 1) * go));
+      }
+    }
+
+    var stroke = null;
+    var sp = colorParts(get('stroke', 'stroke') || 'none');
+    if (sp && !sp.none) {
+      var so = parseFloat(get('strokeOpacity', 'stroke-opacity'));
+      var sw = parseFloat(get('strokeWidth', 'stroke-width'));
+      if (!Number.isFinite(sw) || sw <= 0) sw = 1;
+      var lc = get('strokeLinecap', 'stroke-linecap') || 'butt';
+      var lj = get('strokeLinejoin', 'stroke-linejoin') || 'miter';
+      var ml = parseFloat(get('strokeMiterlimit', 'stroke-miterlimit'));
+      if (!Number.isFinite(ml) || ml <= 0) ml = 10;
+      var da = get('strokeDasharray', 'stroke-dasharray');
+      var dash = null;
+      if (da && da !== 'none') {
+        dash = String(da).split(/[ ,]+/).map(function (v) {
+          return number(v, 0) / scale;
+        }).filter(function (v) { return v > 0; });
+        if (!dash.length) dash = null;
+      }
+      stroke = {
+        paint: solid(sp.hex,
+          clamp01(sp.alpha * (Number.isFinite(so) ? so : 1) * go)),
+        width: Math.max(0.1, sw / scale),
+        cap: lc === 'round' ? 'round' : lc === 'square' ? 'square' : 'butt',
+        join: lj === 'round' ? 'round' : lj === 'bevel' ? 'bevel' : 'miter',
+        miterLimit: Math.max(0.1, ml),
+        dash: dash
+      };
+    }
+    return { fill: fill, stroke: stroke };
+  }
+
+  // Transform an SVG arc by an affine matrix: endpoints move by the full
+  // matrix; the ellipse's radii/rotation are recomputed from the matrix's
+  // linear part; the sweep flag flips under a reflection (negative det).
+  function transformArc(M, rx, ry, phiDeg, large, sweep, x2, y2) {
+    var P2 = mPt(M, x2, y2);
+    if (!(rx > 0) || !(ry > 0)) return { lineTo: P2 };
+    var phi = phiDeg * Math.PI / 180;
+    var cp = Math.cos(phi), sp = Math.sin(phi);
+    var E = { a: rx * cp, b: rx * sp, c: -ry * sp, d: ry * cp };
+    var N = {
+      a: M.a * E.a + M.c * E.b, b: M.b * E.a + M.d * E.b,
+      c: M.a * E.c + M.c * E.d, d: M.b * E.c + M.d * E.d
+    };
+    var A = N.a * N.a + N.b * N.b;
+    var B = N.a * N.c + N.b * N.d;
+    var C = N.c * N.c + N.d * N.d;
+    var disc = Math.sqrt(Math.max(0, (A - C) * (A - C) + 4 * B * B));
+    var nrx = Math.sqrt(Math.max(0, (A + C + disc) / 2));
+    var nry = Math.sqrt(Math.max(0, (A + C - disc) / 2));
+    var nphi = 0.5 * Math.atan2(2 * B, A - C) * 180 / Math.PI;
+    var det = M.a * M.d - M.b * M.c;
+    return {
+      arc: {
+        rx: nrx, ry: nry, phi: nphi, large: large,
+        sweep: det < 0 ? (sweep ? 0 : 1) : sweep, x: P2.x, y: P2.y
+      }
+    };
+  }
+
+  // Parse any SVG path data, normalize to absolute, bake `M` into every
+  // coordinate, and emit only the absolute M/L/C/A/Z command set the engine
+  // already accepts (Q/T -> cubic, H/V -> L, S/T smoothing expanded).
+  function transformPath(d, M) {
+    var re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g;
+    var t, toks = [];
+    while ((t = re.exec(d))) {
+      toks.push(t[1] !== undefined ? { c: t[1] } : { n: parseFloat(t[2]) });
+    }
+    if (!toks.length || toks[0].c === undefined) return null;
+    var i = 0, out = [], cmd = null;
+    var cx = 0, cy = 0, sx = 0, sy = 0, pcx = 0, pcy = 0, pType = '';
+    var num = function () { return toks[i++].n; };
+    var more = function () {
+      return i < toks.length && toks[i].c === undefined;
+    };
+    var Pl = function (pt) {
+      var q = mPt(M, pt.x, pt.y);
+      return fmt(q.x) + ' ' + fmt(q.y);
+    };
+    var quadToCubic = function (p0, qc, p2) {
+      return [
+        { x: p0.x + 2 / 3 * (qc.x - p0.x), y: p0.y + 2 / 3 * (qc.y - p0.y) },
+        { x: p2.x + 2 / 3 * (qc.x - p2.x), y: p2.y + 2 / 3 * (qc.y - p2.y) },
+        p2
+      ];
+    };
+    var emitC = function (a, b, c2) {
+      out.push('C ' + Pl(a) + ' ' + Pl(b) + ' ' + Pl(c2));
+    };
+    while (i < toks.length) {
+      if (toks[i].c !== undefined) { cmd = toks[i].c; i++; }
+      if (cmd == null) return null;
+      var rel = cmd === cmd.toLowerCase();
+      var K = cmd.toUpperCase();
+      if (K === 'Z') { out.push('Z'); cx = sx; cy = sy; pType = ''; continue; }
+      if (K === 'M') {
+        var mx = num(), my = num();
+        if (rel) { mx += cx; my += cy; }
+        cx = mx; cy = my; sx = mx; sy = my; pType = '';
+        out.push('M ' + Pl({ x: mx, y: my }));
+        while (more()) {
+          var ax = num(), ay = num();
+          if (rel) { ax += cx; ay += cy; }
+          cx = ax; cy = ay;
+          out.push('L ' + Pl({ x: ax, y: ay }));
+        }
+        continue;
+      }
+      if (K === 'L') {
+        do {
+          var lx = num(), ly = num();
+          if (rel) { lx += cx; ly += cy; }
+          cx = lx; cy = ly;
+          out.push('L ' + Pl({ x: lx, y: ly }));
+        } while (more());
+        pType = ''; continue;
+      }
+      if (K === 'H') {
+        do {
+          var hx = num();
+          cx = rel ? cx + hx : hx;
+          out.push('L ' + Pl({ x: cx, y: cy }));
+        } while (more());
+        pType = ''; continue;
+      }
+      if (K === 'V') {
+        do {
+          var vy = num();
+          cy = rel ? cy + vy : vy;
+          out.push('L ' + Pl({ x: cx, y: cy }));
+        } while (more());
+        pType = ''; continue;
+      }
+      if (K === 'C') {
+        do {
+          var c1 = { x: num(), y: num() }, c2 = { x: num(), y: num() },
+            cp2 = { x: num(), y: num() };
+          if (rel) {
+            c1.x += cx; c1.y += cy; c2.x += cx; c2.y += cy;
+            cp2.x += cx; cp2.y += cy;
+          }
+          emitC(c1, c2, cp2);
+          pcx = c2.x; pcy = c2.y; pType = 'C'; cx = cp2.x; cy = cp2.y;
+        } while (more());
+        continue;
+      }
+      if (K === 'S') {
+        do {
+          var r1 = pType === 'C'
+            ? { x: 2 * cx - pcx, y: 2 * cy - pcy } : { x: cx, y: cy };
+          var s2 = { x: num(), y: num() }, sp2 = { x: num(), y: num() };
+          if (rel) { s2.x += cx; s2.y += cy; sp2.x += cx; sp2.y += cy; }
+          emitC(r1, s2, sp2);
+          pcx = s2.x; pcy = s2.y; pType = 'C'; cx = sp2.x; cy = sp2.y;
+        } while (more());
+        continue;
+      }
+      if (K === 'Q') {
+        do {
+          var qc = { x: num(), y: num() }, qp2 = { x: num(), y: num() };
+          if (rel) { qc.x += cx; qc.y += cy; qp2.x += cx; qp2.y += cy; }
+          var cu = quadToCubic({ x: cx, y: cy }, qc, qp2);
+          emitC(cu[0], cu[1], cu[2]);
+          pcx = qc.x; pcy = qc.y; pType = 'Q'; cx = qp2.x; cy = qp2.y;
+        } while (more());
+        continue;
+      }
+      if (K === 'T') {
+        do {
+          var tq = pType === 'Q'
+            ? { x: 2 * cx - pcx, y: 2 * cy - pcy } : { x: cx, y: cy };
+          var tp2 = { x: num(), y: num() };
+          if (rel) { tp2.x += cx; tp2.y += cy; }
+          var cu2 = quadToCubic({ x: cx, y: cy }, tq, tp2);
+          emitC(cu2[0], cu2[1], cu2[2]);
+          pcx = tq.x; pcy = tq.y; pType = 'Q'; cx = tp2.x; cy = tp2.y;
+        } while (more());
+        continue;
+      }
+      if (K === 'A') {
+        do {
+          var grx = Math.abs(num()), gry = Math.abs(num()), gxr = num(),
+            glf = num() ? 1 : 0, gsf = num() ? 1 : 0,
+            gex = num(), gey = num();
+          if (rel) { gex += cx; gey += cy; }
+          var ar = transformArc(M, grx, gry, gxr, glf, gsf, gex, gey);
+          if (ar.lineTo) {
+            out.push('L ' + fmt(ar.lineTo.x) + ' ' + fmt(ar.lineTo.y));
+          } else if (ar.arc.rx > 0 && ar.arc.ry > 0) {
+            out.push('A ' + fmt(ar.arc.rx) + ' ' + fmt(ar.arc.ry) + ' ' +
+              fmt(ar.arc.phi) + ' ' + ar.arc.large + ' ' + ar.arc.sweep +
+              ' ' + fmt(ar.arc.x) + ' ' + fmt(ar.arc.y));
+          } else {
+            var qe = mPt(M, gex, gey);
+            out.push('L ' + fmt(qe.x) + ' ' + fmt(qe.y));
+          }
+          cx = gex; cy = gey; pType = '';
+        } while (more());
+        continue;
+      }
+      return null;
+    }
+    var s = out.join(' ');
+    return s.charAt(0) === 'M' ? s : null;
+  }
+
+  function attrNum(el, name, dflt) {
+    var v = parseFloat(el.getAttribute(name));
+    return Number.isFinite(v) ? v : dflt;
+  }
+
+  // SVG primitive element -> local path data (consumed by transformPath).
+  function primitiveToD(el, tag) {
+    if (tag === 'path') {
+      var dd = el.getAttribute('d');
+      return dd && dd.trim() ? dd : null;
+    }
+    if (tag === 'rect') {
+      var x = attrNum(el, 'x', 0), y = attrNum(el, 'y', 0),
+        w = attrNum(el, 'width', 0), h = attrNum(el, 'height', 0);
+      if (w <= 0 || h <= 0) return null;
+      var rx = attrNum(el, 'rx', NaN), ry = attrNum(el, 'ry', NaN);
+      if (!Number.isFinite(rx)) rx = ry;
+      if (!Number.isFinite(ry)) ry = rx;
+      if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0) {
+        rx = Math.min(rx, w / 2); ry = Math.min(ry, h / 2);
+        return 'M ' + (x + rx) + ' ' + y +
+          ' L ' + (x + w - rx) + ' ' + y +
+          ' A ' + rx + ' ' + ry + ' 0 0 1 ' + (x + w) + ' ' + (y + ry) +
+          ' L ' + (x + w) + ' ' + (y + h - ry) +
+          ' A ' + rx + ' ' + ry + ' 0 0 1 ' + (x + w - rx) + ' ' + (y + h) +
+          ' L ' + (x + rx) + ' ' + (y + h) +
+          ' A ' + rx + ' ' + ry + ' 0 0 1 ' + x + ' ' + (y + h - ry) +
+          ' L ' + x + ' ' + (y + ry) +
+          ' A ' + rx + ' ' + ry + ' 0 0 1 ' + (x + rx) + ' ' + y + ' Z';
+      }
+      return 'M ' + x + ' ' + y + ' L ' + (x + w) + ' ' + y +
+        ' L ' + (x + w) + ' ' + (y + h) + ' L ' + x + ' ' + (y + h) + ' Z';
+    }
+    if (tag === 'circle') {
+      var ccx = attrNum(el, 'cx', 0), ccy = attrNum(el, 'cy', 0),
+        cr = attrNum(el, 'r', 0);
+      if (cr <= 0) return null;
+      return 'M ' + (ccx - cr) + ' ' + ccy +
+        ' A ' + cr + ' ' + cr + ' 0 1 0 ' + (ccx + cr) + ' ' + ccy +
+        ' A ' + cr + ' ' + cr + ' 0 1 0 ' + (ccx - cr) + ' ' + ccy + ' Z';
+    }
+    if (tag === 'ellipse') {
+      var ex = attrNum(el, 'cx', 0), ey = attrNum(el, 'cy', 0),
+        erx = attrNum(el, 'rx', 0), ery = attrNum(el, 'ry', 0);
+      if (erx <= 0 || ery <= 0) return null;
+      return 'M ' + (ex - erx) + ' ' + ey +
+        ' A ' + erx + ' ' + ery + ' 0 1 0 ' + (ex + erx) + ' ' + ey +
+        ' A ' + erx + ' ' + ery + ' 0 1 0 ' + (ex - erx) + ' ' + ey + ' Z';
+    }
+    if (tag === 'line') {
+      return 'M ' + attrNum(el, 'x1', 0) + ' ' + attrNum(el, 'y1', 0) +
+        ' L ' + attrNum(el, 'x2', 0) + ' ' + attrNum(el, 'y2', 0);
+    }
+    if (tag === 'polyline' || tag === 'polygon') {
+      var raw = (el.getAttribute('points') || '').trim();
+      if (!raw) return null;
+      var ns = raw.split(/[\s,]+/).map(parseFloat)
+        .filter(function (v) { return Number.isFinite(v); });
+      if (ns.length < 4) return null;
+      var sd = 'M ' + ns[0] + ' ' + ns[1];
+      for (var k = 2; k + 1 < ns.length; k += 2) sd += ' L ' + ns[k] + ' ' + ns[k + 1];
+      if (tag === 'polygon') sd += ' Z';
+      return sd;
+    }
+    return null;
+  }
+
+  function imageHref(el) {
+    return el.getAttribute('href') ||
+      (el.getAttributeNS ? el.getAttributeNS(
+        'http://www.w3.org/1999/xlink', 'href') : null) ||
+      el.getAttribute('xlink:href');
+  }
+
+  // Transcribe drawio's already-rendered SVG for this cell. Returns an array
+  // of contract paint nodes, or null to signal "fall back to the named-shape
+  // path" (no live SVG, or it couldn't be placed reliably).
+  function harvestShape(cell, state, origin, scale, notices) {
+    if (!state || !state.shape || !state.shape.node) return null;
+    var node = state.shape.node;
+    if (!node.childNodes || typeof node.getCTM !== 'function') return null;
+    try {
+      var GRAPHIC = ['path', 'rect', 'circle', 'ellipse', 'line',
+        'polyline', 'polygon', 'image'];
+      var list = [];
+      (function rec(e) {
+        if (!e || e.nodeType !== 1) return;
+        var tg = String(e.tagName || '').toLowerCase();
+        if (tg === 'text' || tg === 'tspan' || tg === 'foreignobject' ||
+          tg === 'defs') return;          // labels/defs handled elsewhere
+        if (GRAPHIC.indexOf(tg) >= 0) list.push(e);
+        for (var k = 0; k < e.childNodes.length; k++) rec(e.childNodes[k]);
+      })(node);
+      if (!list.length) return null;
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var el = list[i];
+        var tag = String(el.tagName || '').toLowerCase();
+        var M = harvestMatrix(el, node, origin, scale);
+        if (!M) return null;     // can't place reliably -> use the fallback
+        if (tag === 'image') {
+          var pim = parseImage(imageHref(el));
+          if (pim && pim.format === 'png') {
+            var q0 = mPt(M, attrNum(el, 'x', 0), attrNum(el, 'y', 0));
+            var q1 = mPt(M, attrNum(el, 'x', 0) + attrNum(el, 'width', 0),
+              attrNum(el, 'y', 0) + attrNum(el, 'height', 0));
+            out.push({
+              kind: 'image',
+              box: { x: Math.min(q0.x, q1.x), y: Math.min(q0.y, q1.y),
+                w: Math.max(1, Math.abs(q1.x - q0.x)),
+                h: Math.max(1, Math.abs(q1.y - q0.y)) },
+              format: 'png', data: pim.data, aspect: 'fill',
+              flipH: false, flipV: false
+            });
+          } else if (Array.isArray(notices)) {
+            notices.push(degradation('ExporterUnsupportedImage',
+              'embedded stencil image is not an inline PNG; not rendered',
+              cell.id));
+          }
+          continue;
+        }
+        var local = primitiveToD(el, tag);
+        if (local == null) continue;
+        var d = transformPath(local, M);
+        if (!d) continue;
+        var pp = elementPaint(el, scale);
+        if (!pp.fill && !pp.stroke) continue;   // invisible hit-area: skip
+        out.push({ kind: 'path', d: d, fill: pp.fill, stroke: pp.stroke });
+      }
+      return out.length ? out : null;
+    } catch (e) { return null; }
+  }
+
   function resolveRichContentRoot(state) {
     var wrapper = state && state.text && state.text.node ? state.text.node : null;
     if (!wrapper || !wrapper.childNodes) return null;
@@ -662,6 +1157,22 @@
       if (label !== '') {
         var ilb = labelBoxNode(style, box);
         if (ilb) paint.push(ilb);
+        paint.push(textNode(graph, cell, state, style, box, label, notices));
+      }
+      return;
+    }
+
+    // Universal path: transcribe drawio's own rendered SVG so EVERY shape —
+    // built-in, stencil, UML/BPMN/AWS/Azure/mscae, custom — bakes faithfully.
+    // Only when no live SVG exists (e.g. headless) do we fall back to the
+    // named-shape geometry, and to a bounding box + loud notice as a last
+    // resort.
+    var harvested = harvestShape(cell, state, origin, scale, notices);
+    if (harvested) {
+      for (var hi = 0; hi < harvested.length; hi++) paint.push(harvested[hi]);
+      if (label !== '') {
+        var hlb = labelBoxNode(style, box);
+        if (hlb) paint.push(hlb);
         paint.push(textNode(graph, cell, state, style, box, label, notices));
       }
       return;

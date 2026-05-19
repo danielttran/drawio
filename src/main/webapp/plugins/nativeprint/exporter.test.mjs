@@ -361,6 +361,89 @@ for (const shape of UNSUPPORTED) {
   });
 }
 
+// ===========================================================================
+// UNIVERSAL SHAPE HARVESTING
+//
+// In the real drawio renderer EVERY shape (built-in, stencil, UML/BPMN/AWS/
+// custom) is already drawn into the live SVG at state.shape.node. The
+// exporter transcribes that geometry, so the "unsupported shape" notice must
+// NOT fire for an arbitrary stencil when a rendered SVG node exists. This
+// mocks a minimal SVG DOM (identity CTMs => only the origin/scale Norm
+// applies) and proves the transcription is faithful, notice-free and
+// schema-valid for shapes the named-path code never knew about.
+// ===========================================================================
+function svgEl(tag, attrs = {}, children = []) {
+  const I = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  return {
+    nodeType: 1, tagName: tag, childNodes: children,
+    parentNode: { nodeType: 1, getCTM: () => I },
+    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
+    getAttributeNS: () => null,
+    getCTM: () => I
+  };
+}
+function harvestFixture(node, style, label = '') {
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 10, y: 20, width: 80, height: 40, shape: { node } } };
+  return exporter.buildResult(graphFixture(
+    cells, states, { v: label }, { v: style }, FIXED_BOUNDS, 1));
+}
+
+test('arbitrary stencil with a live SVG node bakes faithfully (no notice)', () => {
+  // A "umlActor"-style stick figure: things the named-path code never had.
+  const node = svgEl('g', {}, [
+    svgEl('ellipse', { cx: 50, cy: 30, rx: 10, ry: 10,
+      fill: '#abcdef', stroke: '#123456', 'stroke-width': '2' }),
+    svgEl('path', { d: 'M 50 40 L 50 70 M 30 50 L 70 50 M 50 70 L 35 95 M 50 70 L 65 95',
+      fill: 'none', stroke: '#123456', 'stroke-width': '2' })
+  ]);
+  const r = harvestFixture(node, { shape: 'umlActor' });
+  assert.equal(r.notices.length, 0, 'a rendered shape must NOT degrade');
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'the generic unsupported-shape notice must never fire when SVG exists');
+  const paint = r.contract.document.pages[0].paint;
+  const paths = paint.filter((n) => n.kind === 'path');
+  assert.equal(paths.length, 2, 'every rendered primitive transcribed');
+  // origin (10,20) scale 1 => ellipse center (50,30) -> (40,10), an A-arc body.
+  assert.match(paths[0].d, /^M 30 10 A 10 10 /);
+  assert.equal(paths[0].fill.color, '#abcdef');
+  assert.equal(paths[0].stroke.paint.color, '#123456');
+  // The figure path keeps its sub-paths and is origin-normalized.
+  assert.ok(paths[1].d.startsWith('M 40 20 L 40 50'));
+  assert.equal(paths[1].fill, null, 'fill="none" stays unpainted');
+  assertSchemaValid(r.contract, 'harvested umlActor');
+});
+
+test('harvested transforms: rect/poly normalized, hit-area skipped', () => {
+  const node = svgEl('g', {}, [
+    // invisible event/hit area drawio adds — must be skipped, not printed.
+    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
+      fill: 'none', stroke: 'none' }),
+    svgEl('rect', { x: 20, y: 30, width: 40, height: 20, rx: 5, ry: 5,
+      fill: '#ff0000', stroke: '#000000', 'stroke-width': '4' }),
+    svgEl('polygon', { points: '50,20 90,60 10,60',
+      fill: '#00ff00', stroke: '#000000' })
+  ]);
+  const r = harvestFixture(node, { shape: 'mxgraph.custom.weird' });
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.equal(r.notices.length, 0);
+  assert.equal(paths.length, 2, 'fill:none+stroke:none hit-area dropped');
+  // rounded rect -> origin-normalized, rounded corners present as arcs.
+  assert.match(paths[0].d, /^M /);
+  assert.match(paths[0].d, / A 5 5 0 0 1 /);
+  assert.equal(paths[0].stroke.width, 4, 'stroke width is zoom-independent');
+  // polygon closed + normalized: (50,20)->(40,0), (90,60)->(80,40)...
+  assert.equal(paths[1].d, 'M 40 0 L 80 40 L 0 40 Z');
+  assertSchemaValid(r.contract, 'harvested transforms');
+});
+
+test('harvest absent (headless) -> named-shape/notice fallback preserved', () => {
+  // No state.shape => the legacy path still runs (this is what Node CI uses).
+  const r = oneVertex({ shape: 'umlActor', fillColor: '#abcdef', strokeColor: '#fedcba' });
+  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'without a live SVG node the loud fallback is unchanged');
+});
+
 // ---- Fill variants -------------------------------------------------------
 test('fill: solid / none / transparent / gradient / opacity', () => {
   assert.equal(oneVertex({ shape: 'rectangle' }).contract.document.pages[0].paint[0].fill, null,
