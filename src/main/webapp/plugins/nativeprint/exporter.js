@@ -31,34 +31,99 @@
       /^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c);
   }
 
-  // drawio's default stylesheet stores fill/stroke/fontColor as the literal
-  // sentinel "default" (styles/default.xml), resolved at render to
-  // graph.shapeBackgroundColor (fill) / shapeForegroundColor (stroke+font) —
-  // see Graph.js mxStencil.parseColor. Those are CSS `light-dark(a,b)` values;
-  // for print we take the light side. Without resolving the sentinel,
-  // isPaintable("default") is false, so default-styled VERTICES baked with
-  // null fill AND null stroke and rendered invisibly (edges/labels survived
-  // via their own black fallback). This is faithful resolution, NOT inventing
-  // paint: an explicit `none` (text/group styles) stays none and is untouched.
-  function lightOf(cssColor, fallback) {
+  // STRICT WYSIWYG (project rule, no exceptions): the bake must resolve every
+  // theme-dependent color to the side the editor is CURRENTLY rendering, not a
+  // forced light side. drawio's defaultVertex / label styles resolve to CSS
+  // `light-dark(<light>, <dark>)` (verified live, e.g.
+  // `light-dark(#ffffff, var(--ge-dark-color,#121212))`); older builds leave
+  // the literal sentinel "default". isPaintable() rejects both, so without
+  // normalization a themed cell bakes with null paint and prints invisibly.
+  // We pick the active side via Editor.isDarkMode() (drawio's authoritative
+  // flag), unwrap `var(--x, #hex)` to its hex fallback, and resolve "default"
+  // to the themed shapeBackground/shapeForeground. hex / `none` /
+  // `transparent` are passed through untouched (genuinely unpainted cells —
+  // text/group — stay unpainted; never invent paint).
+  function isDark() {
+    try {
+      return !!(root.Editor && typeof root.Editor.isDarkMode === 'function' &&
+        root.Editor.isDarkMode());
+    } catch (e) { return false; }
+  }
+
+  // Resolve a possibly-themed CSS color to a concrete value for the ACTIVE
+  // theme. `light-dark(L,D)` -> L or D; `var(--x, fb)` -> fb; else unchanged.
+  function themeColor(cssColor, fallback) {
     if (typeof cssColor !== 'string' || cssColor === '') return fallback;
-    var m = /^light-dark\(\s*([^,]+?)\s*,/.exec(cssColor);
-    return ((m ? m[1] : cssColor).trim()) || fallback;
+    var c = cssColor.trim();
+    var ld = /^light-dark\(\s*([^,]+?)\s*,\s*(.+)\s*\)\s*$/i.exec(c);
+    if (ld) c = (isDark() ? ld[2] : ld[1]).trim();
+    var v = /^var\(\s*--[^,]+,\s*(.+?)\s*\)\s*$/i.exec(c);
+    if (v) c = v[1].trim();
+    return c || fallback;
   }
 
   function resolveThemeDefaults(style, graph) {
     if (!style) return style;
-    var bg = lightOf(graph && graph.shapeBackgroundColor, '#ffffff');
-    var fg = lightOf(graph && graph.shapeForegroundColor, '#000000');
+    var bg = themeColor(graph && graph.shapeBackgroundColor,
+      isDark() ? '#121212' : '#ffffff');
+    var fg = themeColor(graph && graph.shapeForegroundColor,
+      isDark() ? '#ffffff' : '#000000');
     var out = style, cloned = false;
-    ['fillColor', 'gradientColor', 'strokeColor', 'fontColor']
-      .forEach(function (k) {
-        if (style[k] === 'default') {
-          if (!cloned) { out = Object.assign({}, style); cloned = true; }
-          out[k] = (k === 'fillColor' || k === 'gradientColor') ? bg : fg;
+    var set = function (k, v) {
+      if (out[k] === v) return;
+      if (!cloned) { out = Object.assign({}, style); cloned = true; }
+      out[k] = v;
+    };
+    // labelBackgroundColor/labelBorderColor are theme colors too
+    // (Graph.colorStyles): "default" -> background / foreground respectively.
+    [['fillColor', 0], ['gradientColor', 0], ['strokeColor', 1],
+     ['fontColor', 1], ['labelBackgroundColor', 0], ['labelBorderColor', 1]]
+      .forEach(function (pair) {
+        var k = pair[0], v = style[k];
+        if (typeof v !== 'string') return;
+        var def = pair[1] === 0 ? bg : fg;
+        var r = v;
+        // Pick the active theme side first; the chosen side can itself be the
+        // "default" sentinel (e.g. light-dark(default, #ad1414)) -> resolve
+        // that to the themed bg/fg afterwards.
+        if (/^\s*light-dark\(/i.test(r) || /^\s*var\(/i.test(r)) {
+          r = themeColor(r, def);
         }
+        if (r === 'default') { r = def; }
+        if (r !== v) { set(k, r); }
       });
     return out;
+  }
+
+  // drawio draws a label background (and optional border) box behind the text,
+  // ABOVE the shape. The bake never emitted it -> labelled text printed with
+  // no box. Colors here are already theme-resolved by resolveThemeDefaults
+  // (WYSIWYG). Accepts drawio's 8-digit #rrggbbaa label-bg alpha form too.
+  // Box == the label box passed to textNode: exact for fixed/wrapped text
+  // cells (the reported case); autosize/offset labels are a known follow-up
+  // (would need sink-side measured-bg, like text position already is).
+  function colorToSolid(c) {
+    if (typeof c !== 'string') return null;
+    var s = c.trim();
+    var m8 = /^#?([0-9a-fA-F]{6})([0-9a-fA-F]{2})$/.exec(s);
+    if (m8) return solid('#' + m8[1], parseInt(m8[2], 16) / 255);
+    return isPaintable(s) ? solid(s, 1) : null;
+  }
+
+  function labelBoxNode(style, box) {
+    var bg = colorToSolid(style.labelBackgroundColor);
+    var bc = isPaintable(style.labelBorderColor) ? style.labelBorderColor : null;
+    if (!bg && !bc) return null;
+    return {
+      kind: 'path',
+      d: rectPath(box.x, box.y, box.w, box.h),
+      fill: bg,
+      stroke: bc ? {
+        paint: solid(bc, 1),
+        width: Math.max(0.1, number(style.labelBorderWidth, 1)),
+        cap: 'butt', join: 'miter', miterLimit: 10, dash: null
+      } : null
+    };
   }
 
   function hex(c) {
@@ -594,7 +659,11 @@
           stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
         });
       }
-      if (label !== '') paint.push(textNode(graph, cell, state, style, box, label, notices));
+      if (label !== '') {
+        var ilb = labelBoxNode(style, box);
+        if (ilb) paint.push(ilb);
+        paint.push(textNode(graph, cell, state, style, box, label, notices));
+      }
       return;
     }
 
@@ -611,7 +680,11 @@
       stroke: strokeOf(style)
     });
 
-    if (label !== '') paint.push(textNode(graph, cell, state, style, box, label, notices));
+    if (label !== '') {
+      var vlb = labelBoxNode(style, box);
+      if (vlb) paint.push(vlb);
+      paint.push(textNode(graph, cell, state, style, box, label, notices));
+    }
   }
 
   function emitEdge(graph, cell, state, style, origin, scale, paint, notices) {
@@ -642,7 +715,10 @@
 
     var label = plainLabel(graph, cell);
     if (label !== '') {
-      paint.push(textNode(graph, cell, state, style, edgeLabelBox(state, style, origin, scale, label), label, notices));
+      var elBox = edgeLabelBox(state, style, origin, scale, label);
+      var elb = labelBoxNode(style, elBox);
+      if (elb) paint.push(elb);
+      paint.push(textNode(graph, cell, state, style, elBox, label, notices));
     }
   }
 

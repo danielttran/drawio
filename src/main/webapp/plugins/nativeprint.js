@@ -19,6 +19,9 @@
   }
   window.Draw.loadPlugin(function (ui) {
   'use strict';
+  // Debug handle: lets the print contract be inspected from the console
+  // (`window.nativePrintUi`). Harmless, no behavior change.
+  try { window.nativePrintUi = ui; } catch (e) { /* sandboxed */ }
   console.log('[native-print] plugin attached — File > Native Print ready.');
 
   var RPC = '/native-print/rpc';

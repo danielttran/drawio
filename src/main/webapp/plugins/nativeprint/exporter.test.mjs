@@ -432,6 +432,72 @@ test('default-styled vertex (fillColor/strokeColor="default") stays visible', ()
     'strokeColor "default" -> light shapeForegroundColor');
 });
 
+// The ACTUAL runtime form (verified via live getCellStyle): defaultVertex
+// resolves to a CSS light-dark() value, NOT the literal "default". This is
+// the exact style that printed invisibly for `rounded=0;whiteSpace=wrap;html=1`.
+test('default-styled vertex (light-dark() resolved form) stays visible', () => {
+  const p = oneVertex({
+    shape: 'label',
+    fillColor: 'light-dark(#ffffff, var(--ge-dark-color, #121212))',
+    strokeColor: 'light-dark(#000000, #ffffff)',
+    fontColor: 'light-dark(#000000, #ffffff)'
+  }).contract.document.pages[0].paint[0];
+  assert.equal(p.kind, 'path');
+  assert.deepEqual(p.fill, { type: 'solid', color: '#ffffff', alpha: 1 },
+    'light-dark fill -> light side #ffffff, never null');
+  assert.ok(p.stroke && p.stroke.paint, 'light-dark stroke -> real stroke, never null');
+  assert.equal(p.stroke.paint.color, '#000000', 'light-dark stroke -> light side #000000');
+});
+
+// STRICT WYSIWYG: when the editor is in dark mode the bake must emit the DARK
+// side, not a forced light side (the earlier light-only behavior is revoked).
+test('WYSIWYG: dark editor mode bakes the dark-side color', () => {
+  globalThis.Editor = { isDarkMode: () => true };
+  try {
+    const p = oneVertex({
+      shape: 'label',
+      fillColor: 'light-dark(#ffffff, var(--ge-dark-color, #121212))',
+      strokeColor: 'light-dark(#000000, #ffffff)'
+    }).contract.document.pages[0].paint[0];
+    assert.deepEqual(p.fill, { type: 'solid', color: '#121212', alpha: 1 },
+      'dark mode -> dark side, var() unwrapped to #121212');
+    assert.equal(p.stroke.paint.color, '#ffffff', 'dark mode -> dark stroke #ffffff');
+  } finally {
+    delete globalThis.Editor;
+  }
+});
+
+// The reported text cell: text;...;labelBorderColor=default;
+// labelBackgroundColor=light-dark(default, #ad1414); must get a box behind it.
+test('label background/border box is emitted for a text cell (WYSIWYG)', () => {
+  const style = {
+    shape: 'label', whiteSpace: 'wrap',
+    strokeColor: 'none', fillColor: 'none',
+    labelBorderColor: 'default',
+    labelBackgroundColor: 'light-dark(default, #ad1414)'
+  };
+  // Light editor: light side is the "default" sentinel -> themed background.
+  const lp = oneVertex(style, 'Hello').contract.document.pages[0].paint;
+  const lbox = lp.find(n => n.kind === 'path' && n.fill);
+  assert.ok(lbox, 'a filled label box path is emitted (light)');
+  assert.equal(lbox.fill.color, '#ffffff', 'light: default label bg -> themed background');
+  assert.ok(lbox.stroke && lbox.stroke.paint.color === '#000000',
+    'light: default label border -> themed foreground');
+  // The box must sit BEHIND the text (drawn before it).
+  assert.ok(lp.indexOf(lbox) < lp.findIndex(n => n.kind === 'text'),
+    'label box is painted before (behind) the text');
+
+  // Dark editor: dark side #ad1414 must print (no light-forcing exception).
+  globalThis.Editor = { isDarkMode: () => true };
+  try {
+    const dp = oneVertex(style, 'Hello').contract.document.pages[0].paint;
+    const dbox = dp.find(n => n.kind === 'path' && n.fill);
+    assert.equal(dbox.fill.color, '#ad1414', 'dark: label bg = #ad1414, exactly as seen');
+  } finally {
+    delete globalThis.Editor;
+  }
+});
+
 test('explicit none is still none (sentinel fix must not over-paint)', () => {
   // text/group styles use fillColor=none;strokeColor=none -- must stay unpainted.
   const p = oneVertex({ shape: 'rectangle', fillColor: 'none', strokeColor: 'none' })
