@@ -437,6 +437,37 @@ test('harvested transforms: rect/poly normalized, hit-area skipped', () => {
   assertSchemaValid(r.contract, 'harvested transforms');
 });
 
+test('malformed harvested path data cannot hang the bake (regression)', () => {
+  // Trailing numbers after Z have no owning command: the path parser must
+  // bail (not spin forever). The cell then degrades via the normal fallback.
+  const node = svgEl('g', {}, [
+    svgEl('path', { d: 'M 0 0 Z 5 5', fill: '#abcdef', stroke: '#123456' })
+  ]);
+  const r = harvestFixture(node, { shape: 'umlActor' });
+  // The whole shape's only primitive was unparseable -> harvest yields
+  // nothing -> the loud named-shape fallback runs (never silent, never hung).
+  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'));
+  assertSchemaValid(r.contract, 'malformed harvested path');
+});
+
+test('one unplaceable sub-element does not discard the whole shape', () => {
+  // Element with no usable CTM (getCTM -> null, like display:none) must be
+  // skipped, NOT abort the harvest and re-raise a false unsupported notice.
+  const blind = svgEl('path', { d: 'M 0 0 L 9 9', stroke: '#000000' });
+  blind.getCTM = () => null;
+  const node = svgEl('g', {}, [
+    blind,
+    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
+      fill: '#ff0000', stroke: '#000000' })
+  ]);
+  const r = harvestFixture(node, { shape: 'mxgraph.custom.partial' });
+  assert.equal(r.notices.length, 0, 'visible sibling keeps the shape faithful');
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.equal(paths.length, 1, 'only the placeable primitive is emitted');
+  assert.equal(paths[0].d, 'M 0 0 L 80 0 L 80 40 L 0 40 Z');
+  assertSchemaValid(r.contract, 'partial harvest');
+});
+
 test('harvest absent (headless) -> named-shape/notice fallback preserved', () => {
   // No state.shape => the legacy path still runs (this is what Node CI uses).
   const r = oneVertex({ shape: 'umlActor', fillColor: '#abcdef', strokeColor: '#fedcba' });

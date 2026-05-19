@@ -572,6 +572,11 @@
     while (i < toks.length) {
       if (toks[i].c !== undefined) { cmd = toks[i].c; i++; }
       if (cmd == null) return null;
+      // A coordinate with no owning command (e.g. trailing numbers after Z)
+      // is malformed and non-consuming -> would spin forever. Bail; the
+      // caller falls back to the named-shape/bbox path.
+      if (i < toks.length && toks[i].c === undefined &&
+        cmd.toUpperCase() === 'Z') return null;
       var rel = cmd === cmd.toLowerCase();
       var K = cmd.toUpperCase();
       if (K === 'Z') { out.push('Z'); cx = sx; cy = sy; pType = ''; continue; }
@@ -785,7 +790,10 @@
         var el = list[i];
         var tag = String(el.tagName || '').toLowerCase();
         var M = harvestMatrix(el, node, origin, scale);
-        if (!M) return null;     // can't place reliably -> use the fallback
+        // Not placeable (e.g. an unrendered display:none sub-element, which
+        // is invisible on screen anyway) -> skip just this primitive; keep
+        // the rest of the shape faithful instead of degrading the whole cell.
+        if (!M) continue;
         if (tag === 'image') {
           var pim = parseImage(imageHref(el));
           if (pim && pim.format === 'png') {
