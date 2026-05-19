@@ -246,9 +246,16 @@ function assertSchemaValid(contract, label) {
     assert.ok(page.size.w >= 1 && page.size.h >= 1, `${ctx}page size`);
     assert.ok(Array.isArray(page.tiles) && page.tiles.length >= 1, `${ctx}tiles`);
     for (const n of page.paint) {
-      assert.ok(n.kind === 'path' || n.kind === 'text' || n.kind === 'image',
+      assert.ok(['path', 'text', 'image', 'svg'].includes(n.kind),
         `${ctx}kind ${n.kind}`);
-      if (n.kind === 'image') {
+      if (n.kind === 'svg') {
+        for (const k of ['x', 'y', 'w', 'h']) {
+          assert.equal(typeof n.box[k], 'number', `${ctx}svg box.${k}`);
+        }
+        assert.match(n.source, /^[A-Za-z0-9+/]+={0,2}$/,
+          `${ctx}svg.source must be bare base64`);
+        assert.ok(['fill', 'preserve'].includes(n.aspect), `${ctx}svg.aspect`);
+      } else if (n.kind === 'image') {
         for (const k of ['x', 'y', 'w', 'h']) {
           assert.equal(typeof n.box[k], 'number', `${ctx}image box.${k}`);
         }
@@ -275,7 +282,21 @@ function assertSchemaValid(contract, label) {
         assert.ok(['top', 'middle', 'bottom'].includes(n.align.v),
           `${ctx}align.v`);
         assert.match(n.font.color, /^#[0-9a-f]{6}$/, `${ctx}font.color hex`);
-        assert.ok(Array.isArray(n.content.lines), `${ctx}content.lines`);
+        // Content is EITHER static {lines:[...]} OR rich {paragraphs:[{runs}]}.
+        if (n.content.type === 'rich') {
+          assert.ok(Array.isArray(n.content.paragraphs) &&
+            n.content.paragraphs.length >= 1, `${ctx}content.paragraphs`);
+          for (const para of n.content.paragraphs) {
+            assert.ok(Array.isArray(para.runs), `${ctx}paragraph.runs`);
+            for (const run of para.runs) {
+              assert.equal(typeof run.text, 'string', `${ctx}run.text`);
+              assert.match(run.color, /^#[0-9a-f]{6}$/, `${ctx}run.color hex`);
+              assert.ok(run.sizePx > 0, `${ctx}run.sizePx>0`);
+            }
+          }
+        } else {
+          assert.ok(Array.isArray(n.content.lines), `${ctx}content.lines`);
+        }
       }
     }
   }
@@ -360,6 +381,341 @@ for (const shape of UNSUPPORTED) {
     assertSchemaValid(r.contract, shape);
   });
 }
+
+// ===========================================================================
+// UNIVERSAL SHAPE HARVESTING
+//
+// In the real drawio renderer EVERY shape (built-in, stencil, UML/BPMN/AWS/
+// custom) is already drawn into the live SVG at state.shape.node. The
+// exporter transcribes that geometry, so the "unsupported shape" notice must
+// NOT fire for an arbitrary stencil when a rendered SVG node exists. This
+// mocks a minimal SVG DOM (identity CTMs => only the origin/scale Norm
+// applies) and proves the transcription is faithful, notice-free and
+// schema-valid for shapes the named-path code never knew about.
+// ===========================================================================
+function svgEl(tag, attrs = {}, children = []) {
+  const I = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  return {
+    nodeType: 1, tagName: tag, childNodes: children,
+    parentNode: { nodeType: 1, getCTM: () => I },
+    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
+    getAttributeNS: () => null,
+    getCTM: () => I
+  };
+}
+function harvestFixture(node, style, label = '') {
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 10, y: 20, width: 80, height: 40, shape: { node } } };
+  return exporter.buildResult(graphFixture(
+    cells, states, { v: label }, { v: style }, FIXED_BOUNDS, 1));
+}
+
+// ===========================================================================
+// TRUE-WYSIWYG: per-cell `svg` node carries drawio's LITERAL rendered SVG.
+// Nothing re-derived; the engine rasterizes exactly what was drawn (loud
+// SvgArtworkStub if the host lacks an SVG backend — never silent).
+// ===========================================================================
+function domEl(tag, attrs = {}, children = [], text = '') {
+  const a = Object.keys(attrs)
+    .map((k) => ` ${k}="${attrs[k]}"`).join('');
+  const self = {
+    nodeType: 1, tagName: tag, childNodes: children,
+    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
+    getAttributeNS: () => null, ownerDocument: null
+  };
+  self.outerHTML = `<${tag}${a}>${text}` +
+    children.map((c) => c.outerHTML || '').join('') + `</${tag}>`;
+  return self;
+}
+const decodeSvg = (n) => Buffer.from(n.source, 'base64').toString('utf8');
+function svgFixture(shapeNode, textNode, style, opt = {}) {
+  const doc = { getElementById: (id) => (opt.defs && opt.defs[id]) || null };
+  shapeNode.ownerDocument = doc;
+  shapeNode.parentNode = opt.parent ||
+    { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) };
+  if (textNode) textNode.ownerDocument = doc;
+  const isEdge = !!opt.edge;
+  const st = isEdge
+    ? { x: 0, y: 0, width: 0, height: 0, absolutePoints: opt.pts || null,
+        shape: { node: shapeNode } }
+    : { x: 10, y: 20, width: 80, height: 40, shape: { node: shapeNode } };
+  if (textNode) st.text = { node: textNode };
+  const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge,
+    html: !!opt.html } };
+  return exporter.buildResult(graphFixture(
+    cells, { v: st }, { v: opt.label || '' }, { v: style }, FIXED_BOUNDS, 1));
+}
+
+test('vertex emits ONE faithful svg node (shape+label), no re-derivation', () => {
+  const shape = domEl('g', {}, [domEl('ellipse', { cx: 50, cy: 40, rx: 30, ry: 20 })]);
+  const text = domEl('g', { 'class': 'lbl' }, [], 'Hello WYSIWYG');
+  const r = svgFixture(shape, text, { shape: 'umlActor' });
+  const paint = r.contract.document.pages[0].paint;
+  assert.equal(paint.length, 1, 'exactly one node — the literal SVG');
+  const n = paint[0];
+  assert.equal(n.kind, 'svg');
+  assert.equal(n.aspect, 'preserve');
+  // origin (10,20) scale 1, SVG_PAD 2 -> box -2,-2 .. 84x44
+  assert.deepEqual(n.box, { x: -2, y: -2, w: 84, h: 44 });
+  const svg = decodeSvg(n);
+  assert.match(svg, /^<svg [^>]*width="84" height="44"/);
+  assert.ok(svg.includes('<ellipse'), 'shape transcribed verbatim');
+  assert.ok(svg.includes('Hello WYSIWYG'), 'label transcribed verbatim');
+  assert.match(svg, /scale\(1\)/, 'view->contract transform present');
+  assert.ok(!paint.some((p) => p.kind === 'text'),
+    'no separate re-derived text node — text is the real SVG');
+  assert.equal(r.notices.length, 0);
+  assertSchemaValid(r.contract, 'svg vertex');
+});
+
+test('svg node inlines referenced defs (gradients/filters/markers)', () => {
+  const grad = domEl('linearGradient', { id: 'g1' }, [domEl('stop', { offset: '0' })]);
+  const shape = domEl('g', {}, [domEl('rect', { fill: 'url(#g1)' })]);
+  const r = svgFixture(shape, null, { shape: 'x' }, { defs: { g1: grad } });
+  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('<defs>') && svg.includes('linearGradient id="g1"'),
+    'referenced gradient is inlined so the SVG is self-contained');
+});
+
+// Mock the live drawio DOM exactly as harvestShape's tests mock getCTM:
+// per-word client rects + element rects + computed style. NO browser.
+function mkRange() {
+  return {
+    _n: null, _s: 0, _e: 0,
+    setStart(n, o) { this._n = n; this._s = o; },
+    setEnd(_n, o) { this._e = o; },
+    getClientRects() {
+      return [{ left: 100 + this._s * 7, top: this._n._top || 50,
+        width: (this._e - this._s) * 7, height: 14 }];
+    },
+    getBoundingClientRect() { return this.getClientRects()[0]; }
+  };
+}
+function styleFor(tag) {
+  const base = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0, 0, 0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0, 0, 0, 0)', display: 'block',
+    listStyleType: 'disc', letterSpacing: 'normal' };
+  if (tag === 'rootdiv') return { ...base, backgroundColor: 'rgb(240,240,240)' };
+  if (tag === 'span') return { ...base, display: 'inline', fontFamily: 'Times',
+    fontStyle: 'italic', color: 'rgb(255, 0, 0)', textDecorationLine: 'underline',
+    backgroundColor: 'rgb(0, 255, 0)' };
+  if (tag === 'li') return { ...base, display: 'list-item' };
+  return base;
+}
+function htmlFixtureNodes() {
+  const t = { nodeType: 3, nodeValue: 'Hello World', _top: 50 };
+  const span = { nodeType: 1, tagName: 'span', _styleKey: 'span',
+    childNodes: [t], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 84, height: 14 }) };
+  t.parentNode = span;
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [span], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
+  const fo = {
+    nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'Hello World',
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange }
+  };
+  return { nodeType: 1, tagName: 'g', childNodes: [fo] };
+}
+
+test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio positions', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
+    const n = r.contract.document.pages[0].paint[0];
+    assert.equal(n.kind, 'svg');
+    const svg = decodeSvg(n);
+    assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped');
+    // scale 1, vb (10,20), PAD 2 -> M = matrix(1 0 0 1 -8 -18); identity parent
+    assert.match(svg, /<g transform="matrix\(1 0 0 1 -8 -18\)">/);
+    // label background (rootDiv) + inline background (span), in screen px
+    assert.match(svg, /<rect x="90" y="40" width="100" height="40" fill="#f0f0f0"\/>/);
+    assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
+    // exact words at measured rects, top-anchored (no baseline guessing)
+    // y = rect.top(50) + (lineBox 14 - fontSize 12)/2 = 51 (half-leading)
+    assert.match(svg, /<text x="100" y="51" font-family="Times" font-size="12" font-weight="400" font-style="italic" text-decoration="underline" fill="#ff0000" text-anchor="start" dominant-baseline="text-before-edge" xml:space="preserve">Hello<\/text>/);
+    assert.match(svg, /<text x="142" [^>]*>World<\/text>/);
+    assert.ok(!r.notices.some((x) => x.kind === 'SvgForeignObject'),
+      'transcribed faithfully -> no foreignObject notice');
+    assertSchemaValid(r.contract, 'fo->svg');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs oriented', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    // cell-group screen CTM = 90deg rotation + 2x zoom -> a=0 b=2 c=-2 d=0
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' },
+      { parent: { getScreenCTM: () => ({ a: 0, b: 2, c: -2, d: 0, e: 0, f: 0 }) } });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // M = Mtr * inv(screenCTM); inv of (0 2 -2 0 0 0) = (0 -0.5 0.5 0 0 0),
+    // Mtr=(1 0 0 1 -8 -18) -> M=(0 -0.5 0.5 0 -8 -18): non-axis-aligned => rot
+    assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 -8 -18\)">/,
+      'screen rotation/zoom preserved in the emitted matrix');
+    assert.ok(!/<foreignObject/i.test(svg));
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('list marker: glyph + numbering exact, inset measured from content, loud', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const t = { nodeType: 3, nodeValue: 'Item one' };
+  const li = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  t.parentNode = li;
+  const ul = { nodeType: 1, tagName: 'ul', childNodes: [li],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [ul],
+    textContent: 'Item one',
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }),
+    ownerDocument: { createRange: mkRange } };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, textRoot, { shape: 'rect' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // first word "Item" rect.left = 100 (mkRange); marker right-aligned a
+    // 0.5em(=6px @12) gap left of content -> x=94, anchor=end; y=top+half-lead
+    assert.match(svg, /<text x="94" y="51"[^>]*text-anchor="end"[^>]*>•<\/text>/,
+      'bullet glyph placed by measured content inset');
+    assert.match(svg, /<text x="100" [^>]*text-anchor="start"[^>]*>Item<\/text>/);
+    assert.ok(r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
+      '::marker box not measurable browser-free -> inherently loud');
+    assert.ok(!/<foreignObject/i.test(svg));
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('un-measurable HTML label HARD-FAILS the export (no silent drop/approx)', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  // foreignObject with real text but NO createRange/getComputedStyle/CTM.
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
+    textContent: 'Important label', ownerDocument: {} };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  assert.throws(() => svgFixture(shape, textRoot, { shape: 'rect' }),
+    /NativePrintFatal/,
+    'present-but-unmeasurable label aborts the whole print, never silent');
+});
+
+test('empty HTML label is not an error (no text -> nothing emitted, no fatal)', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
+    textContent: '   ', ownerDocument: {} };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  const r = svgFixture(shape, textRoot, { shape: 'rect' });
+  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+  assert.ok(!/<foreignObject/i.test(svg) && !/<text/.test(svg));
+  assert.equal(r.notices.length, 0);
+});
+
+test('edge takes the svg path with a viewport derived from its points', () => {
+  const conn = domEl('path', { d: 'M 0 0 L 100 100', stroke: '#000' });
+  const r = svgFixture(conn, null, { strokeColor: '#000' },
+    { edge: true, pts: [{ x: 10, y: 20 }, { x: 110, y: 90 }] });
+  const n = r.contract.document.pages[0].paint[0];
+  assert.equal(n.kind, 'svg');
+  assert.ok(n.box.w > 100 && n.box.h > 70, 'viewport spans the routed points');
+  assert.ok(decodeSvg(n).includes('M 0 0 L 100 100'), 'connector verbatim');
+  assertSchemaValid(r.contract, 'svg edge');
+});
+
+test('no live DOM (headless) -> svg path is skipped, vector fallback intact', () => {
+  const r = oneVertex({ shape: 'ellipse', fillColor: '#112233', strokeColor: '#445566' });
+  assert.ok(!r.contract.document.pages[0].paint.some((n) => n.kind === 'svg'),
+    'headless never fabricates an svg node');
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'path');
+});
+
+test('arbitrary stencil with a live SVG node bakes faithfully (no notice)', () => {
+  // A "umlActor"-style stick figure: things the named-path code never had.
+  const node = svgEl('g', {}, [
+    svgEl('ellipse', { cx: 50, cy: 30, rx: 10, ry: 10,
+      fill: '#abcdef', stroke: '#123456', 'stroke-width': '2' }),
+    svgEl('path', { d: 'M 50 40 L 50 70 M 30 50 L 70 50 M 50 70 L 35 95 M 50 70 L 65 95',
+      fill: 'none', stroke: '#123456', 'stroke-width': '2' })
+  ]);
+  const r = harvestFixture(node, { shape: 'umlActor' });
+  assert.equal(r.notices.length, 0, 'a rendered shape must NOT degrade');
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'the generic unsupported-shape notice must never fire when SVG exists');
+  const paint = r.contract.document.pages[0].paint;
+  const paths = paint.filter((n) => n.kind === 'path');
+  assert.equal(paths.length, 2, 'every rendered primitive transcribed');
+  // origin (10,20) scale 1 => ellipse center (50,30) -> (40,10), an A-arc body.
+  assert.match(paths[0].d, /^M 30 10 A 10 10 /);
+  assert.equal(paths[0].fill.color, '#abcdef');
+  assert.equal(paths[0].stroke.paint.color, '#123456');
+  // The figure path keeps its sub-paths and is origin-normalized.
+  assert.ok(paths[1].d.startsWith('M 40 20 L 40 50'));
+  assert.equal(paths[1].fill, null, 'fill="none" stays unpainted');
+  assertSchemaValid(r.contract, 'harvested umlActor');
+});
+
+test('harvested transforms: rect/poly normalized, hit-area skipped', () => {
+  const node = svgEl('g', {}, [
+    // invisible event/hit area drawio adds — must be skipped, not printed.
+    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
+      fill: 'none', stroke: 'none' }),
+    svgEl('rect', { x: 20, y: 30, width: 40, height: 20, rx: 5, ry: 5,
+      fill: '#ff0000', stroke: '#000000', 'stroke-width': '4' }),
+    svgEl('polygon', { points: '50,20 90,60 10,60',
+      fill: '#00ff00', stroke: '#000000' })
+  ]);
+  const r = harvestFixture(node, { shape: 'mxgraph.custom.weird' });
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.equal(r.notices.length, 0);
+  assert.equal(paths.length, 2, 'fill:none+stroke:none hit-area dropped');
+  // rounded rect -> origin-normalized, rounded corners present as arcs.
+  assert.match(paths[0].d, /^M /);
+  assert.match(paths[0].d, / A 5 5 0 0 1 /);
+  assert.equal(paths[0].stroke.width, 4, 'stroke width is zoom-independent');
+  // polygon closed + normalized: (50,20)->(40,0), (90,60)->(80,40)...
+  assert.equal(paths[1].d, 'M 40 0 L 80 40 L 0 40 Z');
+  assertSchemaValid(r.contract, 'harvested transforms');
+});
+
+test('malformed harvested path data cannot hang the bake (regression)', () => {
+  // Trailing numbers after Z have no owning command: the path parser must
+  // bail (not spin forever). The cell then degrades via the normal fallback.
+  const node = svgEl('g', {}, [
+    svgEl('path', { d: 'M 0 0 Z 5 5', fill: '#abcdef', stroke: '#123456' })
+  ]);
+  const r = harvestFixture(node, { shape: 'umlActor' });
+  // The whole shape's only primitive was unparseable -> harvest yields
+  // nothing -> the loud named-shape fallback runs (never silent, never hung).
+  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'));
+  assertSchemaValid(r.contract, 'malformed harvested path');
+});
+
+test('one unplaceable sub-element does not discard the whole shape', () => {
+  // Element with no usable CTM (getCTM -> null, like display:none) must be
+  // skipped, NOT abort the harvest and re-raise a false unsupported notice.
+  const blind = svgEl('path', { d: 'M 0 0 L 9 9', stroke: '#000000' });
+  blind.getCTM = () => null;
+  const node = svgEl('g', {}, [
+    blind,
+    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
+      fill: '#ff0000', stroke: '#000000' })
+  ]);
+  const r = harvestFixture(node, { shape: 'mxgraph.custom.partial' });
+  assert.equal(r.notices.length, 0, 'visible sibling keeps the shape faithful');
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.equal(paths.length, 1, 'only the placeable primitive is emitted');
+  assert.equal(paths[0].d, 'M 0 0 L 80 0 L 80 40 L 0 40 Z');
+  assertSchemaValid(r.contract, 'partial harvest');
+});
+
+test('harvest absent (headless) -> named-shape/notice fallback preserved', () => {
+  // No state.shape => the legacy path still runs (this is what Node CI uses).
+  const r = oneVertex({ shape: 'umlActor', fillColor: '#abcdef', strokeColor: '#fedcba' });
+  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'without a live SVG node the loud fallback is unchanged');
+});
 
 // ---- Fill variants -------------------------------------------------------
 test('fill: solid / none / transparent / gradient / opacity', () => {
@@ -602,6 +958,77 @@ test('non-html labels keep static content even if value contains angle brackets'
   assert.equal(node.content.lines[0].includes('NotHTMLMode'), true);
 });
 
+// ===========================================================================
+// LABEL-ONLY / PARAGRAPH OBJECTS  (reported: "Paragraph of Text" not shown)
+//
+// drawio's `text` element (text;whiteSpace=wrap;html=1;fillColor=none;
+// strokeColor=none) paints no body; its multi-<p>/<div> content is the whole
+// object. Three defects made it print blank:
+//  (a) richContent bailed when a LIVE label DOM existed, so the browser never
+//      used rich extraction and fell back to plainLabel;
+//  (b) plainLabel merged <p>/<div> blocks into ONE line that overflowed;
+//  (c) shape=text was wrongly flagged ExporterUnsupportedShape + drew an
+//      invisible bbox body.
+// ===========================================================================
+test('text shape is label-only: no unsupported notice, no invisible body', () => {
+  const r = oneVertex(
+    { shape: 'text', whiteSpace: 'wrap', align: 'left',
+      fillColor: 'none', strokeColor: 'none' },
+    'Paragraph content here');
+  assert.equal(r.notices.length, 0,
+    'the text element is not an unsupported stencil');
+  const paint = r.contract.document.pages[0].paint;
+  assert.ok(!paint.some((n) => n.kind === 'path'),
+    'no body path is emitted (drawio paints nothing for text)');
+  const t = paint.find((n) => n.kind === 'text');
+  assert.ok(t, 'the label itself is still laid out');
+  assert.equal(t.content.lines[0], 'Paragraph content here');
+});
+
+test('plainLabel splits block-level HTML into separate lines', () => {
+  const t = oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000' },
+    '<p>First paragraph</p><p>Second paragraph</p><div>Third</div>')
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.equal(t.content.type, 'static', 'headless -> static fallback');
+  const joined = t.content.lines.join('|');
+  // The reported failure was the blob "First paragraphSecond paragraph".
+  assert.ok(!/paragraphSecond/.test(joined), 'paragraphs must NOT be merged');
+  assert.ok(t.content.lines.includes('First paragraph'));
+  assert.ok(t.content.lines.includes('Second paragraph'));
+  assert.ok(t.content.lines.includes('Third'));
+});
+
+test('rich extraction runs when a LIVE label DOM exists (inverted-cond fix)', () => {
+  // Minimal live DOM: state.text.node -> wrapper -> inner -> [<p>A</p>,<p>B</p>]
+  const txt = (v) => ({ nodeType: 3, nodeValue: v, childNodes: [] });
+  const pEl = (v) => ({
+    nodeType: 1, tagName: 'P', style: {},
+    getAttribute: () => null, childNodes: [txt(v)]
+  });
+  const inner = { nodeType: 1, tagName: 'DIV', style: {},
+    getAttribute: () => null, childNodes: [pEl('Alpha'), pEl('Beta')] };
+  const wrapper = { nodeType: 1, tagName: 'DIV', style: {},
+    getAttribute: () => null, childNodes: [inner], firstChild: inner };
+
+  const cells = { v: { id: 'v', vertex: true, html: true } };
+  const states = { v: { x: 10, y: 20, width: 200, height: 120,
+    text: { node: wrapper } } };
+  const styles = { v: { shape: 'text', whiteSpace: 'wrap', align: 'left' } };
+  const labels = { v: '<p>Alpha</p><p>Beta</p>' };
+  const r = exporter.buildResult(
+    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.ok(t, 'text node emitted');
+  assert.equal(t.content.type, 'rich',
+    'a found live host must now drive rich extraction (was returning null)');
+  const texts = t.content.paragraphs.map(
+    (p) => p.runs.map((x) => x.text).join(''));
+  assert.ok(texts.includes('Alpha') && texts.includes('Beta'),
+    'each <p> becomes its own paragraph');
+  assertSchemaValid(r.contract, 'live-host rich');
+});
+
 test('edge html labels still emit text and preserve compatibility in no-DOM environments', () => {
   const cells = { e: { id: 'e', edge: true, html: true } };
   const states = {
@@ -821,6 +1248,110 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
   assert.ok(r.contract.document.pages[0].paint.length >=
     SUPPORTED_SHAPES.length + UNSUPPORTED.length,
     'no cell silently dropped');
+});
+
+// ---- WYSIWYG invariant: no object is SILENTLY wrong ----------------------
+// The guarantee is "faithful OR loudly noticed, never silently diverged".
+// This sweep enforces the structural half of it headlessly: anything with a
+// non-empty label must yield a text node carrying that text (the plainLabel-
+// merge / blank-paragraph class), and every cell must produce visible paint
+// or a notice (nothing silently vanishes). The pixel half is the in-app
+// runtime self-check.
+function textOfNode(n) {
+  if (!n || n.kind !== 'text') return '';
+  if (n.content.type === 'rich') {
+    return n.content.paragraphs
+      .map((p) => p.runs.map((r) => r.text).join('')).join('\n');
+  }
+  return (n.content.lines || []).join('\n');
+}
+test('WYSIWYG invariant: every labelled object carries its text, nothing silent', () => {
+  const cells = {}, states = {}, styles = {}, labels = {};
+  let i = 0;
+  const add = (style, isEdge, label) => {
+    const id = 'c' + i++;
+    cells[id] = { id, vertex: !isEdge, edge: isEdge, html: /[<]/.test(label || '') };
+    states[id] = isEdge
+      ? { x: 0, y: 0, width: 0, height: 0,
+          absolutePoints: [{ x: i * 7, y: 7 }, { x: i * 7 + 60, y: 67 }],
+          absoluteOffset: { x: i * 7 + 30, y: 37 } }
+      : { x: (i % 7) * 70, y: Math.floor(i / 7) * 70, width: 60, height: 44 };
+    styles[id] = style;
+    labels[id] = label || '';
+  };
+  for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Body Text');
+  for (const shape of UNSUPPORTED) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'Stencil');
+  add({ shape: 'text', whiteSpace: 'wrap', fillColor: 'none', strokeColor: 'none' }, false, 'Plain text element');
+  add({ shape: 'rectangle', strokeColor: '#000000' }, false, '<p>Para one</p><p>Para two</p><div>Para three</div>');
+  add({ strokeColor: '#000000', endArrow: 'block' }, true, 'Edge label');
+  add({ shape: 'image', image: 'https://example.com/x.png' }, false, 'Image caption');
+
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  assertSchemaValid(r.contract, 'wysiwyg-invariant');
+  const paint = r.contract.document.pages[0].paint;
+
+  // Per-OBJECT enforcement: every labelled cell must contribute its OWN
+  // non-empty text node. A weak "some text exists anywhere" check would pass
+  // even if one cell silently lost its label, so count instead: the number
+  // of non-empty text nodes must be >= the number of labelled cells, and
+  // every labelled cell's text must appear verbatim in the contract.
+  const labelled = Object.keys(cells).filter((id) => labels[id] !== '');
+  const textNodes = paint.filter((n) => n.kind === 'text').map(textOfNode);
+  const nonEmpty = textNodes.filter((t) => t.trim() !== '');
+  assert.ok(nonEmpty.length >= labelled.length,
+    `every labelled object keeps its own text node ` +
+    `(${nonEmpty.length} non-empty vs ${labelled.length} labelled)`);
+  const haystack = textNodes.join('');
+  for (const id of labelled) {
+    // First non-whitespace word of the (de-HTML'd) label must be present.
+    const probe = String(labels[id])
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().split(' ')[0];
+    assert.ok(probe === '' || haystack.includes(probe),
+      `cell ${id} text "${probe}" must reach the contract (not silently dropped)`);
+  }
+  // Multi-paragraph HTML must not collapse to a single blob line.
+  const blob = paint.filter((n) => n.kind === 'text').map(textOfNode)
+    .find((t) => /Para one/.test(t));
+  assert.ok(blob && /Para one[\s\S]*Para two/.test(blob) && !/onePara two/.test(blob),
+    'paragraphs stay separated, never merged');
+  // Nothing silently vanished: paint count >= number of cells, OR a notice
+  // explains the gap.
+  const cellCount = Object.keys(cells).length;
+  assert.ok(paint.length >= cellCount || r.notices.length > 0,
+    'every cell contributes visible paint or a loud notice');
+});
+
+// Architecture lock: when a cell has a live rendered DOM, the bake MUST
+// emit exactly its literal SVG and MUST NOT also emit any re-derived
+// (path/text) geometry for it. This enforces "guarantee by construction"
+// in the headless harness — no browser, no pixel compare.
+test('WYSIWYG architecture lock: live DOM => one svg node, zero re-derivation', () => {
+  const mk = (i) => domEl('g', { id: 's' + i },
+    [domEl('path', { d: `M ${i} ${i} L ${i + 5} ${i + 5}` })], 'L' + i);
+  const cells = {}, states = {}, styles = {}, labels = {};
+  const doc = { getElementById: () => null };
+  for (let i = 0; i < 6; i++) {
+    const id = 'c' + i;
+    const sn = mk(i); sn.ownerDocument = doc;
+    cells[id] = { id, vertex: true };
+    states[id] = { x: 10 + i, y: 20 + i, width: 40, height: 30,
+      shape: { node: sn } };
+    styles[id] = { shape: i % 2 ? 'umlActor' : 'mxgraph.x.y' };
+    labels[id] = '';
+  }
+  const r = exporter.buildResult(
+    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  const paint = r.contract.document.pages[0].paint;
+  const svgs = paint.filter((n) => n.kind === 'svg');
+  assert.equal(svgs.length, 6, 'one svg node per live cell');
+  assert.equal(paint.length, 6, 'NOTHING re-derived alongside the svg');
+  assert.ok(!paint.some((n) => n.kind === 'path' || n.kind === 'text'),
+    'no re-derived path/text when the literal SVG is available');
+  svgs.forEach((n, i) => {
+    assert.ok(decodeSvg(n).includes(`<path d="M ${i} ${i}`),
+      'each svg carries that cell\'s own rendered geometry');
+  });
+  assertSchemaValid(r.contract, 'architecture-lock');
 });
 
 // ---- Cross-process gate: real engine accepts every exporter output -------

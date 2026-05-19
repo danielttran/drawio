@@ -149,12 +149,26 @@
 
     // The contract depends on the chosen paper, so re-bake on every paper
     // (and printer) change — not just re-preview the stale single bake.
+    // Returns false if the bake hard-failed (e.g. NativePrintFatal): the
+    // contract is cleared, the operator is told loudly, and the caller must
+    // NOT preview/print a stale or partial page (WYSIWYG-or-loud).
     function rebake() {
-      if (!window.NativePrintExporter.buildResult) return;
-      var r = window.NativePrintExporter.buildResult(
-        ui.editor.graph, paperPx());
-      contract = r.contract;
-      exporterNotices = r.notices || [];
+      if (!window.NativePrintExporter.buildResult) return true;
+      try {
+        var r = window.NativePrintExporter.buildResult(
+          ui.editor.graph, paperPx());
+        contract = r.contract;
+        exporterNotices = r.notices || [];
+        return true;
+      } catch (e) {
+        contract = null;
+        exporterNotices = [];
+        rearm();
+        status.textContent = 'Bake failed: ' + e.message;
+        ui.showError('Native Print',
+          'Bake failed — nothing was printed.\n' + e.message, 'OK');
+        return false;
+      }
     }
 
     function refreshGate() {
@@ -197,6 +211,7 @@
 
     function doPreview() {
       rearm();
+      if (!contract) return;   // bake hard-failed; never preview stale output
       status.textContent = 'Rendering preview…';
       rpc({ action: 'preview', contract: contract,
         dpi: selectedDpi() }).then(function (m) {
@@ -224,10 +239,10 @@
         stockSel.appendChild(o);
       });
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
-      rearm(); rebake(); doPreview();
+      rearm(); if (rebake()) doPreview();
     });
     stockSel.addEventListener('change', function () {
-      rearm(); rebake(); doPreview();
+      rearm(); if (rebake()) doPreview();
     });
     copies.addEventListener('change', rearm);
 

@@ -140,6 +140,24 @@ scripts, `merge` combined with `rich`. Degrade to best-effort styled plain text
 Reuse the existing `degradation()` helper in the exporter and the engine
 `DegradationNotice` surface.
 
+**HTML-label transcription (implemented, exporter `svgCellNode`).** HTML
+labels are NEVER shipped as `<foreignObject>` and are NEVER re-laid-out by
+the engine. At bake time the live-DOM rendered label is transcribed to
+plain SVG primitives at the exact screen positions: one `<g matrix>` (M =
+screen→cell-SVG-local, carrying drawio's rotation/zoom/flip), top-anchored
+`<text>` per measured word (no baseline/metric guessing), `<rect>` for
+label + inline backgrounds, `text-decoration` for underline/strike/overline,
+deterministic glyphs for standard list markers. Notices:
+- `SvgListMarkerApprox` — list marker position derived from content
+  metrics, or a non-standard `list-style-type` rendered as a bullet
+  (faithful-or-loud).
+- **Hard fail (no notice — aborts the whole export):** a foreignObject
+  with real text but an unmeasurable live DOM throws `NativePrintFatal`.
+  Per owner ruling, a missing/approximated object on print is unacceptable
+  and there is no faithful source without the DOM (a browser is forbidden,
+  G3), so the export refuses rather than emit a wrong/partial page. The
+  legacy `SvgForeignObject` verbatim-passthrough notice is retired.
+
 ---
 
 ## 5. Browser-dependency analysis (G3 — explicit)
