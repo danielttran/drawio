@@ -1245,6 +1245,33 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
+  // First rendered word's client rect inside `el` (document order), or null.
+  function firstWordRect(el, doc) {
+    try {
+      var stack = [el];
+      while (stack.length) {
+        var n = stack.shift();
+        if (n.nodeType === 3) {
+          var mm = n.nodeValue && /\S+/.exec(n.nodeValue);
+          if (mm) {
+            var rg = doc.createRange();
+            rg.setStart(n, mm.index);
+            rg.setEnd(n, mm.index + mm[0].length);
+            var li = (typeof rg.getClientRects === 'function')
+              ? rg.getClientRects() : null;
+            var rc = (li && li.length) ? li[0] : rg.getBoundingClientRect();
+            if (rc && (rc.width || rc.height)) return rc;
+          }
+        } else if (n.nodeType === 1 && n.childNodes) {
+          for (var i = n.childNodes.length - 1; i >= 0; i--) {
+            stack.unshift(n.childNodes[i]);
+          }
+        }
+      }
+    } catch (e) { /* fall through */ }
+    return null;
+  }
+
   // TRUE-WYSIWYG HTML labels, browser-free and engine-frozen: harvest the
   // ACTUAL laid-out text/decorations/backgrounds from the live drawio DOM
   // (the same bake-time DOM read already used for shape geometry — NOT an
@@ -1303,20 +1330,26 @@
               glyph = '•';
               if (Array.isArray(notices)) {
                 notices.push(degradation('SvgListMarkerApprox',
-                  'list-style-type "' + lt + '" approximated with a bullet ' +
-                  '(faithful-or-loud)', cellId));
+                  'list-style-type "' + lt + '" rendered as a bullet ' +
+                  '(no standard glyph)', cellId));
               }
             } else if (Array.isArray(notices)) {
+              // The ::marker pseudo-box is not measurable without a browser
+              // (C2); glyph + numbering are exact, the inset is derived
+              // from the measured first-content position. Inherently loud.
               notices.push(degradation('SvgListMarkerApprox',
-                'list marker position derived from content metrics ' +
-                '(faithful-or-loud)', cellId));
+                'list marker inset derived from content metrics ' +
+                '(::marker box not measurable browser-free)', cellId));
             }
             if (glyph) {
-              var rr = n.getBoundingClientRect();
               var fr0 = fontRun(ecs);
-              runs.push({ rect: { left: rr.left, top: rr.top,
-                width: 0, height: rr.height },
-                text: glyph, f: fr0, marker: true });
+              var cRect = firstWordRect(n, doc);
+              var mr = cRect || n.getBoundingClientRect();
+              // Right-align the marker a font-derived gap left of content.
+              var mx = cRect ? (cRect.left - fr0.size * 0.5) : mr.left;
+              runs.push({ rect: { left: mx, top: mr.top,
+                width: 0, height: mr.height },
+                text: glyph, f: fr0, anchor: cRect ? 'end' : 'start' });
             }
           }
           for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
@@ -1355,7 +1388,11 @@
     for (var j = 0; j < runs.length; j++) {
       var R = runs[j], f = R.f;
       if (f.fill == null) continue;
-      body += '<text x="' + fmt(R.rect.left) + '" y="' + fmt(R.rect.top) +
+      // Client rects are line-box tall; the browser centres glyphs in the
+      // line box (half-leading). Anchor the em-box top there so vertical
+      // placement matches the screen exactly, not just the line-box top.
+      var yy = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
+      body += '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
         '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
         '" font-weight="' + f.weight + '"' +
         (f.italic ? ' font-style="italic"' : '') +
@@ -1364,7 +1401,8 @@
           ? ' letter-spacing="' + fmt(f.letterSpacing) + '"' : '') +
         ' fill="' + f.fill + '"' +
         (f.fillOpacity < 1 ? ' fill-opacity="' + fmt(f.fillOpacity) + '"' : '') +
-        ' text-anchor="start" dominant-baseline="text-before-edge"' +
+        ' text-anchor="' + (R.anchor || 'start') +
+        '" dominant-baseline="text-before-edge"' +
         ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
     }
     return '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +

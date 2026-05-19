@@ -159,38 +159,35 @@ the cell. `buildResult` deliberately does not catch it.
 
 ---
 
-## 6. Known residuals (must be closed for *absolute* WYSIWYG)
+## 6. Residuals
 
-These are stated honestly; none is silent. Priority order:
+### 6.1 Vertical anchor vs. CSS line-height — **CLOSED**
+`getClientRects()` fragment rects are line-box tall and the browser
+centres glyphs in the line box (half-leading). Transcription now anchors
+the em-box top at `y = rect.top + max(0,(rect.height - fontSize)/2)`
+(`rect.height` *is* the used line-box height, so `'normal'` line-height
+needs no probe). Vertical placement matches the screen. Covered by the
+transcription test (`y="51"` for a 14 px line box / 12 px font).
 
-### 6.1 Vertical anchor vs. CSS line-height (highest priority)
-`getClientRects()` fragment rects are **line-box** tall. We top-anchor
-(`dominant-baseline=text-before-edge`, `y=rect.top`). When CSS
-`line-height > font-size`, the browser centers glyphs in the line box
-(half-leading above), so transcribed glyphs sit up to
-`(lineHeight - fontSize)/2` px too high (≈1–2 px at 14 px / normal).
-**Fix:** set `y = rect.top + (lineHeightPx - fontSizePx)/2`, computing
-`lineHeightPx` from `getComputedStyle(parent).lineHeight`, resolving
-`'normal'` via a one-line measured probe (`Range` over a single
-character). Until fixed, this is a sub-pixel-to-~2px vertical residual on
-multi-line/large-line-height labels — validate in §7.
+### 6.2 List-marker x-inset — **CLOSED (inherently loud, by C2)**
+The marker glyph and numbering are exact (standard `list-style-type`s).
+The marker is now positioned from the **measured first-content `Range`
+rect** of the `<li>` (right-aligned a `0.5em` gap left of content,
+`text-anchor="end"`), falling back to the `<li>` rect only if content is
+unmeasurable. The browser `::marker` pseudo-box is **not measurable
+without a browser** (C2), so the inset remains derived — therefore a loud
+`SvgListMarkerApprox` notice is **inherent and correct** here, not a TODO
+to remove. Covered by the list-marker test.
 
-### 6.2 List-marker x-inset
-Marker glyph and numbering are exact; the marker’s **x position** uses the
-list item’s own rect (not the browser marker box), so the inset is
-metric-derived → flagged loud (`SvgListMarkerApprox`). **Fix:** measure
-the first content `Range` rect of the `<li>` and place the marker a
-measured gap to its left; drop the notice once exact.
-
-### 6.3 All `buildResult` call sites must surface the fatal
-`plugins/nativeprint.js`: `openDialog()` (~L55) wraps `buildResult` in
-try/catch and shows `ui.showError(...)` — correct. **But `rebake()`
-(~L154) and the `buildContract` path (`exporter.js` ~L1690
-`return buildResult(graph).contract`) do not.** A `NativePrintFatal`
-thrown there would be unhandled. **Fix:** wrap every `buildResult` call
-site so `NativePrintFatal` aborts the print/preview with a loud,
-specific dialog and disables the Print button — never swallowed, never a
-stale/partial preview.
+### 6.3 Surface the fatal at every `buildResult` call site — **CLOSED**
+`plugins/nativeprint.js`: `openDialog()` already try/caught the initial
+bake. `rebake()` now try/catches too — on `NativePrintFatal` it clears
+`contract`, re-arms, shows `ui.showError(...)`, and returns `false`; the
+`printerSel`/`stockSel` handlers gate `doPreview()` on that, and
+`doPreview()` bails when `contract` is null. No stale/partial preview or
+print can occur. (The exporter-internal `buildContract` getter still
+*throws* by design; its callers must surface it — production paths now
+do.)
 
 ### 6.4 Inputs assumed
 Transcription assumes a live SVG DOM where elements expose
@@ -234,10 +231,13 @@ be signed off before claiming done.
 2. The contract contains **zero** `<foreignObject>` on the live path.
 3. Every non-faithful pixel carries a loud scoped notice; every
    unmeasurable label hard-fails the export (no missing/wrong page).
-4. §6.1, §6.2, §6.3 closed (with browser-free tests).
-5. Exporter `node --test` green; engine `ctest` 106/106.
-6. The §7 manual validation signed off.
-7. Engine and contract bytes unchanged (C3).
+4. §6.1, §6.2, §6.3 closed with browser-free tests — **done**
+   (§6.2’s `SvgListMarkerApprox` is inherent under C2, not a defect).
+5. Exporter `node --test` green (83 / 82 pass / 1 engine-skip); engine
+   `ctest` 106/106 — **done**.
+6. The §7 manual validation signed off — **pending** (the only
+   remaining item; the one allowed manual step).
+7. Engine and contract bytes unchanged (C3) — **done**.
 
 ---
 

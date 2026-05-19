@@ -536,7 +536,8 @@ test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio po
     assert.match(svg, /<rect x="90" y="40" width="100" height="40" fill="#f0f0f0"\/>/);
     assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
     // exact words at measured rects, top-anchored (no baseline guessing)
-    assert.match(svg, /<text x="100" y="50" font-family="Times" font-size="12" font-weight="400" font-style="italic" text-decoration="underline" fill="#ff0000" text-anchor="start" dominant-baseline="text-before-edge" xml:space="preserve">Hello<\/text>/);
+    // y = rect.top(50) + (lineBox 14 - fontSize 12)/2 = 51 (half-leading)
+    assert.match(svg, /<text x="100" y="51" font-family="Times" font-size="12" font-weight="400" font-style="italic" text-decoration="underline" fill="#ff0000" text-anchor="start" dominant-baseline="text-before-edge" xml:space="preserve">Hello<\/text>/);
     assert.match(svg, /<text x="142" [^>]*>World<\/text>/);
     assert.ok(!r.notices.some((x) => x.kind === 'SvgForeignObject'),
       'transcribed faithfully -> no foreignObject notice');
@@ -556,6 +557,36 @@ test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs ori
     // Mtr=(1 0 0 1 -8 -18) -> M=(0 -0.5 0.5 0 -8 -18): non-axis-aligned => rot
     assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 -8 -18\)">/,
       'screen rotation/zoom preserved in the emitted matrix');
+    assert.ok(!/<foreignObject/i.test(svg));
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('list marker: glyph + numbering exact, inset measured from content, loud', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const t = { nodeType: 3, nodeValue: 'Item one' };
+  const li = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  t.parentNode = li;
+  const ul = { nodeType: 1, tagName: 'ul', childNodes: [li],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [ul],
+    textContent: 'Item one',
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }),
+    ownerDocument: { createRange: mkRange } };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, textRoot, { shape: 'rect' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // first word "Item" rect.left = 100 (mkRange); marker right-aligned a
+    // 0.5em(=6px @12) gap left of content -> x=94, anchor=end; y=top+half-lead
+    assert.match(svg, /<text x="94" y="51"[^>]*text-anchor="end"[^>]*>•<\/text>/,
+      'bullet glyph placed by measured content inset');
+    assert.match(svg, /<text x="100" [^>]*text-anchor="start"[^>]*>Item<\/text>/);
+    assert.ok(r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
+      '::marker box not measurable browser-free -> inherently loud');
     assert.ok(!/<foreignObject/i.test(svg));
   } finally { delete globalThis.getComputedStyle; }
 });
