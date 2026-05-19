@@ -1068,6 +1068,151 @@
     return { kind: kind, detail: { detail: detail, cellId: String(cellId || '') } };
   }
 
+  // ---------------------------------------------------------------------------
+  // TRUE-WYSIWYG path: emit drawio's ACTUAL rendered SVG for the cell as a
+  // frozen-contract `svg` node ({kind:'svg',box,source:<base64>,aspect}). The
+  // host SVG rasterizer renders exactly what drawio drew — shapes, text,
+  // gradients, filters, markers — with ZERO re-derivation. If the host has no
+  // SVG backend the engine emits a loud `SvgArtworkStub` degradation (never
+  // silent). The vector harvest/path code below remains the headless /
+  // serialization-failure fallback only.
+  var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+  function utf8Bytes(str) {
+    if (typeof root.TextEncoder === 'function') {
+      return new root.TextEncoder().encode(str);
+    }
+    var out = [];
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      if (c < 0x80) { out.push(c); }
+      else if (c < 0x800) {
+        out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+      } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+        var c2 = str.charCodeAt(++i);
+        var cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+        out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
+          0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+      } else {
+        out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+      }
+    }
+    return out;
+  }
+
+  function base64(str) {
+    var b = utf8Bytes(str), s = '';
+    for (var i = 0; i < b.length; i += 3) {
+      var n = (b[i] << 16) | ((i + 1 < b.length ? b[i + 1] : 0) << 8) |
+        (i + 2 < b.length ? b[i + 2] : 0);
+      s += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] +
+        (i + 1 < b.length ? B64[(n >> 6) & 63] : '=') +
+        (i + 2 < b.length ? B64[n & 63] : '=');
+    }
+    return s;
+  }
+
+  function serializeEl(node) {
+    try {
+      if (typeof root.XMLSerializer === 'function') {
+        return new root.XMLSerializer().serializeToString(node);
+      }
+    } catch (e) { /* fall through */ }
+    return node && typeof node.outerHTML === 'string' ? node.outerHTML : null;
+  }
+
+  // Inline every <defs>-style resource the cell references (gradients,
+  // filters, clip-paths, markers) so the emitted SVG is self-contained.
+  function collectDefs(rootNode, doc, seen, acc) {
+    if (!rootNode || !doc || typeof doc.getElementById !== 'function') return;
+    var RE = /url\(\s*["']?#([^"')\s]+)["']?\s*\)/g;
+    (function rec(e) {
+      if (!e || e.nodeType !== 1) return;
+      var probe = '';
+      if (typeof e.getAttribute === 'function') {
+        ['fill', 'stroke', 'filter', 'clip-path', 'mask',
+         'marker-start', 'marker-mid', 'marker-end', 'style'].forEach(
+          function (a) { var v = e.getAttribute(a); if (v) probe += ' ' + v; });
+      }
+      var m;
+      while ((m = RE.exec(probe))) {
+        var id = m[1];
+        if (seen[id]) continue;
+        seen[id] = true;
+        var def = doc.getElementById(id);
+        if (def) {
+          var s = serializeEl(def);
+          if (s) { acc.push(s); rec(def); }   // nested refs (gradient->href)
+        }
+      }
+      for (var i = 0; e.childNodes && i < e.childNodes.length; i++) rec(e.childNodes[i]);
+    })(rootNode);
+  }
+
+  // Build the contract `svg` node carrying the cell's literal rendered SVG.
+  // Returns null (caller falls back) when there is no live DOM / serializer.
+  var SVG_PAD = 2;   // contract px around the cell for stroke/marker overflow
+  function svgCellNode(graph, cell, state, origin, scale, notices) {
+    if (!state || !state.shape || !state.shape.node) return null;
+    var shapeNode = state.shape.node;
+    var doc = (shapeNode.ownerDocument) || root.document || null;
+    var shapeStr = serializeEl(shapeNode);
+    if (!shapeStr) return null;
+    var textStr = (state.text && state.text.node)
+      ? serializeEl(state.text.node) : null;
+
+    var vb = { x: state.x, y: state.y, w: state.width, h: state.height };
+    if ((!(vb.w > 0) || !(vb.h > 0)) && state.absolutePoints) {
+      var minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+      for (var pi = 0; pi < state.absolutePoints.length; pi++) {
+        var ap = state.absolutePoints[pi];
+        if (!ap) continue;
+        if (ap.x < minx) minx = ap.x; if (ap.x > maxx) maxx = ap.x;
+        if (ap.y < miny) miny = ap.y; if (ap.y > maxy) maxy = ap.y;
+      }
+      if (Number.isFinite(minx) && maxx > minx - 1 && maxy > miny - 1) {
+        // Pad by stroke + marker reach so the connector isn't clipped.
+        var ep = Math.max(8, number(state.style && state.style.strokeWidth, 1) * 6);
+        vb = { x: minx - ep, y: miny - ep,
+          w: Math.max(1, maxx - minx) + 2 * ep,
+          h: Math.max(1, maxy - miny) + 2 * ep };
+      }
+    }
+    if (!(vb.w > 0) || !(vb.h > 0)) return null;
+    var box = {
+      x: (vb.x - origin.x) / scale - SVG_PAD,
+      y: (vb.y - origin.y) / scale - SVG_PAD,
+      w: vb.w / scale + 2 * SVG_PAD,
+      h: vb.h / scale + 2 * SVG_PAD
+    };
+
+    var defs = [];
+    try {
+      var seen = {};
+      collectDefs(shapeNode, doc, seen, defs);
+      if (state.text && state.text.node) collectDefs(state.text.node, doc, seen, defs);
+    } catch (e) { /* defs best-effort; never fatal */ }
+
+    // view coords -> svg-local: translate(pad) scale(1/s) translate(-vb)
+    var tr = 'translate(' + fmt(SVG_PAD) + ' ' + fmt(SVG_PAD) + ') scale(' +
+      fmt(1 / scale) + ') translate(' + fmt(-vb.x) + ' ' + fmt(-vb.y) + ')';
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
+      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
+      '" height="' + fmt(box.h) + '">' +
+      (defs.length ? '<defs>' + defs.join('') + '</defs>' : '') +
+      '<g transform="' + tr + '">' + shapeStr +
+      (textStr || '') + '</g></svg>';
+
+    if (Array.isArray(notices) && /<foreignObject[\s>]/i.test(svg)) {
+      // HTML labels become <foreignObject>; some native SVG rasterizers
+      // cannot render it. Loud, specific — never a silent text loss.
+      notices.push(degradation('SvgForeignObject',
+        'HTML label rendered via <foreignObject>; requires an SVG backend ' +
+        'with foreignObject support to print WYSIWYG.', cell.id));
+    }
+    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+  }
+
   // drawio image cells carry the picture in the `image=` style value, almost
   // always a data URI. The engine renders raster images natively but ONLY
   // accepts PNG (it loud-rejects other formats). So: embed PNG faithfully;
@@ -1192,7 +1337,14 @@
       return;
     }
 
-    // Universal path: transcribe drawio's own rendered SVG so EVERY shape —
+    // TRUE-WYSIWYG primary: emit the cell's literal rendered SVG (shape +
+    // label together) so EVERY object type prints exactly as drawn, text
+    // included. Falls through only with no live DOM (headless) or if
+    // serialization fails.
+    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices);
+    if (svgNode) { paint.push(svgNode); return; }
+
+    // Vector fallback: transcribe drawio's own rendered SVG so EVERY shape —
     // built-in, stencil, UML/BPMN/AWS/Azure/mscae, custom — bakes faithfully.
     // Only when no live SVG exists (e.g. headless) do we fall back to the
     // named-shape geometry, and to a bounding box + loud notice as a last
@@ -1235,10 +1387,15 @@
   }
 
   function emitEdge(graph, cell, state, style, origin, scale, paint, notices) {
-    // Faithful path: transcribe drawio's own rendered connector + markers
-    // (exact waypoints, curved/orthogonal/entity routing, real arrowheads)
-    // instead of re-deriving them. Re-derivation below is the headless
-    // fallback only (no live SVG); it is a known geometric approximation.
+    // TRUE-WYSIWYG primary: the edge's literal rendered SVG (connector +
+    // markers + label exactly as drawn). Falls through only headless.
+    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices);
+    if (svgNode) { paint.push(svgNode); return; }
+
+    // Faithful vector fallback: transcribe drawio's own rendered connector +
+    // markers (exact waypoints, curved/orthogonal/entity routing, real
+    // arrowheads) instead of re-deriving them. Re-derivation below is the
+    // headless fallback only (no live SVG); a known geometric approximation.
     var harvested = harvestShape(cell, state, origin, scale, notices);
     if (harvested) {
       for (var hi = 0; hi < harvested.length; hi++) paint.push(harvested[hi]);

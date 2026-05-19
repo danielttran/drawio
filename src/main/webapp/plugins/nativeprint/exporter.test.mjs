@@ -246,9 +246,16 @@ function assertSchemaValid(contract, label) {
     assert.ok(page.size.w >= 1 && page.size.h >= 1, `${ctx}page size`);
     assert.ok(Array.isArray(page.tiles) && page.tiles.length >= 1, `${ctx}tiles`);
     for (const n of page.paint) {
-      assert.ok(n.kind === 'path' || n.kind === 'text' || n.kind === 'image',
+      assert.ok(['path', 'text', 'image', 'svg'].includes(n.kind),
         `${ctx}kind ${n.kind}`);
-      if (n.kind === 'image') {
+      if (n.kind === 'svg') {
+        for (const k of ['x', 'y', 'w', 'h']) {
+          assert.equal(typeof n.box[k], 'number', `${ctx}svg box.${k}`);
+        }
+        assert.match(n.source, /^[A-Za-z0-9+/]+={0,2}$/,
+          `${ctx}svg.source must be bare base64`);
+        assert.ok(['fill', 'preserve'].includes(n.aspect), `${ctx}svg.aspect`);
+      } else if (n.kind === 'image') {
         for (const k of ['x', 'y', 'w', 'h']) {
           assert.equal(typeof n.box[k], 'number', `${ctx}image box.${k}`);
         }
@@ -402,6 +409,98 @@ function harvestFixture(node, style, label = '') {
   return exporter.buildResult(graphFixture(
     cells, states, { v: label }, { v: style }, FIXED_BOUNDS, 1));
 }
+
+// ===========================================================================
+// TRUE-WYSIWYG: per-cell `svg` node carries drawio's LITERAL rendered SVG.
+// Nothing re-derived; the engine rasterizes exactly what was drawn (loud
+// SvgArtworkStub if the host lacks an SVG backend — never silent).
+// ===========================================================================
+function domEl(tag, attrs = {}, children = [], text = '') {
+  const a = Object.keys(attrs)
+    .map((k) => ` ${k}="${attrs[k]}"`).join('');
+  const self = {
+    nodeType: 1, tagName: tag, childNodes: children,
+    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
+    getAttributeNS: () => null, ownerDocument: null
+  };
+  self.outerHTML = `<${tag}${a}>${text}` +
+    children.map((c) => c.outerHTML || '').join('') + `</${tag}>`;
+  return self;
+}
+const decodeSvg = (n) => Buffer.from(n.source, 'base64').toString('utf8');
+function svgFixture(shapeNode, textNode, style, opt = {}) {
+  const doc = { getElementById: (id) => (opt.defs && opt.defs[id]) || null };
+  shapeNode.ownerDocument = doc;
+  if (textNode) textNode.ownerDocument = doc;
+  const isEdge = !!opt.edge;
+  const st = isEdge
+    ? { x: 0, y: 0, width: 0, height: 0, absolutePoints: opt.pts || null,
+        shape: { node: shapeNode } }
+    : { x: 10, y: 20, width: 80, height: 40, shape: { node: shapeNode } };
+  if (textNode) st.text = { node: textNode };
+  const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge } };
+  return exporter.buildResult(graphFixture(
+    cells, { v: st }, { v: '' }, { v: style }, FIXED_BOUNDS, 1));
+}
+
+test('vertex emits ONE faithful svg node (shape+label), no re-derivation', () => {
+  const shape = domEl('g', {}, [domEl('ellipse', { cx: 50, cy: 40, rx: 30, ry: 20 })]);
+  const text = domEl('g', { 'class': 'lbl' }, [], 'Hello WYSIWYG');
+  const r = svgFixture(shape, text, { shape: 'umlActor' });
+  const paint = r.contract.document.pages[0].paint;
+  assert.equal(paint.length, 1, 'exactly one node — the literal SVG');
+  const n = paint[0];
+  assert.equal(n.kind, 'svg');
+  assert.equal(n.aspect, 'preserve');
+  // origin (10,20) scale 1, SVG_PAD 2 -> box -2,-2 .. 84x44
+  assert.deepEqual(n.box, { x: -2, y: -2, w: 84, h: 44 });
+  const svg = decodeSvg(n);
+  assert.match(svg, /^<svg [^>]*width="84" height="44"/);
+  assert.ok(svg.includes('<ellipse'), 'shape transcribed verbatim');
+  assert.ok(svg.includes('Hello WYSIWYG'), 'label transcribed verbatim');
+  assert.match(svg, /scale\(1\)/, 'view->contract transform present');
+  assert.ok(!paint.some((p) => p.kind === 'text'),
+    'no separate re-derived text node — text is the real SVG');
+  assert.equal(r.notices.length, 0);
+  assertSchemaValid(r.contract, 'svg vertex');
+});
+
+test('svg node inlines referenced defs (gradients/filters/markers)', () => {
+  const grad = domEl('linearGradient', { id: 'g1' }, [domEl('stop', { offset: '0' })]);
+  const shape = domEl('g', {}, [domEl('rect', { fill: 'url(#g1)' })]);
+  const r = svgFixture(shape, null, { shape: 'x' }, { defs: { g1: grad } });
+  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('<defs>') && svg.includes('linearGradient id="g1"'),
+    'referenced gradient is inlined so the SVG is self-contained');
+});
+
+test('HTML-label <foreignObject> is loudly flagged, never silently dropped', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const fo = domEl('g', {}, [domEl('foreignObject', {}, [], 'rich')]);
+  const r = svgFixture(shape, fo, { shape: 'rect' });
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'svg',
+    'still emits the faithful svg node');
+  assert.ok(r.notices.some((x) => x.kind === 'SvgForeignObject'),
+    'foreignObject requires a loud notice (backend support caveat)');
+});
+
+test('edge takes the svg path with a viewport derived from its points', () => {
+  const conn = domEl('path', { d: 'M 0 0 L 100 100', stroke: '#000' });
+  const r = svgFixture(conn, null, { strokeColor: '#000' },
+    { edge: true, pts: [{ x: 10, y: 20 }, { x: 110, y: 90 }] });
+  const n = r.contract.document.pages[0].paint[0];
+  assert.equal(n.kind, 'svg');
+  assert.ok(n.box.w > 100 && n.box.h > 70, 'viewport spans the routed points');
+  assert.ok(decodeSvg(n).includes('M 0 0 L 100 100'), 'connector verbatim');
+  assertSchemaValid(r.contract, 'svg edge');
+});
+
+test('no live DOM (headless) -> svg path is skipped, vector fallback intact', () => {
+  const r = oneVertex({ shape: 'ellipse', fillColor: '#112233', strokeColor: '#445566' });
+  assert.ok(!r.contract.document.pages[0].paint.some((n) => n.kind === 'svg'),
+    'headless never fabricates an svg node');
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'path');
+});
 
 test('arbitrary stencil with a live SVG node bakes faithfully (no notice)', () => {
   // A "umlActor"-style stick figure: things the named-path code never had.
