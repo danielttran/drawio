@@ -431,6 +431,8 @@ const decodeSvg = (n) => Buffer.from(n.source, 'base64').toString('utf8');
 function svgFixture(shapeNode, textNode, style, opt = {}) {
   const doc = { getElementById: (id) => (opt.defs && opt.defs[id]) || null };
   shapeNode.ownerDocument = doc;
+  shapeNode.parentNode = opt.parent ||
+    { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) };
   if (textNode) textNode.ownerDocument = doc;
   const isEdge = !!opt.edge;
   const st = isEdge
@@ -475,65 +477,109 @@ test('svg node inlines referenced defs (gradients/filters/markers)', () => {
     'referenced gradient is inlined so the SVG is self-contained');
 });
 
-test('HTML-label foreignObject is transcribed to WYSIWYG SVG <text> at drawio positions', () => {
-  // Mock the live-DOM measurement APIs (same kind of mock as harvestShape's
-  // getCTM): per-word client rects + client->user mapping. NO browser.
-  const textNode = { nodeType: 3, nodeValue: 'Hello World', parentNode: null };
-  const span = { nodeType: 1, tagName: 'div', childNodes: [textNode] };
-  textNode.parentNode = span;
-  const svgRoot = {
-    createSVGPoint: () => ({ x: 0, y: 0,
-      matrixTransform() { return { x: this.x - 50, y: this.y - 150 }; } })
+// Mock the live drawio DOM exactly as harvestShape's tests mock getCTM:
+// per-word client rects + element rects + computed style. NO browser.
+function mkRange() {
+  return {
+    _n: null, _s: 0, _e: 0,
+    setStart(n, o) { this._n = n; this._s = o; },
+    setEnd(_n, o) { this._e = o; },
+    getClientRects() {
+      return [{ left: 100 + this._s * 7, top: this._n._top || 50,
+        width: (this._e - this._s) * 7, height: 14 }];
+    },
+    getBoundingClientRect() { return this.getClientRects()[0]; }
   };
+}
+function styleFor(tag) {
+  const base = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0, 0, 0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0, 0, 0, 0)', display: 'block',
+    listStyleType: 'disc', letterSpacing: 'normal' };
+  if (tag === 'rootdiv') return { ...base, backgroundColor: 'rgb(240,240,240)' };
+  if (tag === 'span') return { ...base, display: 'inline', fontFamily: 'Times',
+    fontStyle: 'italic', color: 'rgb(255, 0, 0)', textDecorationLine: 'underline',
+    backgroundColor: 'rgb(0, 255, 0)' };
+  if (tag === 'li') return { ...base, display: 'list-item' };
+  return base;
+}
+function htmlFixtureNodes() {
+  const t = { nodeType: 3, nodeValue: 'Hello World', _top: 50 };
+  const span = { nodeType: 1, tagName: 'span', _styleKey: 'span',
+    childNodes: [t], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 84, height: 14 }) };
+  t.parentNode = span;
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [span], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
   const fo = {
-    nodeType: 1, tagName: 'foreignObject', childNodes: [span],
-    ownerSVGElement: svgRoot,
-    getScreenCTM: () => ({ inverse: () => ({}) }),
-    ownerDocument: {
-      createRange: () => ({
-        _s: 0, _e: 0,
-        setStart(_n, o) { this._s = o; },
-        setEnd(_n, o) { this._e = o; },
-        getBoundingClientRect() {
-          return { left: 100 + this._s * 7, bottom: 200,
-            width: (this._e - this._s) * 7, height: 16 };
-        }
-      })
-    }
+    nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'Hello World',
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange }
   };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  return { nodeType: 1, tagName: 'g', childNodes: [fo] };
+}
+
+test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio positions', () => {
   const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = () => ({
-    fontFamily: 'Arial, sans-serif', fontSize: '14px',
-    fontWeight: '700', fontStyle: 'normal', color: 'rgb(10, 20, 30)'
-  });
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
   try {
-    const r = svgFixture(shape, textRoot, { shape: 'rect' });
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
     const n = r.contract.document.pages[0].paint[0];
     assert.equal(n.kind, 'svg');
     const svg = decodeSvg(n);
-    assert.ok(!/<foreignObject/i.test(svg),
-      'foreignObject is NOT shipped — it is transcribed to SVG text');
-    // "Hello"@off0 -> client(100,200-2.8) -> user(50,47.2); "World"@off6 -> x=92
-    assert.match(svg, /<text x="50" y="47\.2" font-family="Arial" font-size="14" font-weight="700" fill="#0a141e"[^>]*>Hello<\/text>/);
-    assert.match(svg, /<text x="92" [^>]*>World<\/text>/);
+    assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped');
+    // scale 1, vb (10,20), PAD 2 -> M = matrix(1 0 0 1 -8 -18); identity parent
+    assert.match(svg, /<g transform="matrix\(1 0 0 1 -8 -18\)">/);
+    // label background (rootDiv) + inline background (span), in screen px
+    assert.match(svg, /<rect x="90" y="40" width="100" height="40" fill="#f0f0f0"\/>/);
+    assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
+    // exact words at measured rects, top-anchored (no baseline guessing)
+    assert.match(svg, /<text x="100" y="50" font-family="Times" font-size="12" font-weight="400" font-style="italic" text-decoration="underline" fill="#ff0000" text-anchor="start" dominant-baseline="text-before-edge" xml:space="preserve">Hello<\/text>/);
+    assert.match(svg, /<text x="142" [^>]*>World<\/text>/);
     assert.ok(!r.notices.some((x) => x.kind === 'SvgForeignObject'),
-      'transcribed faithfully -> no degradation notice');
-    assertSchemaValid(r.contract, 'fo->svg text');
-  } finally {
-    delete globalThis.getComputedStyle;
-  }
+      'transcribed faithfully -> no foreignObject notice');
+    assertSchemaValid(r.contract, 'fo->svg');
+  } finally { delete globalThis.getComputedStyle; }
 });
 
-test('un-measurable foreignObject is kept VERBATIM and loudly flagged (faithful-or-loud)', () => {
+test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs oriented', () => {
   const shape = domEl('g', {}, [domEl('rect', {})]);
-  const fo = domEl('g', {}, [domEl('foreignObject', {}, [], 'rich')]);
-  const r = svgFixture(shape, fo, { shape: 'rect' });
-  assert.equal(r.contract.document.pages[0].paint[0].kind, 'svg');
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    // cell-group screen CTM = 90deg rotation + 2x zoom -> a=0 b=2 c=-2 d=0
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' },
+      { parent: { getScreenCTM: () => ({ a: 0, b: 2, c: -2, d: 0, e: 0, f: 0 }) } });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // M = Mtr * inv(screenCTM); inv of (0 2 -2 0 0 0) = (0 -0.5 0.5 0 0 0),
+    // Mtr=(1 0 0 1 -8 -18) -> M=(0 -0.5 0.5 0 -8 -18): non-axis-aligned => rot
+    assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 -8 -18\)">/,
+      'screen rotation/zoom preserved in the emitted matrix');
+    assert.ok(!/<foreignObject/i.test(svg));
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('un-measurable HTML label HARD-FAILS the export (no silent drop/approx)', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  // foreignObject with real text but NO createRange/getComputedStyle/CTM.
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
+    textContent: 'Important label', ownerDocument: {} };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  assert.throws(() => svgFixture(shape, textRoot, { shape: 'rect' }),
+    /NativePrintFatal/,
+    'present-but-unmeasurable label aborts the whole print, never silent');
+});
+
+test('empty HTML label is not an error (no text -> nothing emitted, no fatal)', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
+    textContent: '   ', ownerDocument: {} };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  const r = svgFixture(shape, textRoot, { shape: 'rect' });
   const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-  assert.ok(/foreignObject/i.test(svg), 'HTML kept verbatim, never dropped');
-  assert.ok(r.notices.some((x) => x.kind === 'SvgForeignObject'),
-    'unmeasurable -> loud notice (never silent)');
+  assert.ok(!/<foreignObject/i.test(svg) && !/<text/.test(svg));
+  assert.equal(r.notices.length, 0);
 });
 
 test('edge takes the svg path with a viewport derived from its points', () => {

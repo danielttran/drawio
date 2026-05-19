@@ -1154,92 +1154,222 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function findForeignObject(node) {
-    if (!node || node.nodeType !== 1) return null;
-    if (String(node.tagName || '').toLowerCase() === 'foreignobject') return node;
-    for (var i = 0; node.childNodes && i < node.childNodes.length; i++) {
-      var f = findForeignObject(node.childNodes[i]);
-      if (f) return f;
+  function findForeignObjects(node, out) {
+    if (!node || node.nodeType !== 1) return out;
+    if (String(node.tagName || '').toLowerCase() === 'foreignobject') {
+      out.push(node);
     }
-    return null;
+    for (var i = 0; node.childNodes && i < node.childNodes.length; i++) {
+      findForeignObjects(node.childNodes[i], out);
+    }
+    return out;
   }
 
-  // WYSIWYG-true HTML labels WITHOUT a browser and WITHOUT engine layout:
-  // harvest the ACTUAL laid-out text from the live drawio DOM (the same
-  // bake-time DOM read we already do for shapes/getCTM — NOT an added
-  // browser) and transcribe each rendered word into an SVG <text> at the
-  // exact position drawio drew it. Native SVG rasterizers render <text>
-  // faithfully, so the printed text matches the screen by construction.
-  // Returns an SVG fragment (in view coords, to sit inside the cell <g>)
-  // or null when the DOM cannot be measured (caller keeps the verbatim
-  // foreignObject + loud notice — faithful-or-loud).
-  function foreignObjectToSvgText(fo, notices, cellId) {
-    try {
+  // A foreignObject is PRESENT but the live DOM cannot be measured. Per the
+  // owner ruling, dropping/approximating an object on print is unacceptable
+  // and there is no faithful source without the DOM (a browser is forbidden,
+  // C2). So abort the WHOLE export loudly — operator is told exactly why and
+  // NO partial/wrong page is produced. Marked so buildResult never swallows.
+  function nativePrintFatal(msg, cellId) {
+    var e = new Error('NativePrintFatal: ' + msg +
+      (cellId ? ' (cell ' + String(cellId) + ')' : ''));
+    e.nativePrintFatal = true;
+    return e;
+  }
+
+  function romanize(n) {
+    var t = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'],
+      [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'],
+      [4, 'iv'], [1, 'i']], s = '';
+    for (var i = 0; i < t.length && n > 0; i++) {
+      while (n >= t[i][0]) { s += t[i][1]; n -= t[i][0]; }
+    }
+    return s;
+  }
+
+  function alpha(n) {
+    var s = '';
+    while (n > 0) { n--; s = String.fromCharCode(97 + (n % 26)) + s;
+      n = Math.floor(n / 26); }
+    return s;
+  }
+
+  function listMarker(type, idx) {
+    switch (type) {
+      case 'disc': return '•';
+      case 'circle': return '◦';
+      case 'square': return '▪';
+      case 'none': return '';
+      case 'decimal-leading-zero':
+        return (idx < 10 ? '0' : '') + idx + '.';
+      case 'lower-roman': return romanize(idx) + '.';
+      case 'upper-roman': return romanize(idx).toUpperCase() + '.';
+      case 'lower-alpha': case 'lower-latin': return alpha(idx) + '.';
+      case 'upper-alpha': case 'upper-latin':
+        return alpha(idx).toUpperCase() + '.';
+      case 'decimal': return idx + '.';
+      default: return null;   // unknown -> caller raises a loud notice
+    }
+  }
+
+  function fontRun(cs) {
+    var cp = colorParts(cs.color || '') || { hex: '#000000', alpha: 1 };
+    var wt = parseInt(cs.fontWeight, 10);
+    var dec = String(cs.textDecorationLine || cs.textDecoration || '');
+    var d = [];
+    if (dec.indexOf('underline') >= 0) d.push('underline');
+    if (dec.indexOf('line-through') >= 0) d.push('line-through');
+    if (dec.indexOf('overline') >= 0) d.push('overline');
+    var ls = parseFloat(cs.letterSpacing);
+    return {
+      fam: ((cs.fontFamily || 'Arial').split(',')[0] || 'Arial')
+        .trim().replace(/^['"]|['"]$/g, ''),
+      size: parseFloat(cs.fontSize) || 12,
+      weight: Number.isFinite(wt) ? (wt >= 600 ? 700 : wt) : 400,
+      italic: (cs.fontStyle || '').indexOf('italic') >= 0,
+      fill: cp.none ? null : cp.hex,
+      fillOpacity: cp.none ? 0 : (cp.alpha == null ? 1 : cp.alpha),
+      decoration: d.length ? d.join(' ') : null,
+      letterSpacing: (cs.letterSpacing && cs.letterSpacing !== 'normal' &&
+        Number.isFinite(ls) && ls !== 0) ? ls : null
+    };
+  }
+
+  function bgRect(cs, rect) {
+    var cp = colorParts(cs.backgroundColor || '');
+    if (!cp || cp.none || cp.alpha === 0 || !rect ||
+      (!rect.width && !rect.height)) return '';
+    return '<rect x="' + fmt(rect.left) + '" y="' + fmt(rect.top) +
+      '" width="' + fmt(rect.width) + '" height="' + fmt(rect.height) +
+      '" fill="' + cp.hex + '"' +
+      (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
+  }
+
+  // TRUE-WYSIWYG HTML labels, browser-free and engine-frozen: harvest the
+  // ACTUAL laid-out text/decorations/backgrounds from the live drawio DOM
+  // (the same bake-time DOM read already used for shape geometry — NOT an
+  // added browser) and transcribe them into plain SVG primitives at the
+  // EXACT screen positions. Everything is emitted in screen px inside one
+  // <g matrix> (M = screen->cell-SVG-local); the matrix carries drawio's
+  // rotation/zoom/flip so glyphs are oriented exactly as on screen, and
+  // <text> is top-anchored (dominant-baseline=text-before-edge) so there
+  // is no baseline/metric guessing. Native SVG rasterizers draw <text>,
+  // <rect> faithfully, so print == screen by construction. If a present
+  // foreignObject cannot be measured this raises a loud FATAL (no silent
+  // drop/approx — owner ruling). Returns '' when there is genuinely no
+  // text (empty label) — not an error.
+  function transcribeForeignObjects(fos, M, cellId, notices) {
+    var bg = [], runs = [];
+    var measurable = root && typeof root.getComputedStyle === 'function';
+    for (var k = 0; k < fos.length; k++) {
+      var fo = fos[k];
       var doc = fo.ownerDocument;
-      var svgRoot = fo.ownerSVGElement;
-      if (!doc || !svgRoot || typeof svgRoot.createSVGPoint !== 'function' ||
-        typeof fo.getScreenCTM !== 'function' ||
-        typeof root.getComputedStyle !== 'function' ||
-        typeof doc.createRange !== 'function') return null;
-      var ctm = fo.getScreenCTM();
-      if (!ctm || typeof ctm.inverse !== 'function') return null;
-      var inv = ctm.inverse();
-      var toUser = function (cx, cy) {
-        var p = svgRoot.createSVGPoint();
-        p.x = cx; p.y = cy;
-        var u = p.matrixTransform(inv);
-        return { x: u.x, y: u.y };
-      };
-      var out = [];
+      var hasText = (fo.textContent || '').trim() !== '';
+      if (!measurable || !doc || typeof doc.createRange !== 'function' ||
+        typeof fo.getBoundingClientRect !== 'function') {
+        if (hasText) {
+          throw nativePrintFatal('HTML label present but the live DOM ' +
+            'cannot be measured; refusing to print a page with a missing ' +
+            'or non-WYSIWYG label', cellId);
+        }
+        continue;
+      }
+      // Outermost element background = drawio label background.
+      var rootEl = null;
+      for (var c = 0; fo.childNodes && c < fo.childNodes.length; c++) {
+        if (fo.childNodes[c].nodeType === 1) { rootEl = fo.childNodes[c]; break; }
+      }
+      if (rootEl) {
+        bg.push(bgRect(root.getComputedStyle(rootEl),
+          rootEl.getBoundingClientRect()));
+      }
       var walk = function (n) {
         if (!n) return;
-        if (n.nodeType === 3) {
-          var s = n.nodeValue;
-          if (!s || !s.trim()) return;
-          var parent = n.parentNode;
-          var cs = root.getComputedStyle(parent);
-          var fam = ((cs.fontFamily || 'Arial').split(',')[0] || 'Arial')
-            .trim().replace(/^['"]|['"]$/g, '');
-          var sz = parseFloat(cs.fontSize) || 12;
-          var wt = parseInt(cs.fontWeight, 10);
-          var weight = Number.isFinite(wt) ? (wt >= 600 ? 700 : wt) : 400;
-          var ital = (cs.fontStyle || '').indexOf('italic') >= 0;
-          var col = rgbToHex(cs.color || '') || '#000000';
-          // Per-word ranges -> exact rendered rects (real browser layout).
-          var re = /\S+/g, m;
-          while ((m = re.exec(s))) {
-            var rg = doc.createRange();
-            rg.setStart(n, m.index);
-            rg.setEnd(n, m.index + m[0].length);
-            var rect = rg.getBoundingClientRect();
-            if (!rect || (!rect.width && !rect.height)) continue;
-            // baseline ~ bottom minus the font's descent (~20% of size).
-            var pos = toUser(rect.left, rect.bottom - sz * 0.2);
-            out.push('<text x="' + fmt(pos.x) + '" y="' + fmt(pos.y) +
-              '" font-family="' + xmlEsc(fam) + '" font-size="' + fmt(sz) +
-              '" font-weight="' + weight + '"' +
-              (ital ? ' font-style="italic"' : '') +
-              ' fill="' + col + '" xml:space="preserve">' +
-              xmlEsc(m[0]) + '</text>');
+        if (n.nodeType === 1) {
+          var ecs = root.getComputedStyle(n);
+          if (n !== rootEl) {
+            bg.push(bgRect(ecs, n.getBoundingClientRect()));
+          }
+          if ((ecs.display || '').indexOf('list-item') >= 0 &&
+            (ecs.listStyleType || 'disc') !== 'none') {
+            var lt = ecs.listStyleType || 'disc';
+            var idx = 1, ps = n.previousElementSibling;
+            while (ps) {
+              if (String(ps.tagName || '').toLowerCase() === 'li') idx++;
+              ps = ps.previousElementSibling;
+            }
+            var glyph = listMarker(lt, idx);
+            if (glyph === null) {
+              glyph = '•';
+              if (Array.isArray(notices)) {
+                notices.push(degradation('SvgListMarkerApprox',
+                  'list-style-type "' + lt + '" approximated with a bullet ' +
+                  '(faithful-or-loud)', cellId));
+              }
+            } else if (Array.isArray(notices)) {
+              notices.push(degradation('SvgListMarkerApprox',
+                'list marker position derived from content metrics ' +
+                '(faithful-or-loud)', cellId));
+            }
+            if (glyph) {
+              var rr = n.getBoundingClientRect();
+              var fr0 = fontRun(ecs);
+              runs.push({ rect: { left: rr.left, top: rr.top,
+                width: 0, height: rr.height },
+                text: glyph, f: fr0, marker: true });
+            }
+          }
+          for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
+            walk(n.childNodes[i]);
           }
           return;
         }
-        if (n.nodeType !== 1) return;
-        for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
-          walk(n.childNodes[i]);
+        if (n.nodeType !== 3) return;
+        var s = n.nodeValue;
+        if (!s || !s.trim()) return;
+        var f = fontRun(root.getComputedStyle(n.parentNode));
+        var re = /\S+/g, m;
+        while ((m = re.exec(s))) {
+          var rg = doc.createRange();
+          rg.setStart(n, m.index);
+          rg.setEnd(n, m.index + m[0].length);
+          var list = (typeof rg.getClientRects === 'function')
+            ? rg.getClientRects() : null;
+          var rects = (list && list.length)
+            ? list : [rg.getBoundingClientRect()];
+          for (var r = 0; r < rects.length; r++) {
+            var rc = rects[r];
+            if (!rc || (!rc.width && !rc.height)) {
+              throw nativePrintFatal('HTML label fragment is unmeasurable ' +
+                '(zero-rect); refusing to drop a visible label', cellId);
+            }
+            runs.push({ rect: { left: rc.left, top: rc.top,
+              width: rc.width, height: rc.height }, text: m[0], f: f });
+          }
         }
       };
       walk(fo);
-      return out.length ? out.join('') : null;
-    } catch (e) {
-      if (Array.isArray(notices)) {
-        notices.push(degradation('SvgForeignObject',
-          'HTML label could not be transcribed (' +
-          (e && e.message || 'DOM unmeasurable') +
-          '); carried verbatim as foreignObject.', cellId));
-      }
-      return null;
     }
+    if (!runs.length && !bg.some(function (x) { return x !== ''; })) return '';
+    var body = bg.join('');
+    for (var j = 0; j < runs.length; j++) {
+      var R = runs[j], f = R.f;
+      if (f.fill == null) continue;
+      body += '<text x="' + fmt(R.rect.left) + '" y="' + fmt(R.rect.top) +
+        '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
+        '" font-weight="' + f.weight + '"' +
+        (f.italic ? ' font-style="italic"' : '') +
+        (f.decoration ? ' text-decoration="' + f.decoration + '"' : '') +
+        (f.letterSpacing != null
+          ? ' letter-spacing="' + fmt(f.letterSpacing) + '"' : '') +
+        ' fill="' + f.fill + '"' +
+        (f.fillOpacity < 1 ? ' fill-opacity="' + fmt(f.fillOpacity) + '"' : '') +
+        ' text-anchor="start" dominant-baseline="text-before-edge"' +
+        ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
+    }
+    return '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +
+      fmt(M.c) + ' ' + fmt(M.d) + ' ' + fmt(M.e) + ' ' + fmt(M.f) + ')">' +
+      body + '</g>';
   }
 
   // Build the contract `svg` node carrying the cell's literal rendered SVG.
@@ -1253,18 +1383,13 @@
     if (!shapeStr) return null;
     var textStr = (state.text && state.text.node)
       ? serializeEl(state.text.node) : null;
-    // HTML labels render as <foreignObject> (native rasterizers can't draw
-    // it). Transcribe the ACTUAL rendered words into SVG <text> at their
-    // exact drawn positions — WYSIWYG-true, no browser, no engine layout.
-    // Only if that is impossible do we keep the verbatim foreignObject and
-    // raise the loud safety-net notice (faithful-or-loud).
-    var foEl = (state.text && state.text.node)
-      ? findForeignObject(state.text.node) : null;
-    var foHandled = false;
-    if (foEl) {
-      var synth = foreignObjectToSvgText(foEl, notices, cell && cell.id);
-      if (synth) { textStr = synth; foHandled = true; }
-    }
+    // HTML labels serialize as <foreignObject>, which native SVG rasterizers
+    // cannot draw and the frozen engine must not re-lay-out. Transcribe the
+    // ACTUAL rendered text/decorations/backgrounds from the live DOM into
+    // plain SVG at the exact screen positions (browser-free, engine-frozen).
+    // The matrix is computed AFTER vb/box below; defer the splice via a flag.
+    var fos = (state.text && state.text.node)
+      ? findForeignObjects(state.text.node, []) : [];
 
     var vb = { x: state.x, y: state.y, w: state.width, h: state.height };
     if ((!(vb.w > 0) || !(vb.h > 0)) && state.absolutePoints) {
@@ -1298,6 +1423,26 @@
       if (state.text && state.text.node) collectDefs(state.text.node, doc, seen, defs);
     } catch (e) { /* defs best-effort; never fatal */ }
 
+    // HTML label present -> transcribe (never serialize foreignObject into
+    // the contract). M maps screen px -> this svg's local space, carrying
+    // drawio's rotation/zoom/flip exactly.
+    var labelStr = textStr || '';
+    if (fos.length) {
+      var cellGroup = shapeNode.parentNode;
+      var sctm = (cellGroup && typeof cellGroup.getScreenCTM === 'function')
+        ? svgMat(cellGroup.getScreenCTM()) : null;
+      var Sinv = sctm ? mInv(sctm) : null;
+      if (!Sinv) {
+        throw nativePrintFatal('HTML label present but the cell transform ' +
+          'cannot be read from the live DOM; refusing a non-WYSIWYG print',
+          cell.id);
+      }
+      var Mtr = { a: 1 / scale, b: 0, c: 0, d: 1 / scale,
+        e: SVG_PAD - vb.x / scale, f: SVG_PAD - vb.y / scale };
+      labelStr = transcribeForeignObjects(
+        fos, mMul(Mtr, Sinv), cell && cell.id, notices);
+    }
+
     // view coords -> svg-local: translate(pad) scale(1/s) translate(-vb)
     var tr = 'translate(' + fmt(SVG_PAD) + ' ' + fmt(SVG_PAD) + ') scale(' +
       fmt(1 / scale) + ') translate(' + fmt(-vb.x) + ' ' + fmt(-vb.y) + ')';
@@ -1306,17 +1451,8 @@
       '" height="' + fmt(box.h) + '">' +
       (defs.length ? '<defs>' + defs.join('') + '</defs>' : '') +
       '<g transform="' + tr + '">' + shapeStr +
-      (textStr || '') + '</g></svg>';
+      labelStr + '</g></svg>';
 
-    // If a foreignObject survived (transcription impossible) it is carried
-    // VERBATIM — the browser's exact render, never silently dropped — and a
-    // loud notice fires (faithful-or-loud). When foHandled, the label is now
-    // real SVG <text> at drawio's exact positions: WYSIWYG, no notice.
-    if (foEl && !foHandled && Array.isArray(notices)) {
-      notices.push(degradation('SvgForeignObject',
-        'HTML label is carried verbatim as <foreignObject>; the print host ' +
-        'must render foreignObject for pixel-true output.', cell.id));
-    }
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
