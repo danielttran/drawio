@@ -881,14 +881,21 @@
     var host = null;
     var useFallback = false;
     var alphaNotice = false;
+    // Prefer the live rendered label DOM (accurate computed styles); only if
+    // there is none do we parse the markup detached. Previously a found live
+    // host fell into the `else return null`, so rich extraction NEVER ran in
+    // the browser and every multi-paragraph/<p>/<div> label collapsed to a
+    // single plainLabel line that overflowed its box and printed blank.
     host = resolveRichContentRoot(state);
-    if (!host && doc && doc.createElement) {
-      host = doc.createElement('div');
-      host.innerHTML = String(s);
-      useFallback = true;
-      if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rich text live DOM not available; using detached parser', cell.id));
-    } else {
-      return null;
+    if (!host) {
+      if (doc && doc.createElement) {
+        host = doc.createElement('div');
+        host.innerHTML = String(s);
+        useFallback = true;
+        if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rich text live DOM not available; using detached parser', cell.id));
+      } else {
+        return null;
+      }
     }
     var base = {
       family: style.fontFamily || 'Arial',
@@ -971,16 +978,23 @@
       for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i], ns, blockAlign, ws);
       if ((tag === 'p' || tag === 'div') && node !== host && paras.length && cur().runs.length > 0) br();
     }
-    var startWs = 'normal';
-    if (!useFallback && doc && typeof root.getComputedStyle === 'function') {
-      var hostCs = root.getComputedStyle(host);
-      if (hostCs && hostCs.whiteSpace) startWs = hostCs.whiteSpace.toLowerCase();
-    }
-    for (var i = 0; i < host.childNodes.length; i++) walk(host.childNodes[i], base, paras[0].align, startWs);
-    mergeAdjacentRichRuns(paras);
-    if (paras.length > 1 && paras[paras.length - 1].runs.length === 0) paras.pop();
-    if (paras.length === 0) paras = [{ align: alignH(style.align), indentPx: 0, runs: [] }];
-    return { type: 'rich', paragraphs: paras };
+    try {
+      var startWs = 'normal';
+      if (!useFallback && doc && typeof root.getComputedStyle === 'function') {
+        var hostCs = root.getComputedStyle(host);
+        if (hostCs && hostCs.whiteSpace) startWs = hostCs.whiteSpace.toLowerCase();
+      }
+      for (var i = 0; i < host.childNodes.length; i++) walk(host.childNodes[i], base, paras[0].align, startWs);
+      mergeAdjacentRichRuns(paras);
+      if (paras.length > 1 && paras[paras.length - 1].runs.length === 0) paras.pop();
+      if (paras.length === 0) paras = [{ align: alignH(style.align), indentPx: 0, runs: [] }];
+      // All runs empty (e.g. whitespace-only DOM) -> let the caller use the
+      // plain static fallback instead of emitting an empty rich block.
+      var hasText = paras.some(function (pr) {
+        return pr.runs.some(function (r) { return r.text && r.text.trim() !== ''; });
+      });
+      return hasText ? { type: 'rich', paragraphs: paras } : null;
+    } catch (e) { return null; }
   }
 
   function plainLabel(graph, cell) {
@@ -988,10 +1002,18 @@
     if (s == null) return '';
     s = String(s);
     if (s.indexOf('<') >= 0) {
-      s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+      // Block-level boundaries must become line breaks, otherwise multi-
+      // paragraph labels collapse into one giant line that overflows the
+      // box and prints blank (the reported "Paragraph of Text" bug).
+      s = s
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre)\s*>/gi, '\n')
+        .replace(/<(p|div|li|tr|h[1-6]|blockquote|pre)(\s[^>]*)?>/gi, '\n')
+        .replace(/<[^>]+>/g, '');
       var d = (root.document && root.document.createElement)
         ? root.document.createElement('div') : null;
       if (d) { d.innerHTML = s; s = d.textContent || d.innerText || ''; }
+      s = s.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     }
     return s;
   }
@@ -1186,18 +1208,24 @@
       return;
     }
 
-    var d = shapePath(style, box.x, box.y, box.w, box.h);
-    if (!d) {
-      d = rectPath(box.x, box.y, box.w, box.h);
-      notices.push(degradation('ExporterUnsupportedShape',
-        'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
+    // drawio's `text` shape (e.g. the "Paragraph of Text" element) paints no
+    // body — it is a label-only object. Emitting a bbox path here is both
+    // invisible (fill/stroke are none) and wrongly raised an
+    // ExporterUnsupportedShape notice. Skip the body; just lay out the label.
+    if (style.shape !== 'text') {
+      var d = shapePath(style, box.x, box.y, box.w, box.h);
+      if (!d) {
+        d = rectPath(box.x, box.y, box.w, box.h);
+        notices.push(degradation('ExporterUnsupportedShape',
+          'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
+      }
+      paint.push({
+        kind: 'path',
+        d: d,
+        fill: fillOf(style),
+        stroke: strokeOf(style)
+      });
     }
-    paint.push({
-      kind: 'path',
-      d: d,
-      fill: fillOf(style),
-      stroke: strokeOf(style)
-    });
 
     if (label !== '') {
       var vlb = labelBoxNode(style, box);

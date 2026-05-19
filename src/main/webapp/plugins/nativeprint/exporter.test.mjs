@@ -275,7 +275,21 @@ function assertSchemaValid(contract, label) {
         assert.ok(['top', 'middle', 'bottom'].includes(n.align.v),
           `${ctx}align.v`);
         assert.match(n.font.color, /^#[0-9a-f]{6}$/, `${ctx}font.color hex`);
-        assert.ok(Array.isArray(n.content.lines), `${ctx}content.lines`);
+        // Content is EITHER static {lines:[...]} OR rich {paragraphs:[{runs}]}.
+        if (n.content.type === 'rich') {
+          assert.ok(Array.isArray(n.content.paragraphs) &&
+            n.content.paragraphs.length >= 1, `${ctx}content.paragraphs`);
+          for (const para of n.content.paragraphs) {
+            assert.ok(Array.isArray(para.runs), `${ctx}paragraph.runs`);
+            for (const run of para.runs) {
+              assert.equal(typeof run.text, 'string', `${ctx}run.text`);
+              assert.match(run.color, /^#[0-9a-f]{6}$/, `${ctx}run.color hex`);
+              assert.ok(run.sizePx > 0, `${ctx}run.sizePx>0`);
+            }
+          }
+        } else {
+          assert.ok(Array.isArray(n.content.lines), `${ctx}content.lines`);
+        }
       }
     }
   }
@@ -714,6 +728,77 @@ test('non-html labels keep static content even if value contains angle brackets'
     .contract.document.pages[0].paint.find((n) => n.kind === 'text');
   assert.equal(node.content.type, 'static');
   assert.equal(node.content.lines[0].includes('NotHTMLMode'), true);
+});
+
+// ===========================================================================
+// LABEL-ONLY / PARAGRAPH OBJECTS  (reported: "Paragraph of Text" not shown)
+//
+// drawio's `text` element (text;whiteSpace=wrap;html=1;fillColor=none;
+// strokeColor=none) paints no body; its multi-<p>/<div> content is the whole
+// object. Three defects made it print blank:
+//  (a) richContent bailed when a LIVE label DOM existed, so the browser never
+//      used rich extraction and fell back to plainLabel;
+//  (b) plainLabel merged <p>/<div> blocks into ONE line that overflowed;
+//  (c) shape=text was wrongly flagged ExporterUnsupportedShape + drew an
+//      invisible bbox body.
+// ===========================================================================
+test('text shape is label-only: no unsupported notice, no invisible body', () => {
+  const r = oneVertex(
+    { shape: 'text', whiteSpace: 'wrap', align: 'left',
+      fillColor: 'none', strokeColor: 'none' },
+    'Paragraph content here');
+  assert.equal(r.notices.length, 0,
+    'the text element is not an unsupported stencil');
+  const paint = r.contract.document.pages[0].paint;
+  assert.ok(!paint.some((n) => n.kind === 'path'),
+    'no body path is emitted (drawio paints nothing for text)');
+  const t = paint.find((n) => n.kind === 'text');
+  assert.ok(t, 'the label itself is still laid out');
+  assert.equal(t.content.lines[0], 'Paragraph content here');
+});
+
+test('plainLabel splits block-level HTML into separate lines', () => {
+  const t = oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000' },
+    '<p>First paragraph</p><p>Second paragraph</p><div>Third</div>')
+    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.equal(t.content.type, 'static', 'headless -> static fallback');
+  const joined = t.content.lines.join('|');
+  // The reported failure was the blob "First paragraphSecond paragraph".
+  assert.ok(!/paragraphSecond/.test(joined), 'paragraphs must NOT be merged');
+  assert.ok(t.content.lines.includes('First paragraph'));
+  assert.ok(t.content.lines.includes('Second paragraph'));
+  assert.ok(t.content.lines.includes('Third'));
+});
+
+test('rich extraction runs when a LIVE label DOM exists (inverted-cond fix)', () => {
+  // Minimal live DOM: state.text.node -> wrapper -> inner -> [<p>A</p>,<p>B</p>]
+  const txt = (v) => ({ nodeType: 3, nodeValue: v, childNodes: [] });
+  const pEl = (v) => ({
+    nodeType: 1, tagName: 'P', style: {},
+    getAttribute: () => null, childNodes: [txt(v)]
+  });
+  const inner = { nodeType: 1, tagName: 'DIV', style: {},
+    getAttribute: () => null, childNodes: [pEl('Alpha'), pEl('Beta')] };
+  const wrapper = { nodeType: 1, tagName: 'DIV', style: {},
+    getAttribute: () => null, childNodes: [inner], firstChild: inner };
+
+  const cells = { v: { id: 'v', vertex: true, html: true } };
+  const states = { v: { x: 10, y: 20, width: 200, height: 120,
+    text: { node: wrapper } } };
+  const styles = { v: { shape: 'text', whiteSpace: 'wrap', align: 'left' } };
+  const labels = { v: '<p>Alpha</p><p>Beta</p>' };
+  const r = exporter.buildResult(
+    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+  assert.ok(t, 'text node emitted');
+  assert.equal(t.content.type, 'rich',
+    'a found live host must now drive rich extraction (was returning null)');
+  const texts = t.content.paragraphs.map(
+    (p) => p.runs.map((x) => x.text).join(''));
+  assert.ok(texts.includes('Alpha') && texts.includes('Beta'),
+    'each <p> becomes its own paragraph');
+  assertSchemaValid(r.contract, 'live-host rich');
 });
 
 test('edge html labels still emit text and preserve compatibility in no-DOM environments', () => {
