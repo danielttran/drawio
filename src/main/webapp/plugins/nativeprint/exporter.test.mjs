@@ -438,9 +438,10 @@ function svgFixture(shapeNode, textNode, style, opt = {}) {
         shape: { node: shapeNode } }
     : { x: 10, y: 20, width: 80, height: 40, shape: { node: shapeNode } };
   if (textNode) st.text = { node: textNode };
-  const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge } };
+  const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge,
+    html: !!opt.html } };
   return exporter.buildResult(graphFixture(
-    cells, { v: st }, { v: '' }, { v: style }, FIXED_BOUNDS, 1));
+    cells, { v: st }, { v: opt.label || '' }, { v: style }, FIXED_BOUNDS, 1));
 }
 
 test('vertex emits ONE faithful svg node (shape+label), no re-derivation', () => {

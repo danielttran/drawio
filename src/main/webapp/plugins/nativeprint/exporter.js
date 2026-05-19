@@ -1203,12 +1203,15 @@
       '<g transform="' + tr + '">' + shapeStr +
       (textStr || '') + '</g></svg>';
 
+    // Keep the label VERBATIM (incl. <foreignObject> HTML) — that IS the
+    // browser's exact render, the only WYSIWYG-true source. The host SVG
+    // rasterizer must render foreignObject; until a given host build does,
+    // the engine emits a loud SvgArtworkStub. We add a specific loud notice
+    // so the operator is never silently misled — faithful-or-loud.
     if (Array.isArray(notices) && /<foreignObject[\s>]/i.test(svg)) {
-      // HTML labels become <foreignObject>; some native SVG rasterizers
-      // cannot render it. Loud, specific — never a silent text loss.
       notices.push(degradation('SvgForeignObject',
-        'HTML label rendered via <foreignObject>; requires an SVG backend ' +
-        'with foreignObject support to print WYSIWYG.', cell.id));
+        'HTML label is carried verbatim as <foreignObject>; the print host ' +
+        'must render foreignObject for pixel-true output.', cell.id));
     }
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
