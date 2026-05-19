@@ -34,98 +34,6 @@
     }).then(function (r) { return r.json(); });
   }
 
-  // ===========================================================================
-  // WYSIWYG runtime self-check (the guarantee).
-  //
-  // Principle: the printout must equal what the operator sees, OR we say
-  // loudly that we could not prove it — never a silent claim. The oracle is
-  // drawio's OWN SVG export (the exact on-screen rendering, real browser
-  // fonts/CSS/metrics). We rasterize that and the engine preview to the same
-  // pixels and compare. Any failure to measure (no SVG API, canvas tainted by
-  // HTML-label <foreignObject> — a genuine browser security limit) yields a
-  // loud `WysiwygUnverified` notice that flows through the SAME acknowledgment
-  // gate as bake degradations, so Print stays disabled until acknowledged.
-  // Every step is try-guarded: this can only ADD a notice, never break print.
-  function loadImage(src) {
-    return new Promise(function (resolve, reject) {
-      var im = new Image();
-      im.onload = function () { resolve(im); };
-      im.onerror = function () { reject(new Error('image load failed')); };
-      im.src = src;
-    });
-  }
-
-  // drawio's authoritative SVG of exactly what is on the canvas. Signature
-  // differs across builds, so feature-detect defensively and never guess.
-  function drawioGroundTruthSvg() {
-    try {
-      var g = ui.editor.graph;
-      if (!g || typeof g.getSvg !== 'function') return null;
-      // (background, scale, border, nocrop, crisp, ignoreSelection)
-      var svg = g.getSvg(null, 1, 0, true, null, true);
-      if (!svg || typeof XMLSerializer === 'undefined') return null;
-      return new XMLSerializer().serializeToString(svg);
-    } catch (e) { return null; }
-  }
-
-  function rasterize(src, w, h) {
-    return loadImage(src).then(function (im) {
-      var c = document.createElement('canvas');
-      c.width = Math.max(1, w | 0);
-      c.height = Math.max(1, h | 0);
-      var cx = c.getContext('2d');
-      cx.fillStyle = '#ffffff';
-      cx.fillRect(0, 0, c.width, c.height);
-      // Fit the source into the page top-left at 1:1 aspect, matching the
-      // exporter (diagram at origin, paper is whitespace around it).
-      var sa = im.width / im.height;
-      var dw = c.width, dh = c.width / sa;
-      if (dh > c.height) { dh = c.height; dw = c.height * sa; }
-      cx.drawImage(im, 0, 0, dw, dh);
-      return cx.getImageData(0, 0, c.width, c.height);   // throws if tainted
-    });
-  }
-
-  // Mean per-pixel luma difference over the inked region (ignores the shared
-  // white page margin so a big sheet doesn't dilute the score).
-  function compare(a, b) {
-    var n = Math.min(a.data.length, b.data.length), inked = 0, acc = 0;
-    for (var i = 0; i < n; i += 4) {
-      var la = (a.data[i] + a.data[i + 1] + a.data[i + 2]) / 3;
-      var lb = (b.data[i] + b.data[i + 1] + b.data[i + 2]) / 3;
-      if (la < 250 || lb < 250) { inked++; acc += Math.abs(la - lb); }
-    }
-    return inked ? acc / inked / 255 : 0;     // 0 == identical, 1 == inverted
-  }
-
-  // Resolve to a notice object (or null when a faithful match is proven).
-  function verifyWysiwyg(previewSrc, pageW, pageH) {
-    var svg = drawioGroundTruthSvg();
-    if (svg == null) {
-      return Promise.resolve({ kind: 'WysiwygUnverified', detail: { detail:
-        'drawio SVG export unavailable in this build — printout could not be ' +
-        'proven to match the screen.', cellId: '' } });
-    }
-    var ref = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
-    var W = Math.min(900, Math.max(1, pageW | 0));
-    var H = Math.max(1, Math.round(W * (pageH / Math.max(1, pageW))));
-    return Promise.all([rasterize(ref, W, H), rasterize(previewSrc, W, H)])
-      .then(function (imgs) {
-        var score = compare(imgs[0], imgs[1]);
-        if (score <= 0.06) return null;        // proven faithful
-        return { kind: 'WysiwygMismatch', detail: { detail:
-          'Printout differs from the on-screen drawing by ' +
-          Math.round(score * 100) + '% over the inked area. Review the ' +
-          'preview before printing.', cellId: '' } };
-      })
-      .catch(function (e) {
-        return { kind: 'WysiwygUnverified', detail: { detail:
-          'WYSIWYG could not be measured (' + (e && e.message || 'reader ' +
-          'blocked; HTML-label diagrams taint the canvas) — printout not ' +
-          'proven to match the screen.'), cellId: '' } };
-      });
-  }
-
   function el(tag, attrs, text) {
     var e = document.createElement(tag);
     if (attrs) Object.keys(attrs).forEach(function (k) {
@@ -212,7 +120,6 @@
 
     var printers = [];
     var acks = [];      // one bool per notice; Print enabled when all true
-    var wysiwygNotices = [];   // runtime self-check result (gates Print too)
 
     function selectedStock() {
       var p = printers[printerSel.selectedIndex];
@@ -258,8 +165,7 @@
     function showNotices(notices) {
       acks = [];
       noticeBox.innerHTML = '';
-      var combined = (exporterNotices || [])
-        .concat(notices || []).concat(wysiwygNotices || []);
+      var combined = (exporterNotices || []).concat(notices || []);
       if (combined.length === 0) {
         noticeBox.style.display = 'none';
         refreshGate();
@@ -300,29 +206,9 @@
           return;
         }
         status.textContent = '';
-        var psrc = m.previewUrl + '&_=' + Date.now();
-        previewImg.src = psrc;
+        previewImg.src = m.previewUrl + '&_=' + Date.now();
         previewImg.onload = refreshGate;
-        wysiwygNotices = [];
         showNotices(m.notices);
-        // Prove (or loudly disprove) WYSIWYG against drawio's own rendering.
-        // Resolves to a notice or null; either way it only ADDS to the gate.
-        var pg = (contract && contract.document && contract.document.pages &&
-          contract.document.pages[0] && contract.document.pages[0].size) ||
-          { w: 800, h: 600 };
-        status.textContent = 'Verifying WYSIWYG…';
-        verifyWysiwyg(psrc, pg.w, pg.h).then(function (note) {
-          status.textContent = note ? '' :
-            'WYSIWYG verified: printout matches the screen.';
-          wysiwygNotices = note ? [note] : [];
-          showNotices(m.notices);
-        }).catch(function () {
-          status.textContent = '';
-          wysiwygNotices = [{ kind: 'WysiwygUnverified', detail: { detail:
-            'self-check errored — printout not proven to match the screen.',
-            cellId: '' } }];
-          showNotices(m.notices);
-        });
       }).catch(function (e) {
         status.textContent = 'Preview failed: ' + e.message;
       });

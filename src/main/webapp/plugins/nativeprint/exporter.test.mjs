@@ -1062,15 +1062,24 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
   assertSchemaValid(r.contract, 'wysiwyg-invariant');
   const paint = r.contract.document.pages[0].paint;
 
-  for (const id of Object.keys(cells)) {
-    const lbl = labels[id];
-    if (lbl === '') continue;
-    // There must be a text node whose content is non-empty (no silent drop /
-    // no <p>-merge-to-blank). We don't pin position here (engine measures);
-    // we pin that the operator's text is actually present.
-    const texts = paint.filter((n) => n.kind === 'text').map(textOfNode);
-    assert.ok(texts.some((t) => t.trim() !== ''),
-      `cell ${id} (${JSON.stringify(lbl).slice(0, 40)}) must emit non-empty text`);
+  // Per-OBJECT enforcement: every labelled cell must contribute its OWN
+  // non-empty text node. A weak "some text exists anywhere" check would pass
+  // even if one cell silently lost its label, so count instead: the number
+  // of non-empty text nodes must be >= the number of labelled cells, and
+  // every labelled cell's text must appear verbatim in the contract.
+  const labelled = Object.keys(cells).filter((id) => labels[id] !== '');
+  const textNodes = paint.filter((n) => n.kind === 'text').map(textOfNode);
+  const nonEmpty = textNodes.filter((t) => t.trim() !== '');
+  assert.ok(nonEmpty.length >= labelled.length,
+    `every labelled object keeps its own text node ` +
+    `(${nonEmpty.length} non-empty vs ${labelled.length} labelled)`);
+  const haystack = textNodes.join('');
+  for (const id of labelled) {
+    // First non-whitespace word of the (de-HTML'd) label must be present.
+    const probe = String(labels[id])
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().split(' ')[0];
+    assert.ok(probe === '' || haystack.includes(probe),
+      `cell ${id} text "${probe}" must reach the contract (not silently dropped)`);
   }
   // Multi-paragraph HTML must not collapse to a single blob line.
   const blob = paint.filter((n) => n.kind === 'text').map(textOfNode)
