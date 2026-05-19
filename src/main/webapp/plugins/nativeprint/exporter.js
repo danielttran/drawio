@@ -1149,6 +1149,99 @@
     })(rootNode);
   }
 
+  function xmlEsc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function findForeignObject(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (String(node.tagName || '').toLowerCase() === 'foreignobject') return node;
+    for (var i = 0; node.childNodes && i < node.childNodes.length; i++) {
+      var f = findForeignObject(node.childNodes[i]);
+      if (f) return f;
+    }
+    return null;
+  }
+
+  // WYSIWYG-true HTML labels WITHOUT a browser and WITHOUT engine layout:
+  // harvest the ACTUAL laid-out text from the live drawio DOM (the same
+  // bake-time DOM read we already do for shapes/getCTM — NOT an added
+  // browser) and transcribe each rendered word into an SVG <text> at the
+  // exact position drawio drew it. Native SVG rasterizers render <text>
+  // faithfully, so the printed text matches the screen by construction.
+  // Returns an SVG fragment (in view coords, to sit inside the cell <g>)
+  // or null when the DOM cannot be measured (caller keeps the verbatim
+  // foreignObject + loud notice — faithful-or-loud).
+  function foreignObjectToSvgText(fo, notices, cellId) {
+    try {
+      var doc = fo.ownerDocument;
+      var svgRoot = fo.ownerSVGElement;
+      if (!doc || !svgRoot || typeof svgRoot.createSVGPoint !== 'function' ||
+        typeof fo.getScreenCTM !== 'function' ||
+        typeof root.getComputedStyle !== 'function' ||
+        typeof doc.createRange !== 'function') return null;
+      var ctm = fo.getScreenCTM();
+      if (!ctm || typeof ctm.inverse !== 'function') return null;
+      var inv = ctm.inverse();
+      var toUser = function (cx, cy) {
+        var p = svgRoot.createSVGPoint();
+        p.x = cx; p.y = cy;
+        var u = p.matrixTransform(inv);
+        return { x: u.x, y: u.y };
+      };
+      var out = [];
+      var walk = function (n) {
+        if (!n) return;
+        if (n.nodeType === 3) {
+          var s = n.nodeValue;
+          if (!s || !s.trim()) return;
+          var parent = n.parentNode;
+          var cs = root.getComputedStyle(parent);
+          var fam = ((cs.fontFamily || 'Arial').split(',')[0] || 'Arial')
+            .trim().replace(/^['"]|['"]$/g, '');
+          var sz = parseFloat(cs.fontSize) || 12;
+          var wt = parseInt(cs.fontWeight, 10);
+          var weight = Number.isFinite(wt) ? (wt >= 600 ? 700 : wt) : 400;
+          var ital = (cs.fontStyle || '').indexOf('italic') >= 0;
+          var col = rgbToHex(cs.color || '') || '#000000';
+          // Per-word ranges -> exact rendered rects (real browser layout).
+          var re = /\S+/g, m;
+          while ((m = re.exec(s))) {
+            var rg = doc.createRange();
+            rg.setStart(n, m.index);
+            rg.setEnd(n, m.index + m[0].length);
+            var rect = rg.getBoundingClientRect();
+            if (!rect || (!rect.width && !rect.height)) continue;
+            // baseline ~ bottom minus the font's descent (~20% of size).
+            var pos = toUser(rect.left, rect.bottom - sz * 0.2);
+            out.push('<text x="' + fmt(pos.x) + '" y="' + fmt(pos.y) +
+              '" font-family="' + xmlEsc(fam) + '" font-size="' + fmt(sz) +
+              '" font-weight="' + weight + '"' +
+              (ital ? ' font-style="italic"' : '') +
+              ' fill="' + col + '" xml:space="preserve">' +
+              xmlEsc(m[0]) + '</text>');
+          }
+          return;
+        }
+        if (n.nodeType !== 1) return;
+        for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
+          walk(n.childNodes[i]);
+        }
+      };
+      walk(fo);
+      return out.length ? out.join('') : null;
+    } catch (e) {
+      if (Array.isArray(notices)) {
+        notices.push(degradation('SvgForeignObject',
+          'HTML label could not be transcribed (' +
+          (e && e.message || 'DOM unmeasurable') +
+          '); carried verbatim as foreignObject.', cellId));
+      }
+      return null;
+    }
+  }
+
   // Build the contract `svg` node carrying the cell's literal rendered SVG.
   // Returns null (caller falls back) when there is no live DOM / serializer.
   var SVG_PAD = 2;   // contract px around the cell for stroke/marker overflow
@@ -1160,6 +1253,18 @@
     if (!shapeStr) return null;
     var textStr = (state.text && state.text.node)
       ? serializeEl(state.text.node) : null;
+    // HTML labels render as <foreignObject> (native rasterizers can't draw
+    // it). Transcribe the ACTUAL rendered words into SVG <text> at their
+    // exact drawn positions — WYSIWYG-true, no browser, no engine layout.
+    // Only if that is impossible do we keep the verbatim foreignObject and
+    // raise the loud safety-net notice (faithful-or-loud).
+    var foEl = (state.text && state.text.node)
+      ? findForeignObject(state.text.node) : null;
+    var foHandled = false;
+    if (foEl) {
+      var synth = foreignObjectToSvgText(foEl, notices, cell && cell.id);
+      if (synth) { textStr = synth; foHandled = true; }
+    }
 
     var vb = { x: state.x, y: state.y, w: state.width, h: state.height };
     if ((!(vb.w > 0) || !(vb.h > 0)) && state.absolutePoints) {
@@ -1203,12 +1308,11 @@
       '<g transform="' + tr + '">' + shapeStr +
       (textStr || '') + '</g></svg>';
 
-    // Keep the label VERBATIM (incl. <foreignObject> HTML) — that IS the
-    // browser's exact render, the only WYSIWYG-true source. The host SVG
-    // rasterizer must render foreignObject; until a given host build does,
-    // the engine emits a loud SvgArtworkStub. We add a specific loud notice
-    // so the operator is never silently misled — faithful-or-loud.
-    if (Array.isArray(notices) && /<foreignObject[\s>]/i.test(svg)) {
+    // If a foreignObject survived (transcription impossible) it is carried
+    // VERBATIM — the browser's exact render, never silently dropped — and a
+    // loud notice fires (faithful-or-loud). When foHandled, the label is now
+    // real SVG <text> at drawio's exact positions: WYSIWYG, no notice.
+    if (foEl && !foHandled && Array.isArray(notices)) {
       notices.push(degradation('SvgForeignObject',
         'HTML label is carried verbatim as <foreignObject>; the print host ' +
         'must render foreignObject for pixel-true output.', cell.id));
