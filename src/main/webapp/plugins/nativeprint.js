@@ -132,6 +132,28 @@
       return s && s.dpiX ? s.dpiX : 300;
     }
 
+    // Selected stock size in px at 96/in (25400 microns per inch). The
+    // contract page is baked to this so the diagram stays 1:1 and larger
+    // paper just adds whitespace instead of scaling the diagram up.
+    function paperPx() {
+      var s = selectedStock();
+      if (!s || !s.widthMicrons || !s.heightMicrons) return null;
+      return {
+        wPx: Math.round(s.widthMicrons / 25400 * 96),
+        hPx: Math.round(s.heightMicrons / 25400 * 96)
+      };
+    }
+
+    // The contract depends on the chosen paper, so re-bake on every paper
+    // (and printer) change — not just re-preview the stale single bake.
+    function rebake() {
+      if (!window.NativePrintExporter.buildResult) return;
+      var r = window.NativePrintExporter.buildResult(
+        ui.editor.graph, paperPx());
+      contract = r.contract;
+      exporterNotices = r.notices || [];
+    }
+
     function refreshGate() {
       var allAck = acks.length === 0 || acks.every(Boolean);
       printBtn.disabled = !allAck || !previewImg.getAttribute('src');
@@ -199,9 +221,11 @@
         stockSel.appendChild(o);
       });
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
-      rearm(); doPreview();
+      rearm(); rebake(); doPreview();
     });
-    stockSel.addEventListener('change', function () { rearm(); doPreview(); });
+    stockSel.addEventListener('change', function () {
+      rearm(); rebake(); doPreview();
+    });
     copies.addEventListener('change', rearm);
 
     cancelBtn.addEventListener('click', function () { ui.hideDialog(); });

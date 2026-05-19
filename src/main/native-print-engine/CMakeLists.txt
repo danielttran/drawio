@@ -90,6 +90,7 @@ if(BUILD_TESTING)
     tests/phase5_targets_preview_tests.cpp
     tests/phase6_hardening_tests.cpp
     tests/phase7_v2_native_bridge_tests.cpp
+    tests/paper_size_tests.cpp
     tests/proto_tests.cpp
     tests/proto_adapter_tests.cpp
     tests/wysiwyg_parity_tests.cpp

@@ -71,6 +71,26 @@ RenderResult render_to_trace(
   RenderTrace trace;
 
   for (const auto& page : document.pages) {
+    // Content past the page extent (the union of all tiles == the selected
+    // paper for the paper-aware bake) is clipped by the per-tile clip below.
+    // Surface that loudly once per page (§6 "true size, never silent scale").
+    // NB: escaping an individual tile is normal multi-tile pagination and is
+    // NOT clipped — only escaping the whole page is.
+    const Rect page_rect{0.0, 0.0, page.width, page.height};
+    const auto escapes_page = [&page_rect](const Rect& b) {
+      return b.x < page_rect.x || b.y < page_rect.y ||
+             b.x + b.w > page_rect.x + page_rect.w ||
+             b.y + b.h > page_rect.y + page_rect.h;
+    };
+    for (const auto& node : page.paint) {
+      if (escapes_page(node.box)) {
+        push_notice_unique(trace.notices, make_notice(
+          DegradationNoticeType::HardwareMarginClip, page.id,
+          "diagram extends beyond the selected paper and was clipped"));
+        break;
+      }
+    }
+
     for (const auto& tile : page.tiles) {
       const Transform transform = make_world_transform(target, tile);
       const Rect tile_rect{tile.origin.x, tile.origin.y, tile.size.w, tile.size.h};

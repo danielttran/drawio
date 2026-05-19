@@ -364,7 +364,7 @@ for (const shape of UNSUPPORTED) {
 // ---- Fill variants -------------------------------------------------------
 test('fill: solid / none / transparent / gradient / opacity', () => {
   assert.equal(oneVertex({ shape: 'rectangle' }).contract.document.pages[0].paint[0].fill, null,
-    'no fillColor -> null (faithful: drawio draws no fill)');
+    'truly absent fillColor key -> null (the sentinel case is covered separately)');
   assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'none' })
     .contract.document.pages[0].paint[0].fill, null);
   assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'transparent' })
@@ -376,6 +376,68 @@ test('fill: solid / none / transparent / gradient / opacity', () => {
     .contract.document.pages[0].paint[0].fill;
   assert.equal(grad.type, 'linear');
   assert.equal(grad.stops.length, 2);
+});
+
+// ---- Regression: paper-aware bake (page == selected paper, 1:1) ----------
+// buildResult(graph, paper) must size the contract page/tile to the SELECTED
+// paper so a larger sheet adds whitespace instead of scaling the diagram up.
+// Pins the exact failure path: if the `paper` arg is ignored (the original
+// bug, and the regression a stray `git checkout` silently reintroduced), the
+// page falls back to diagram bounds and these assertions fail.
+test('paper-aware bake: page == selected paper, geometry unchanged', () => {
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 10, y: 20, width: 80, height: 40 } };
+  const styles = { v: { shape: 'rectangle', fillColor: '#112233', strokeColor: '#445566' } };
+  const small = exporter.buildResult(
+    graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1), { wPx: 816, hPx: 1056 });
+  const big = exporter.buildResult(
+    graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1), { wPx: 2000, hPx: 1500 });
+
+  const sp = small.contract.document.pages[0];
+  const bp = big.contract.document.pages[0];
+  assert.deepEqual(sp.size, { w: 816, h: 1056 }, 'page == selected paper (small)');
+  assert.deepEqual(bp.size, { w: 2000, h: 1500 }, 'page == selected paper (big)');
+  assert.deepEqual(sp.tiles[0], { origin: { x: 0, y: 0 }, size: { w: 816, h: 1056 } },
+    'single tile == one physical sheet');
+  // The diagram is 1:1 on both papers: identical path geometry, only the
+  // surrounding page (whitespace) differs.
+  assert.equal(bp.paint[0].d, sp.paint[0].d, 'shape geometry must not scale with paper');
+});
+
+test('paper-aware bake: no paper arg keeps legacy diagram-bounds page', () => {
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 10, y: 20, width: 80, height: 40 } };
+  const styles = { v: { shape: 'rectangle', fillColor: '#112233' } };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1));
+  const pg = r.contract.document.pages[0];
+  // Back-compat: bounds-derived page, NOT 816x1056.
+  assert.ok(pg.size.w > 0 && pg.size.h > 0);
+  assert.notDeepEqual(pg.size, { w: 816, h: 1056 });
+});
+
+// ---- Regression: drawio "default" sentinel must resolve, not vanish ------
+// styles/default.xml ships defaultVertex with fillColor/strokeColor/fontColor
+// = the literal "default" (resolved at render to shapeBackground/foreground).
+// Before the fix isPaintable("default") was false, so a default-styled shape
+// baked with null fill AND null stroke and printed invisibly while edges and
+// labels (which have their own fallback) still showed. This pins that path.
+test('default-styled vertex (fillColor/strokeColor="default") stays visible', () => {
+  const p = oneVertex({ shape: 'rectangle', fillColor: 'default', strokeColor: 'default' })
+    .contract.document.pages[0].paint[0];
+  assert.equal(p.kind, 'path');
+  assert.deepEqual(p.fill, { type: 'solid', color: '#ffffff', alpha: 1 },
+    'fillColor "default" -> light shapeBackgroundColor, never null');
+  assert.ok(p.stroke && p.stroke.paint, 'strokeColor "default" -> a real stroke, never null');
+  assert.equal(p.stroke.paint.color, '#000000',
+    'strokeColor "default" -> light shapeForegroundColor');
+});
+
+test('explicit none is still none (sentinel fix must not over-paint)', () => {
+  // text/group styles use fillColor=none;strokeColor=none -- must stay unpainted.
+  const p = oneVertex({ shape: 'rectangle', fillColor: 'none', strokeColor: 'none' })
+    .contract.document.pages[0].paint[0];
+  assert.equal(p.fill, null, 'explicit none fill stays null');
+  assert.equal(p.stroke, null, 'explicit none stroke stays null');
 });
 
 // ---- Stroke variants -----------------------------------------------------

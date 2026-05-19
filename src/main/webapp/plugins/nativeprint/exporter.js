@@ -31,6 +31,36 @@
       /^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c);
   }
 
+  // drawio's default stylesheet stores fill/stroke/fontColor as the literal
+  // sentinel "default" (styles/default.xml), resolved at render to
+  // graph.shapeBackgroundColor (fill) / shapeForegroundColor (stroke+font) —
+  // see Graph.js mxStencil.parseColor. Those are CSS `light-dark(a,b)` values;
+  // for print we take the light side. Without resolving the sentinel,
+  // isPaintable("default") is false, so default-styled VERTICES baked with
+  // null fill AND null stroke and rendered invisibly (edges/labels survived
+  // via their own black fallback). This is faithful resolution, NOT inventing
+  // paint: an explicit `none` (text/group styles) stays none and is untouched.
+  function lightOf(cssColor, fallback) {
+    if (typeof cssColor !== 'string' || cssColor === '') return fallback;
+    var m = /^light-dark\(\s*([^,]+?)\s*,/.exec(cssColor);
+    return ((m ? m[1] : cssColor).trim()) || fallback;
+  }
+
+  function resolveThemeDefaults(style, graph) {
+    if (!style) return style;
+    var bg = lightOf(graph && graph.shapeBackgroundColor, '#ffffff');
+    var fg = lightOf(graph && graph.shapeForegroundColor, '#000000');
+    var out = style, cloned = false;
+    ['fillColor', 'gradientColor', 'strokeColor', 'fontColor']
+      .forEach(function (k) {
+        if (style[k] === 'default') {
+          if (!cloned) { out = Object.assign({}, style); cloned = true; }
+          out[k] = (k === 'fillColor' || k === 'gradientColor') ? bg : fg;
+        }
+      });
+    return out;
+  }
+
   function hex(c) {
     if (!c) return '#000000';
     c = String(c);
@@ -483,7 +513,13 @@
     };
   }
 
-  function buildResult(graph) {
+  // `paper`, when supplied, is the SELECTED stock's size in px at 96/in
+  // ({ wPx, hPx }). The contract page then equals the chosen paper so the
+  // diagram prints 1:1 with the extra paper as whitespace (larger paper does
+  // NOT scale the diagram up). The single tile == one physical sheet; content
+  // beyond it is clipped by the engine, which raises a loud notice. When no
+  // paper is given the legacy diagram-bounds page is kept (back-compat).
+  function buildResult(graph, paper) {
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
@@ -494,17 +530,19 @@
       x: bounds && bounds.width > 0 ? bounds.x : 0,
       y: bounds && bounds.height > 0 ? bounds.y : 0
     };
-    var page = {
-      w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
-      h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale))
-    };
+    var page = (paper && paper.wPx > 0 && paper.hPx > 0)
+      ? { w: Math.max(1, Math.round(paper.wPx)),
+          h: Math.max(1, Math.round(paper.hPx)) }
+      : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
+          h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
 
     Object.keys(model.cells || {}).forEach(function (id) {
       var cell = model.cells[id];
       if (cell == null || (!model.isVertex(cell) && !model.isEdge(cell))) return;
       var state = view.getState(cell);
       if (state == null) return;
-      var style = graph.getCellStyle(cell) || state.style || {};
+      var style = resolveThemeDefaults(
+        graph.getCellStyle(cell) || state.style || {}, graph);
 
       if (model.isEdge(cell)) {
         emitEdge(graph, cell, state, style, origin, scale, paint, notices);

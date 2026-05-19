@@ -33,6 +33,7 @@
 #include <cwchar>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1156,6 +1157,11 @@ class Win32Services final : public EngineServices {
         }
         {
           Gdiplus::Graphics g(hdc);
+          // device_box coords are real device pixels (px * dpi/96). On a
+          // printer HDC GDI+ defaults PageUnit to UnitDisplay (1/100"), which
+          // would misread them by printerDPI/100 and break true 1:1. Force
+          // pixel units so print matches the preview bitmap exactly (INV-5).
+          g.SetPageUnit(Gdiplus::UnitPixel);
           auto drawn = draw_trace(g, tile.trace);
           if (!drawn) {
             aborted = true;
