@@ -500,6 +500,11 @@ function styleFor(tag) {
   if (tag === 'span') return { ...base, display: 'inline', fontFamily: 'Times',
     fontStyle: 'italic', color: 'rgb(255, 0, 0)', textDecorationLine: 'underline',
     backgroundColor: 'rgb(0, 255, 0)' };
+  if (tag === 'spanMixed') return { ...base, display: 'inline', fontFamily: 'Courier New',
+    fontWeight: '700', color: 'rgba(0, 0, 255, 0.5)',
+    textDecorationLine: 'underline line-through overline' };
+  if (tag === 'innerBg') return { ...base, display: 'inline',
+    backgroundColor: 'rgba(255, 255, 0, 0.25)' };
   if (tag === 'li') return { ...base, display: 'list-item' };
   return base;
 }
@@ -622,6 +627,80 @@ test('edge takes the svg path with a viewport derived from its points', () => {
   assert.ok(n.box.w > 100 && n.box.h > 70, 'viewport spans the routed points');
   assert.ok(decodeSvg(n).includes('M 0 0 L 100 100'), 'connector verbatim');
   assertSchemaValid(r.contract, 'svg edge');
+});
+
+test('edge HTML label transcription keeps transformed matrix path (not vertex-only regression)', () => {
+  const conn = domEl('path', { d: 'M 0 0 L 100 0', stroke: '#000' });
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(conn, htmlFixtureNodes(), { strokeColor: '#000' }, {
+      edge: true,
+      pts: [{ x: 10, y: 20 }, { x: 110, y: 20 }],
+      parent: { getScreenCTM: () => ({ a: 0, b: 2, c: -2, d: 0, e: 0, f: 0 }) }
+    });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 [^ ]+ [^ ]+\)">/,
+      'edge HTML label keeps rotated screen-transform carry matrix');
+    assert.ok(/>Hello<\/text>/.test(svg) && />World<\/text>/.test(svg),
+      'edge HTML words transcribed to measurable SVG text');
+    assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('nested background rectangles are transcribed (root + descendant + nested inline)', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const txt = { nodeType: 3, nodeValue: 'Alpha', _top: 50 };
+  const inner = { nodeType: 1, tagName: 'span', _styleKey: 'innerBg',
+    childNodes: [txt], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 110, top: 52, width: 35, height: 14 }) };
+  txt.parentNode = inner;
+  const outer = { nodeType: 1, tagName: 'span', _styleKey: 'span',
+    childNodes: [inner], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 84, height: 14 }) };
+  inner.parentNode = outer;
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [outer], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 120, height: 40 }) };
+  outer.parentNode = rootDiv;
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'Alpha',
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 120, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, textRoot, { shape: 'rect' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.match(svg, /<rect x="90" y="40" width="120" height="40" fill="#f0f0f0"\/>/);
+    assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
+    assert.match(svg, /<rect x="110" y="52" width="35" height="14" fill="#ffff00" fill-opacity="0.25"\/>/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('mixed text decoration run is preserved in svg text-decoration', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  const txt = { nodeType: 3, nodeValue: 'Decor', _top: 50 };
+  const span = { nodeType: 1, tagName: 'span', _styleKey: 'spanMixed',
+    childNodes: [txt], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 42, height: 14 }) };
+  txt.parentNode = span;
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [span], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
+  span.parentNode = rootDiv;
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'Decor',
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, textRoot, { shape: 'rect' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.match(svg, /text-decoration="underline line-through overline"/);
+    assert.match(svg, /fill="#0000ff" fill-opacity="0.5"/);
+    assert.match(svg, /font-family="Courier New" font-size="12" font-weight="700"/);
+  } finally { delete globalThis.getComputedStyle; }
 });
 
 test('no live DOM (headless) -> svg path is skipped, vector fallback intact', () => {

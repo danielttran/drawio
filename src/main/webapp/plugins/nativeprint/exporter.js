@@ -1245,6 +1245,32 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
+  function pushListMarkerApprox(notices, detail, cellId) {
+    if (!Array.isArray(notices)) return;
+    notices.push(degradation('SvgListMarkerApprox', detail, cellId));
+  }
+
+  function textRunSvg(run) {
+    var R = run, f = R.f;
+    if (f.fill == null) return '';
+    // Client rects are line-box tall; the browser centres glyphs in the
+    // line box (half-leading). Anchor the em-box top there so vertical
+    // placement matches the screen exactly, not just the line-box top.
+    var yy = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
+    return '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
+      '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
+      '" font-weight="' + f.weight + '"' +
+      (f.italic ? ' font-style="italic"' : '') +
+      (f.decoration ? ' text-decoration="' + f.decoration + '"' : '') +
+      (f.letterSpacing != null
+        ? ' letter-spacing="' + fmt(f.letterSpacing) + '"' : '') +
+      ' fill="' + f.fill + '"' +
+      (f.fillOpacity < 1 ? ' fill-opacity="' + fmt(f.fillOpacity) + '"' : '') +
+      ' text-anchor="' + (R.anchor || 'start') +
+      '" dominant-baseline="text-before-edge"' +
+      ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
+  }
+
   // First rendered word's client rect inside `el` (document order), or null.
   function firstWordRect(el, doc) {
     try {
@@ -1328,18 +1354,16 @@
             var glyph = listMarker(lt, idx);
             if (glyph === null) {
               glyph = '•';
-              if (Array.isArray(notices)) {
-                notices.push(degradation('SvgListMarkerApprox',
-                  'list-style-type "' + lt + '" rendered as a bullet ' +
-                  '(no standard glyph)', cellId));
-              }
-            } else if (Array.isArray(notices)) {
+              pushListMarkerApprox(notices,
+                'list-style-type "' + lt + '" rendered as a bullet ' +
+                '(no standard glyph)', cellId);
+            } else {
               // The ::marker pseudo-box is not measurable without a browser
               // (C2); glyph + numbering are exact, the inset is derived
               // from the measured first-content position. Inherently loud.
-              notices.push(degradation('SvgListMarkerApprox',
+              pushListMarkerApprox(notices,
                 'list marker inset derived from content metrics ' +
-                '(::marker box not measurable browser-free)', cellId));
+                '(::marker box not measurable browser-free)', cellId);
             }
             if (glyph) {
               var fr0 = fontRun(ecs);
@@ -1385,26 +1409,7 @@
     }
     if (!runs.length && !bg.some(function (x) { return x !== ''; })) return '';
     var body = bg.join('');
-    for (var j = 0; j < runs.length; j++) {
-      var R = runs[j], f = R.f;
-      if (f.fill == null) continue;
-      // Client rects are line-box tall; the browser centres glyphs in the
-      // line box (half-leading). Anchor the em-box top there so vertical
-      // placement matches the screen exactly, not just the line-box top.
-      var yy = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
-      body += '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
-        '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
-        '" font-weight="' + f.weight + '"' +
-        (f.italic ? ' font-style="italic"' : '') +
-        (f.decoration ? ' text-decoration="' + f.decoration + '"' : '') +
-        (f.letterSpacing != null
-          ? ' letter-spacing="' + fmt(f.letterSpacing) + '"' : '') +
-        ' fill="' + f.fill + '"' +
-        (f.fillOpacity < 1 ? ' fill-opacity="' + fmt(f.fillOpacity) + '"' : '') +
-        ' text-anchor="' + (R.anchor || 'start') +
-        '" dominant-baseline="text-before-edge"' +
-        ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
-    }
+    for (var j = 0; j < runs.length; j++) body += textRunSvg(runs[j]);
     return '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +
       fmt(M.c) + ' ' + fmt(M.d) + ' ' + fmt(M.e) + ' ' + fmt(M.f) + ')">' +
       body + '</g>';
