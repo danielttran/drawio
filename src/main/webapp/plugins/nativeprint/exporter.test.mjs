@@ -1192,6 +1192,39 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
     'every cell contributes visible paint or a loud notice');
 });
 
+// Architecture lock: when a cell has a live rendered DOM, the bake MUST
+// emit exactly its literal SVG and MUST NOT also emit any re-derived
+// (path/text) geometry for it. This enforces "guarantee by construction"
+// in the headless harness — no browser, no pixel compare.
+test('WYSIWYG architecture lock: live DOM => one svg node, zero re-derivation', () => {
+  const mk = (i) => domEl('g', { id: 's' + i },
+    [domEl('path', { d: `M ${i} ${i} L ${i + 5} ${i + 5}` })], 'L' + i);
+  const cells = {}, states = {}, styles = {}, labels = {};
+  const doc = { getElementById: () => null };
+  for (let i = 0; i < 6; i++) {
+    const id = 'c' + i;
+    const sn = mk(i); sn.ownerDocument = doc;
+    cells[id] = { id, vertex: true };
+    states[id] = { x: 10 + i, y: 20 + i, width: 40, height: 30,
+      shape: { node: sn } };
+    styles[id] = { shape: i % 2 ? 'umlActor' : 'mxgraph.x.y' };
+    labels[id] = '';
+  }
+  const r = exporter.buildResult(
+    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  const paint = r.contract.document.pages[0].paint;
+  const svgs = paint.filter((n) => n.kind === 'svg');
+  assert.equal(svgs.length, 6, 'one svg node per live cell');
+  assert.equal(paint.length, 6, 'NOTHING re-derived alongside the svg');
+  assert.ok(!paint.some((n) => n.kind === 'path' || n.kind === 'text'),
+    'no re-derived path/text when the literal SVG is available');
+  svgs.forEach((n, i) => {
+    assert.ok(decodeSvg(n).includes(`<path d="M ${i} ${i}`),
+      'each svg carries that cell\'s own rendered geometry');
+  });
+  assertSchemaValid(r.contract, 'architecture-lock');
+});
+
 // ---- Cross-process gate: real engine accepts every exporter output -------
 test('real engine renders the complex exporter document (no silent reject)',
   { skip: existsSync(ENGINE_EXE) ? false : 'engine binary not built' },
