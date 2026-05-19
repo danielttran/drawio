@@ -1235,6 +1235,23 @@
   }
 
   function emitEdge(graph, cell, state, style, origin, scale, paint, notices) {
+    // Faithful path: transcribe drawio's own rendered connector + markers
+    // (exact waypoints, curved/orthogonal/entity routing, real arrowheads)
+    // instead of re-deriving them. Re-derivation below is the headless
+    // fallback only (no live SVG); it is a known geometric approximation.
+    var harvested = harvestShape(cell, state, origin, scale, notices);
+    if (harvested) {
+      for (var hi = 0; hi < harvested.length; hi++) paint.push(harvested[hi]);
+      var hl = plainLabel(graph, cell);
+      if (hl !== '') {
+        var hlBox = edgeLabelBox(state, style, origin, scale, hl);
+        var hlb = labelBoxNode(style, hlBox);
+        if (hlb) paint.push(hlb);
+        paint.push(textNode(graph, cell, state, style, hlBox, hl, notices));
+      }
+      return;
+    }
+
     var raw = state.absolutePoints || [];
     var points = [];
     for (var i = 0; i < raw.length; i++) {

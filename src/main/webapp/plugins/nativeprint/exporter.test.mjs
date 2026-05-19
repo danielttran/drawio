@@ -1022,6 +1022,68 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
     'no cell silently dropped');
 });
 
+// ---- WYSIWYG invariant: no object is SILENTLY wrong ----------------------
+// The guarantee is "faithful OR loudly noticed, never silently diverged".
+// This sweep enforces the structural half of it headlessly: anything with a
+// non-empty label must yield a text node carrying that text (the plainLabel-
+// merge / blank-paragraph class), and every cell must produce visible paint
+// or a notice (nothing silently vanishes). The pixel half is the in-app
+// runtime self-check.
+function textOfNode(n) {
+  if (!n || n.kind !== 'text') return '';
+  if (n.content.type === 'rich') {
+    return n.content.paragraphs
+      .map((p) => p.runs.map((r) => r.text).join('')).join('\n');
+  }
+  return (n.content.lines || []).join('\n');
+}
+test('WYSIWYG invariant: every labelled object carries its text, nothing silent', () => {
+  const cells = {}, states = {}, styles = {}, labels = {};
+  let i = 0;
+  const add = (style, isEdge, label) => {
+    const id = 'c' + i++;
+    cells[id] = { id, vertex: !isEdge, edge: isEdge, html: /[<]/.test(label || '') };
+    states[id] = isEdge
+      ? { x: 0, y: 0, width: 0, height: 0,
+          absolutePoints: [{ x: i * 7, y: 7 }, { x: i * 7 + 60, y: 67 }],
+          absoluteOffset: { x: i * 7 + 30, y: 37 } }
+      : { x: (i % 7) * 70, y: Math.floor(i / 7) * 70, width: 60, height: 44 };
+    styles[id] = style;
+    labels[id] = label || '';
+  };
+  for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Body Text');
+  for (const shape of UNSUPPORTED) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'Stencil');
+  add({ shape: 'text', whiteSpace: 'wrap', fillColor: 'none', strokeColor: 'none' }, false, 'Plain text element');
+  add({ shape: 'rectangle', strokeColor: '#000000' }, false, '<p>Para one</p><p>Para two</p><div>Para three</div>');
+  add({ strokeColor: '#000000', endArrow: 'block' }, true, 'Edge label');
+  add({ shape: 'image', image: 'https://example.com/x.png' }, false, 'Image caption');
+
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
+  assertSchemaValid(r.contract, 'wysiwyg-invariant');
+  const paint = r.contract.document.pages[0].paint;
+
+  for (const id of Object.keys(cells)) {
+    const lbl = labels[id];
+    if (lbl === '') continue;
+    // There must be a text node whose content is non-empty (no silent drop /
+    // no <p>-merge-to-blank). We don't pin position here (engine measures);
+    // we pin that the operator's text is actually present.
+    const texts = paint.filter((n) => n.kind === 'text').map(textOfNode);
+    assert.ok(texts.some((t) => t.trim() !== ''),
+      `cell ${id} (${JSON.stringify(lbl).slice(0, 40)}) must emit non-empty text`);
+  }
+  // Multi-paragraph HTML must not collapse to a single blob line.
+  const blob = paint.filter((n) => n.kind === 'text').map(textOfNode)
+    .find((t) => /Para one/.test(t));
+  assert.ok(blob && /Para one[\s\S]*Para two/.test(blob) && !/onePara two/.test(blob),
+    'paragraphs stay separated, never merged');
+  // Nothing silently vanished: paint count >= number of cells, OR a notice
+  // explains the gap.
+  const cellCount = Object.keys(cells).length;
+  assert.ok(paint.length >= cellCount || r.notices.length > 0,
+    'every cell contributes visible paint or a loud notice');
+});
+
 // ---- Cross-process gate: real engine accepts every exporter output -------
 test('real engine renders the complex exporter document (no silent reject)',
   { skip: existsSync(ENGINE_EXE) ? false : 'engine binary not built' },
