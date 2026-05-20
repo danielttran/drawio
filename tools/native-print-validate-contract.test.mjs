@@ -39,8 +39,9 @@ function minimalValid() {
         size: { w: 200, h: 100 },
         tiles: [{ origin: { x: 0, y: 0 }, size: { w: 200, h: 100 } }],
         paint: [
-          { kind: 'path', box: { x: 0, y: 0, w: 10, h: 10 },
-            d: 'M 0 0 L 10 10', stroke: { dash: null } },
+          // Per Appendix A, path nodes do NOT carry a JSON `box` — the
+          // engine derives bounds from `d`. The validator must match.
+          { kind: 'path', d: 'M 0 0 L 10 10', stroke: { dash: null } },
           {
             kind: 'text',
             box: { x: 5, y: 5, w: 80, h: 20 },
@@ -144,6 +145,54 @@ test('non-existent contract path exits 2', async () => {
       });
   });
   assert.equal(r.code, 2);
+});
+
+test('lowercase relative path command exits 1 (paths must be absolute)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'm 0 0 l 10 10';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: SVG path must start with an absolute M command/);
+});
+
+test('SVG node missing aspect exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'svg', box: { x: 0, y: 0, w: 50, h: 50 }, source: 'PHN2Zz48L3N2Zz4='
+    // aspect omitted
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.aspect: missing/);
+});
+
+test('SVG node with bogus aspect value exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'svg', box: { x: 0, y: 0, w: 50, h: 50 },
+    source: 'PHN2Zz48L3N2Zz4=', aspect: 'stretch'
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.aspect: must be preserve\|fill/);
+});
+
+test('image with bogus aspect value exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'image', box: { x: 0, y: 0, w: 50, h: 50 },
+    format: 'png', data: 'iVBORw==', aspect: 'cover'
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.aspect: must be preserve\|fill/);
+});
+
+test('path stroke=null is valid (no stroke at all)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].stroke = null;
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
 });
 
 test('no argument exits 2', async () => {

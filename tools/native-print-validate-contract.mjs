@@ -54,15 +54,27 @@ function validateBox(box, path) {
 function validatePaintNode(node, path) {
   if (!node || typeof node !== 'object') { bad(path, 'not an object'); return; }
   if (!required(node, 'kind', path, 'string')) return;
-  validateBox(node.box, path + '.box');
+  // Per the v1.1 contract Appendix, path nodes derive bounds from the parsed
+  // `d`; every OTHER known paint kind carries a JSON `box`. Validate `box`
+  // only on those kinds so an unknown-kind error isn't accompanied by a
+  // spurious missing-box error.
+  const boxBearingKinds = new Set(['text', 'image', 'svg', 'barcode']);
+  if (boxBearingKinds.has(node.kind)) {
+    validateBox(node.box, path + '.box');
+  }
   switch (node.kind) {
     case 'path': {
       if (!required(node, 'd', path, 'string')) break;
-      if (!node.d.startsWith('M') && !node.d.startsWith('m')) {
-        bad(path + '.d', 'SVG path must start with an M command');
+      // Appendix A: paths must be ABSOLUTE. Lowercase commands are relative
+      // and are rejected by the engine's path parser.
+      if (!node.d.startsWith('M')) {
+        bad(path + '.d', 'SVG path must start with an absolute M command (uppercase)');
       }
-      // dash key is REQUIRED on stroke when stroke is present.
-      if (node.stroke && !Object.prototype.hasOwnProperty.call(node.stroke, 'dash')) {
+      // dash key is REQUIRED on stroke when stroke is an object (null is
+      // valid and represents "no stroke"). The engine rejects a stroke
+      // object missing dash.
+      if (node.stroke && typeof node.stroke === 'object' &&
+          !Object.prototype.hasOwnProperty.call(node.stroke, 'dash')) {
         bad(path + '.stroke.dash', 'stroke object missing required dash key (use null for solid)');
       }
       break;
@@ -122,11 +134,18 @@ function validatePaintNode(node, path) {
         bad(path + '.format', `only PNG is engine-supported, got ${JSON.stringify(node.format)}`);
       }
       if (node.data.length === 0) bad(path + '.data', 'base64 payload is empty');
+      if (node.aspect !== 'preserve' && node.aspect !== 'fill') {
+        bad(path + '.aspect', `must be preserve|fill, got ${JSON.stringify(node.aspect)}`);
+      }
       break;
     }
     case 'svg': {
       if (!required(node, 'source', path, 'string')) break;
+      if (!required(node, 'aspect', path, 'string')) break;
       if (node.source.length === 0) bad(path + '.source', 'base64 svg source is empty');
+      if (node.aspect !== 'preserve' && node.aspect !== 'fill') {
+        bad(path + '.aspect', `must be preserve|fill, got ${JSON.stringify(node.aspect)}`);
+      }
       break;
     }
     case 'barcode': {

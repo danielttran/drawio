@@ -63,7 +63,7 @@ add_executable(print_engine_host
   ${PRINT_ENGINE_HOST_SERVICES}
 )
 target_include_directories(print_engine_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
-target_link_libraries(print_engine_host PRIVATE print_engine_contract)
+target_link_libraries(print_engine_host PRIVATE print_engine_contract print_engine_host_portable)
 if(WIN32)
   target_link_libraries(print_engine_host PRIVATE print_engine_host_svg)
   target_link_libraries(print_engine_host PRIVATE gdiplus winspool gdi32 user32 ole32)

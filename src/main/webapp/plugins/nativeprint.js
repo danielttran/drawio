@@ -106,11 +106,19 @@
     // sentinel dropdown value; for it we emit "custom:WuxHu" (microns) from
     // the W/H inputs. Returns null if the inputs are invalid -- the caller
     // gates Print on that.
+    // Max custom-stock dimension the host parser accepts:
+    // SHRT_MAX (32767) tenths-of-mm == 3276.7 mm (~3.27 m), the largest
+    // physical paper DEVMODE.dmPaperWidth/Length can express. Anything
+    // larger is refused upfront with a loud UI message instead of being
+    // sent and rejected at the engine boundary.
+    var CUSTOM_STOCK_MAX_MM = 3276.7;
+
     function effectiveStockId() {
       if (stockSel.value !== 'custom') return stockSel.value;
       var wmm = parseFloat(customW.value);
       var hmm = parseFloat(customH.value);
       if (!(wmm > 0) || !(hmm > 0)) return null;
+      if (wmm > CUSTOM_STOCK_MAX_MM || hmm > CUSTOM_STOCK_MAX_MM) return null;
       var wu = Math.round(wmm * 1000);
       var hu = Math.round(hmm * 1000);
       return 'custom:' + wu + 'x' + hu;
@@ -306,7 +314,14 @@
     printBtn.addEventListener('click', function () {
       var sid = effectiveStockId();
       if (sid == null) {
-        status.textContent = 'Custom stock requires positive W and H.';
+        var wmm = parseFloat(customW.value);
+        var hmm = parseFloat(customH.value);
+        if (!(wmm > 0) || !(hmm > 0)) {
+          status.textContent = 'Custom stock requires positive W and H.';
+        } else {
+          status.textContent = 'Custom stock W and H must each be ≤ ' +
+            CUSTOM_STOCK_MAX_MM + ' mm (DEVMODE limit).';
+        }
         return;
       }
       printBtn.disabled = true;
