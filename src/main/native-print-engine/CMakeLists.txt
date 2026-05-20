@@ -104,6 +104,7 @@ if(BUILD_TESTING)
     tests/proto_adapter_tests.cpp
     tests/svg_pixel_determinism_tests.cpp
     tests/wysiwyg_parity_tests.cpp
+    tests/correctness_extended_tests.cpp
   )
 
   # Cross-platform SVG pixel-golden test: configured to a path it loads at
