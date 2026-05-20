@@ -118,7 +118,10 @@ enum class NoticeKind {
   FontSubstituted,
   MergeClip,
   SchemaMinorAhead,
-  ProtoMinorAhead
+  ProtoMinorAhead,
+  // Device-side success notice for embedded SVG that was rasterized by an
+  // external backend. Carries backend identity in `detail`; never silent.
+  SvgArtworkRasterized
 };
 
 [[nodiscard]] const char* to_wire(NoticeKind kind) noexcept;

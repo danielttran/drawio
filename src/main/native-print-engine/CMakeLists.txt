@@ -26,6 +26,14 @@ add_library(print_engine_contract
   src/renderer.cpp
 )
 
+# Host-side helpers that are pure C++ (no Win32) and therefore testable on
+# every CI runner. Kept in a tiny static library so its source files live
+# under host/ (outside the INV-1 architecture scan, which inspects only
+# include/ + src/) while still being linkable into the cross-platform tests.
+add_library(print_engine_host_portable STATIC host/custom_stock.cpp)
+target_include_directories(print_engine_host_portable
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/host)
+
 target_include_directories(print_engine_contract
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -83,6 +91,7 @@ if(BUILD_TESTING)
     tests/architecture_tests.cpp
     tests/contract_validation_tests.cpp
     tests/contract_loader_tests.cpp
+    tests/custom_stock_tests.cpp
     tests/phase1_emit_tests.cpp
     tests/phase2_static_text_tests.cpp
     tests/phase3_raster_svg_tests.cpp
@@ -104,6 +113,7 @@ if(BUILD_TESTING)
   target_link_libraries(print_engine_contract_tests
     PRIVATE
       print_engine_contract
+      print_engine_host_portable
       Catch2::Catch2WithMain
   )
 

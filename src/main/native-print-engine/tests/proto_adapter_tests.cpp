@@ -223,6 +223,36 @@ TEST_CASE("Print returns a typed job result with a job log",
         "native-print-engine");
 }
 
+TEST_CASE("Phase 5 device-side SvgArtworkRasterized notice round-trips through"
+          " the proto adapter wire format",
+          "[adapter][notice][svg]") {
+  // Build the notice as if draw_trace had emitted it from a successful
+  // external rasterization (carries backend identity in `detail`).
+  DegradationNotice n;
+  n.type = DegradationNoticeType::SvgArtworkRasterized;
+  n.page_id = "page-2";
+  n.detail = "svg rendered via external rasterizer: resvg 0.47";
+  const Json j = proto::notice_to_json(n);
+  CHECK(j.get("kind")->as_string() == "SvgArtworkRasterized");
+  CHECK(j.get("pageId")->as_string() == "page-2");
+  CHECK(j.get("detail")->get("detail")->as_string() ==
+        "svg rendered via external rasterizer: resvg 0.47");
+}
+
+TEST_CASE("Phase 5 fallback StubbedSvgArtwork notice still serializes when"
+          " the rasterizer is unavailable",
+          "[adapter][notice][svg]") {
+  DegradationNotice n;
+  n.type = DegradationNoticeType::StubbedSvgArtwork;
+  n.page_id = "page-1";
+  n.detail = "svg rasterizer fallback: no backend";
+  const Json j = proto::notice_to_json(n);
+  // Engine posture preserved: the kind on the wire is unchanged.
+  CHECK(j.get("kind")->as_string() == "StubbedSvgArtwork");
+  CHECK(j.get("detail")->get("detail")->as_string() ==
+        "svg rasterizer fallback: no backend");
+}
+
 TEST_CASE("RenderPreview during an in-flight Print is EngineBusyError",
           "[adapter][concurrency]") {
   FakeServices svc;

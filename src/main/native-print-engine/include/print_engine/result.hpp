@@ -12,7 +12,13 @@ enum class DegradationNoticeType {
   StubbedSvgArtwork,
   HardwareMarginClip,
   FontSubstitution,
-  MergeClip
+  MergeClip,
+  // §6 SVG escalation: device-side success-notice carrying backend identity
+  // ("rendered via <backend>"). Loud-by-design so the operator always sees
+  // which external rasterizer produced the pixels (for regulated traceability).
+  // The engine's StubbedSvgArtwork notice stays unchanged until the spec owner
+  // formally lifts that posture; this is additive (a softer success notice).
+  SvgArtworkRasterized
 };
 
 struct DegradationNotice {

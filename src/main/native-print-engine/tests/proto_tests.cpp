@@ -165,6 +165,18 @@ TEST_CASE("notice kinds map engine notices and add boundary-only kinds",
         "ProtoMinorAhead");
   CHECK(std::string(proto::to_wire(NoticeKind::SchemaMinorAhead)) ==
         "SchemaMinorAhead");
+  // SvgArtworkRasterized: device-side success notice (Phase 5). Loud,
+  // additive — engine's StubbedSvgArtwork is unchanged so the existing spec
+  // posture survives until the owner formally lifts it.
+  CHECK(map_notice(DegradationNoticeType::SvgArtworkRasterized) ==
+        NoticeKind::SvgArtworkRasterized);
+  CHECK(std::string(proto::to_wire(NoticeKind::SvgArtworkRasterized)) ==
+        "SvgArtworkRasterized");
+  // Engine's stub posture is unchanged.
+  CHECK(map_notice(DegradationNoticeType::StubbedSvgArtwork) ==
+        NoticeKind::StubbedSvgArtwork);
+  CHECK(std::string(proto::to_wire(NoticeKind::StubbedSvgArtwork)) ==
+        "StubbedSvgArtwork");
 }
 
 TEST_CASE("handshake enforces Hello-first ordering", "[proto][handshake]") {

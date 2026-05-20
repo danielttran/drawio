@@ -84,5 +84,44 @@ See `SPEC_COVERAGE.md` for the full section-by-section coverage matrix.
 - Additive contract support for `content.type:"rich"` is implemented in loader with validation and loud enum refusal for unknown content types.
 - Exporter emits rich paragraphs/runs for HTML labels with feature-flag kill switch and fallback static path.
 - Renderer and native bridge forward `rich_paragraphs` through emitted/native draw commands.
-- Win32 sink now consumes rich paragraph alignment/indent and applies paragraph run style for line measurement and draw with rich font-substitution notices.
-- Remaining: full mixed-run line layout (run-by-run wrapping, baseline alignment, explicit underline/strikethrough line drawing), plus golden suite/hardware validation.
+- Win32 sink consumes rich paragraph alignment/indent and applies paragraph run style for line measurement and draw with rich font-substitution notices, including run-level wrap at token boundaries, per-line max-ascent baseline alignment across mixed-style runs, and explicit underline/strikethrough line drawing.
+- Engine-side structural goldens pin per-run attribute survival (text/family/size/weight/italic/underline/strikethrough/color/paragraph-align) — see `wysiwyg_parity_tests.cpp`.
+- Remaining: pixel-level rich golden suite (Windows-only host) + HIL validation.
+
+## SVG TODO #2 — embedded SVG rasterizer (resvg)
+
+- Phase 5 wired: `draw_trace`'s `EmittedKind::Svg` branch now invokes the
+  external rasterizer behind the hand-owned ABI (`ISvgRasterizer*` threaded
+  through both `render_preview` and `print` from a single Win32Services
+  member — INV-5 holds by construction). On success: base64-decode →
+  `render(bytes, device_box, dpi)` → straight RGBA8 → premul BGRA → GDI+
+  `DrawImage`, with a device-side `SvgArtworkRasterized` `DegradationNotice`
+  carrying backend identity. On ANY failure (missing DLL, parse, unsupported,
+  internal): existing loud crosshatch + `StubbedSvgArtwork` fallback notice
+  carrying the failure reason. Engine library is unchanged (INV-1).
+- §6 escalation: the engine's `StubbedSvgArtwork` notice is preserved verbatim
+  pending spec-owner sign-off; the new `SvgArtworkRasterized` notice is
+  additive (loud success notice naming the backend). The owner can later
+  flip the engine notice off (one-line change in `renderer.cpp`).
+- `jobLog.svgRasterizer` records backend name+version or "none" for
+  regulated traceability.
+- Phase 6: SVG golden-image suite remains pixel-level Windows-only. ABI
+  symbol verification is gated by the new CI workflow on every push.
+
+## Custom stock (DMPAPER_USER)
+
+- `host/custom_stock.{hpp,cpp}` parses the synthetic `"custom:<wMicrons>x<hMicrons>"`
+  stockId shape; tested cross-platform on Linux CI.
+- `host/win32_services.cpp::merged_devmode_for` recognises the parsed value
+  and sets `DEVMODE.dmPaperSize=DMPAPER_USER` + dmPaperWidth/Length (tenths
+  of mm) + orientation, before merging through `DocumentPropertiesW` so the
+  driver-private `dmDriverExtra` bytes are preserved.
+- `plugins/nativeprint.js` UI offers a "Custom… (set physical dimensions)"
+  stock option with W×H mm inputs; Print is gated on positive dims.
+
+## CI
+
+- `.github/workflows/native-print-engine.yml` gates the engine library +
+  tests on Linux, the full Win32 host build + ctest + SVG ABI swap test on
+  Windows, the Rust cdylib on both runners (with ABI-symbol export
+  verification), and the exporter Node `--test` suite on Linux.
