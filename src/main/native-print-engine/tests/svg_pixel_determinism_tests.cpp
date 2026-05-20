@@ -280,6 +280,142 @@ TEST_CASE("SVG rasterizer cdylib: hardening pack -- multiple sizes, gradients,"
   }
 }
 
+TEST_CASE("SVG rasterizer cdylib: <foreignObject> is refused LOUDLY (status="
+          " SPE_SVG_ERR_UNSUPPORTED), never silently rendered as a blank box",
+          "[svg][cdylib][wysiwyg]") {
+  // The WYSIWYG-critical guard. resvg's underlying parser SKIPS
+  // foreignObject and returns success with a fully-transparent buffer --
+  // that would print a SILENTLY blank box, the exact C1 violation.
+  // The shim must intercept and report SPE_SVG_ERR_UNSUPPORTED so the host
+  // emits a loud crosshatch + notice instead.
+  const char* lib_path = SVG_RASTERIZER_LIB;
+  if (lib_path == nullptr || lib_path[0] == '\0') {
+    SKIP("SVG_RASTERIZER_LIB not configured; build the Rust shim first.");
+  }
+  Lib lib = open_lib(lib_path);
+  if (lib.handle == nullptr) {
+    SKIP("could not open svg rasterizer cdylib");
+  }
+  using FnRender = std::int32_t (*)(const std::uint8_t*, std::size_t,
+                                    std::uint32_t, std::uint32_t, double,
+                                    std::uint8_t*, std::size_t,
+                                    char*, std::size_t);
+  auto fn_render = lib.sym<FnRender>("spe_svg_render");
+  REQUIRE(fn_render != nullptr);
+
+  const std::string svg =
+      "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='40'>"
+      "<foreignObject x='0' y='0' width='100' height='40'>"
+      "<div xmlns='http://www.w3.org/1999/xhtml'>HTML in SVG</div>"
+      "</foreignObject></svg>";
+  std::array<std::uint8_t, 100 * 40 * 4> px{};
+  char err[256] = {0};
+  const std::int32_t st = fn_render(
+      reinterpret_cast<const std::uint8_t*>(svg.data()), svg.size(),
+      100, 40, 96.0, px.data(), px.size(), err, sizeof(err));
+  // SPE_SVG_ERR_UNSUPPORTED == -3 per svg_rasterizer_abi.h.
+  CHECK(st == -3);
+  // The err message must name the failure mode so the host's
+  // StubbedSvgArtwork notice carries actionable detail.
+  CHECK(std::string(err).find("foreignObject") != std::string::npos);
+}
+
+TEST_CASE("SVG rasterizer cdylib: a real drawio-flavor SVG corpus all renders"
+          " with non-empty output (no silent blank cells)",
+          "[svg][cdylib][wysiwyg]") {
+  // Realistic drawio SVG output uses: solid + gradient fills, stroke +
+  // dash, ellipse + radial gradient, shadow-as-translated-clone (the
+  // mxSvgCanvas2D drop-shadow pattern), <text> with font-family/anchor,
+  // multi-line via <tspan dy>, path + <marker> arrowhead, clipPath.
+  // Every one MUST rasterize to >0 opaque pixels -- a silent blank means
+  // the printed page would silently lose a cell.
+  const char* lib_path = SVG_RASTERIZER_LIB;
+  if (lib_path == nullptr || lib_path[0] == '\0') {
+    SKIP("SVG_RASTERIZER_LIB not configured");
+  }
+  Lib lib = open_lib(lib_path);
+  if (lib.handle == nullptr) {
+    SKIP("could not open svg rasterizer cdylib");
+  }
+  using FnRender = std::int32_t (*)(const std::uint8_t*, std::size_t,
+                                    std::uint32_t, std::uint32_t, double,
+                                    std::uint8_t*, std::size_t,
+                                    char*, std::size_t);
+  auto fn_render = lib.sym<FnRender>("spe_svg_render");
+  REQUIRE(fn_render != nullptr);
+
+  struct Case { const char* name; const char* svg; };
+  const std::array<Case, 9> corpus = {{
+      {"solid rect + stroke",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='80'>"
+       "<rect x='10' y='10' width='80' height='60' fill='#4a90e2' "
+       "stroke='#222' stroke-width='2'/></svg>"},
+      {"linear gradient fill",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='80'>"
+       "<defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'>"
+       "<stop offset='0' stop-color='#fff'/>"
+       "<stop offset='1' stop-color='#4a90e2'/></linearGradient></defs>"
+       "<rect x='10' y='10' width='80' height='60' fill='url(#g)'/></svg>"},
+      {"radial gradient ellipse",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='80'>"
+       "<defs><radialGradient id='r'>"
+       "<stop offset='0' stop-color='#ff0'/>"
+       "<stop offset='1' stop-color='#f00'/></radialGradient></defs>"
+       "<ellipse cx='50' cy='40' rx='40' ry='30' fill='url(#r)'/></svg>"},
+      {"mxgraph drop-shadow (translated-clone)",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='110' height='90'>"
+       "<g transform='translate(3,3)' opacity='0.3'>"
+       "<rect x='10' y='10' width='80' height='60' fill='#000'/></g>"
+       "<rect x='10' y='10' width='80' height='60' fill='#fff' "
+       "stroke='#222' stroke-width='2'/></svg>"},
+      {"text font-family + bold + anchor",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='40'>"
+       "<text x='100' y='25' text-anchor='middle' font-family='Arial' "
+       "font-size='14' font-weight='bold' fill='#222'>Hello world</text></svg>"},
+      {"multi-line text via tspan dy",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='80'>"
+       "<text x='10' y='20' font-family='Arial' font-size='12'>"
+       "<tspan x='10' dy='0'>Line one</tspan>"
+       "<tspan x='10' dy='14'>Line two</tspan></text></svg>"},
+      {"cubic-bezier path + marker arrowhead",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='80'>"
+       "<defs><marker id='m' markerWidth='10' markerHeight='10' "
+       "refX='9' refY='5' orient='auto'>"
+       "<path d='M 0 0 L 10 5 L 0 10 z' fill='#222'/></marker></defs>"
+       "<path d='M 10 40 C 70 10 130 70 190 40' fill='none' stroke='#222' "
+       "stroke-width='2' marker-end='url(#m)'/></svg>"},
+      {"dashed stroke",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='40'>"
+       "<path d='M 10 20 L 90 20' fill='none' stroke='#a00' stroke-width='2' "
+       "stroke-dasharray='6 4'/></svg>"},
+      {"clipPath + nested transform",
+       "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>"
+       "<defs><clipPath id='c'>"
+       "<circle cx='50' cy='50' r='40'/></clipPath></defs>"
+       "<g clip-path='url(#c)'>"
+       "<rect x='0' y='0' width='100' height='100' fill='#00f'/>"
+       "<rect x='0' y='0' width='50' height='50' fill='#0f0'/></g></svg>"},
+  }};
+  for (const auto& c : corpus) {
+    constexpr std::uint32_t kW = 200;
+    constexpr std::uint32_t kH = 100;
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(kW) * kH * 4u);
+    char err[256] = {0};
+    const std::int32_t st = fn_render(
+        reinterpret_cast<const std::uint8_t*>(c.svg), std::strlen(c.svg),
+        kW, kH, 96.0, px.data(), px.size(), err, sizeof(err));
+    INFO("case: " << c.name);
+    INFO("err: " << err);
+    REQUIRE(st == 0);
+    std::size_t opaque = 0;
+    for (std::size_t i = 3; i < px.size(); i += 4) {
+      if (px[i] != 0u) ++opaque;
+    }
+    INFO("opaque pixels: " << opaque);
+    CHECK(opaque > 0u);  // a silent blank cell would print silently wrong
+  }
+}
+
 TEST_CASE("SVG rasterizer cdylib: caller-allocates with too-small buffer is"
           " a typed failure, never a buffer overrun",
           "[svg][cdylib][pixel_golden]") {

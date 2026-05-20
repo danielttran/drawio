@@ -952,51 +952,64 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           const std::string decoded(
               reinterpret_cast<const char*>(svg_bytes.data()),
               svg_bytes.size());
-          const SvgRasterResult rr = svg_rasterizer->render(
-              decoded, target_w, target_h,
-              static_cast<double>(g.GetDpiX()));
-          // Promote to size_t BEFORE multiplying so a 64K x 64K SVG cannot
-          // wrap uint32 (the ABI lets the backend return up-to-32-bit
-          // dimensions; the buffer is in host address space).
-          const std::size_t out_w_sz =
-              static_cast<std::size_t>(rr.raster.width);
-          const std::size_t out_h_sz =
-              static_cast<std::size_t>(rr.raster.height);
-          if (rr.ok() && out_w_sz > 0u && out_h_sz > 0u &&
-              rr.raster.rgba.size() == out_w_sz * out_h_sz * 4u) {
-            const std::size_t pixel_count = out_w_sz * out_h_sz;
-            std::vector<std::uint8_t> premul(pixel_count * 4u);
-            straight_rgba_to_premul_bgra(rr.raster.rgba.data(), premul.data(),
-                                         pixel_count);
-            const INT stride = static_cast<INT>(out_w_sz) * 4;
-            Gdiplus::Bitmap bitmap(static_cast<INT>(out_w_sz),
-                                   static_cast<INT>(out_h_sz), stride,
-                                   PixelFormat32bppPARGB, premul.data());
-            if (bitmap.GetLastStatus() == Gdiplus::Ok) {
-              const Gdiplus::RectF dst = image_destination(
-                  c, static_cast<Gdiplus::REAL>(out_w_sz),
-                  static_cast<Gdiplus::REAL>(out_h_sz));
-              g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
-                          static_cast<Gdiplus::REAL>(out_w_sz),
-                          static_cast<Gdiplus::REAL>(out_h_sz),
-                          Gdiplus::UnitPixel);
-              rasterized = true;
-              push_notice_unique(
-                  result.notices,
-                  DegradationNotice{
-                      DegradationNoticeType::SvgArtworkRasterized,
-                      current_page_id,
-                      "svg rendered via external rasterizer: " +
-                          svg_rasterizer->backend_id(),
-                      {},
-                      {}});
-            } else {
-              raster_fail_detail = "GDI+ bitmap construction failed";
-            }
+          // Defense-in-depth WYSIWYG guard (mirrors the Rust shim's check):
+          // resvg renders <foreignObject> as fully-transparent with no error
+          // status, so a stale shim without the in-Rust guard would print a
+          // BLANK box -- silent C1 violation. Detect upfront, never call the
+          // shim, fall to loud crosshatch + named notice.
+          const bool has_foreign_object =
+              decoded.find("<foreignObject") != std::string::npos;
+          if (has_foreign_object) {
+            raster_fail_detail =
+                "svg_source contains <foreignObject>; refusing loudly "
+                "(host transcribes HTML labels before bake)";
           } else {
-            raster_fail_detail = rr.message.empty()
-                                     ? std::string("rasterizer failed")
-                                     : rr.message;
+            const SvgRasterResult rr = svg_rasterizer->render(
+                decoded, target_w, target_h,
+                static_cast<double>(g.GetDpiX()));
+            // Promote to size_t BEFORE multiplying so a 64K x 64K SVG
+            // cannot wrap uint32 (the ABI lets the backend return up-to-
+            // 32-bit dimensions; the buffer is in host address space).
+            const std::size_t out_w_sz =
+                static_cast<std::size_t>(rr.raster.width);
+            const std::size_t out_h_sz =
+                static_cast<std::size_t>(rr.raster.height);
+            if (rr.ok() && out_w_sz > 0u && out_h_sz > 0u &&
+                rr.raster.rgba.size() == out_w_sz * out_h_sz * 4u) {
+              const std::size_t pixel_count = out_w_sz * out_h_sz;
+              std::vector<std::uint8_t> premul(pixel_count * 4u);
+              straight_rgba_to_premul_bgra(rr.raster.rgba.data(),
+                                           premul.data(), pixel_count);
+              const INT stride = static_cast<INT>(out_w_sz) * 4;
+              Gdiplus::Bitmap bitmap(static_cast<INT>(out_w_sz),
+                                     static_cast<INT>(out_h_sz), stride,
+                                     PixelFormat32bppPARGB, premul.data());
+              if (bitmap.GetLastStatus() == Gdiplus::Ok) {
+                const Gdiplus::RectF dst = image_destination(
+                    c, static_cast<Gdiplus::REAL>(out_w_sz),
+                    static_cast<Gdiplus::REAL>(out_h_sz));
+                g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
+                            static_cast<Gdiplus::REAL>(out_w_sz),
+                            static_cast<Gdiplus::REAL>(out_h_sz),
+                            Gdiplus::UnitPixel);
+                rasterized = true;
+                push_notice_unique(
+                    result.notices,
+                    DegradationNotice{
+                        DegradationNoticeType::SvgArtworkRasterized,
+                        current_page_id,
+                        "svg rendered via external rasterizer: " +
+                            svg_rasterizer->backend_id(),
+                        {},
+                        {}});
+              } else {
+                raster_fail_detail = "GDI+ bitmap construction failed";
+              }
+            } else {
+              raster_fail_detail = rr.message.empty()
+                                       ? std::string("rasterizer failed")
+                                       : rr.message;
+            }
           }
         }
       }
@@ -1027,7 +1040,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       }
     } else if (c.kind == EmittedKind::Barcode) {
       // Barcode stays a loud crosshatch stub — the real enLabel SDK adapter
-      // is an external dependency (PRINT_ENGINE_ACCURACY_TODO §8 / spec §12).
+      // is an external dependency (spec v1.1 §12).
       Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
           static_cast<Gdiplus::REAL>(c.device_box.y),
@@ -1391,8 +1404,8 @@ class Win32Services final : public EngineServices {
     job.job_log.set("printerId", Json::str(printer_id));
     job.job_log.set("stockId", Json::str(stock_id));
     job.job_log.set("copies", Json::number(n_copies));
-    // SVG rasterizer backend identity (regulated traceability per
-    // PRINT_ENGINE_SVG_TODO §6.1). "none" => no DLL loaded => any SVG fell
+    // SVG rasterizer backend identity (regulated traceability). "none"
+    // => no DLL loaded => any SVG fell
     // through to the loud crosshatch stub.
     job.job_log.set(
         "svgRasterizer",

@@ -24,7 +24,6 @@ use std::sync::OnceLock;
 const SPE_SVG_OK: i32 = 0;
 const SPE_SVG_ERR_BAD_ARGS: i32 = -1;
 const SPE_SVG_ERR_PARSE: i32 = -2;
-#[allow(dead_code)]
 const SPE_SVG_ERR_UNSUPPORTED: i32 = -3;
 const SPE_SVG_ERR_BUFFER_TOO_SMALL: i32 = -4;
 const SPE_SVG_ERR_INTERNAL: i32 = -5;
@@ -101,6 +100,13 @@ pub extern "C" fn spe_svg_measure(
     .unwrap_or(SPE_SVG_ERR_INTERNAL)
 }
 
+/// Byte-level scan for `<foreignObject` so a malformed or non-UTF8 SVG still
+/// trips the guard. We match the start tag only (case sensitive per SVG
+/// spec; XML element names are case-sensitive in SVG/XHTML).
+fn contains_foreign_object(bytes: &[u8]) -> bool {
+    bytes.windows(14).any(|w| w == b"<foreignObject")
+}
+
 fn write_err(err_buf: *mut c_char, err_buf_len: usize, msg: &str) {
     if err_buf.is_null() || err_buf_len == 0 {
         return;
@@ -141,6 +147,17 @@ pub extern "C" fn spe_svg_render(
         }
 
         let svg_bytes = unsafe { std::slice::from_raw_parts(svg, svg_len) };
+
+        // WYSIWYG guard. resvg silently renders <foreignObject> as nothing
+        // (status=Ok, fully-transparent output). If any foreignObject slips
+        // into svg_source the printer would draw a blank box with no notice
+        // -- exactly the silent divergence the C1 constraint forbids. Refuse
+        // loudly here so the host's loud crosshatch + notice fire instead.
+        if contains_foreign_object(svg_bytes) {
+            write_err(err_buf, err_buf_len,
+                "svg contains <foreignObject>; resvg cannot render HTML, refusing loudly");
+            return SPE_SVG_ERR_UNSUPPORTED;
+        }
 
         let mut opt = resvg::usvg::Options::default();
         opt.fontdb = std::sync::Arc::new(fontdb().clone());

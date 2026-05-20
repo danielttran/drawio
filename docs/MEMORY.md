@@ -10,95 +10,182 @@
 ## Local Development Configuration
 - **Package Manager**: NPM
 - **Local Server**: Vite (dev dependency)
-- **Root Configuration**: `package.json` at root (`E:\Dev\drawio\package.json`)
 - **Server Entrypoint**: Serving `src/main/webapp/` at `http://localhost:3000`.
 - **Running the Server**: `npm run dev`
-- **Development vs. Production Modes**:
-  - **Standard Run**: Accessing `http://localhost:3000/` loads the minified production bundle `js/app.min.js`.
-  - **Developer Mode**: Accessing `http://localhost:3000/?dev=1` (or `?dev=1&test=1`) forces the app to bypass the minified bundle and load the individual source scripts directly from `js/diagramly/` and `js/grapheditor/`, enabling live debugging and code changes.
+- **Developer Mode**: `http://localhost:3000/?dev=1` loads unminified sources from `js/diagramly/` and `js/grapheditor/`.
 
 ---
 
 ## Codebase Architecture
-- **`src/main/webapp/`**: The core frontend static directory.
-  - `index.html`: Main HTML template.
-  - `js/bootstrap.js`: Handles URL parameters, electron check, and loading script blocks dynamically.
-  - `js/diagramly/`: Primary application controllers, files, and clients (e.g. `App.js`, `EditorUi.js`, etc.).
-  - `js/grapheditor/`: Graphical UI elements and shape libraries.
-  - `mxgraph/src/`: Core mxGraph graph visualization engine source.
-- **`src/main/java/`**: Java backend server servlets.
-- **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
-- **`src/main/native-print-engine/`**: Isolated C++20 native print engine (`docs/PRINT_ENGINE_SPEC_v1.1.md` + `_v2.0.md` bridge) plus its host-integration layer.
-  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `docs/SPEC_COVERAGE.md`; status: `docs/IMPLEMENTATION_STATUS.md`.
-  - **Status: native print accuracy pass landed & audited; SVG Phase 5 wired (host rasterization via the resvg cdylib); custom-stock DMPAPER_USER plumbed; rich-text engine-side structural goldens pinned; cross-platform SVG pixel-determinism golden running on Linux CI; C5 manual runbook + HIL test plan + no-browser self-check published; barcode adapter pattern proposed. Linux CTest 117/117 green, `npm run test:nativeprint-exporter` 85/86 (1 Windows-only skip), `npm run test:nativeprint-validate` 11/11 green.**
+- **`src/main/webapp/`**: web frontend.
+  - `js/diagramly/`, `js/grapheditor/`: app and UI.
+  - `mxgraph/src/`: mxGraph engine.
+  - `plugins/nativeprint.js`: the Native Print dialog.
+  - `plugins/nativeprint/exporter.js`: bake (browser-side; harvest path).
+- **`src/main/java/`**: Java backend servlets.
+- **`etc/build/`**: Ant.
+- **`src/main/native-print-engine/`**: C++20 native print engine + Win32 host.
+  - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`; `cmake --build … -j`; `ctest --test-dir …`. Catch2 v3 via FetchContent. MSVC `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`.
+  - **Status (2026-05-20):** Linux ctest **119/119** green; exporter `node --test` **85/86** (1 Windows-only skip).
 
 ---
 
-## Native Print — host integration (current state)
+## WYSIWYG ARCHITECTURE (settled)
 
-End-to-end working: launch webapp → design diagram → **File > Native Print** → dialog with PC printers (enumerated by the C++ engine) → live preview → acknowledge notices → print. Run: `npm run dev` from `E:\Dev\drawio`. Only the in-browser click and a physical sheet remain for the user to exercise.
+The end-to-end WYSIWYG pipeline (drawio canvas → printed paper) is:
 
-**Where things live**
-- Engine library (INV-1-clean, scanned): `include/print_engine/proto*.hpp`, `src/proto.cpp`, `src/proto_adapter.cpp` + `tests/proto*_tests.cpp`.
-- Host (not scanned): `host/host_main.cpp` (framed **stdio** transport), `host/win32_services.cpp` (real EnumPrintersW + GDI+ PNG preview + printer DC w/ AbortDoc; paint/alpha/gradient, raster PNG, SVG arcs, stock/copies/orientation DEVMODE, per-tile pages, and device-side font-substitution notices), `host/stub_services.cpp` (non-Windows), `host/engine_services_factory.hpp`, `host/tools/{smoke,exporter_e2e}.js`.
-- Webapp: `src/main/webapp/vite.config.mjs` (broker = Vite middleware, 127.0.0.1 + Origin check, temp-file + ReleaseContract), `plugins/nativeprint.js` (UI + mandatory notice-ack gate; preview uses selected stock DPI), `plugins/nativeprint/exporter.js` (Node-tested bake for common shapes, routed edges, arrowheads, edge labels, gradients/opacity/dashes, **embedded-PNG image cells → `kind:"image"`; non-PNG/URL → loud `ExporterUnsupportedImage`**, zoom-independent), wired in `index.html`.
+1. **Bake (browser, drawio runtime):** `plugins/nativeprint/exporter.js`
+   walks drawio's *own rendered SVG* per cell via `harvestShape` /
+   `svgCellNode`. Each cell becomes a contract `kind: "svg"` node whose
+   `source` is base64-encoded drawio-rendered SVG. HTML labels
+   (`<foreignObject>`) are **transcribed in-place** to plain SVG
+   `<text>` / `<rect>` using `Range.getClientRects()` per text fragment
+   so the engine never sees foreignObject. Re-derived geometry
+   (`rectPath`, `polyPath`, `shapePath`, named-shape outlines) is a
+   **headless last resort only**, always with a loud
+   `ExporterUnsupportedShape` notice — never silent.
 
-**Load-bearing constraints (do not regress)**
-- INV-1 banned tokens in `include/`+`src/` (incl. comments): draw.io, drawio, mxGraph, mxCell, mxGeometry, mxPerimeter, mxGraphModel, palette, perimeter, edgeRouting, routeEdge, layoutSolver, zOrder. Keep host concepts under `host/`.
-- INV-5: preview and print share one trace + one rasterizer; never let draw calls diverge.
-- Engine read loop must use low-level `_read`/`read` (fread blocks until buffer full — fatal for small frames).
-- Decisions (user-confirmed, override spec defaults): no Electron; broker is the only engine client; bake is in-scope native subset; block-until-real (no stub milestone); browser↔broker localhost hop is a documented dev-only deviation from spec §3.1.
+2. **Engine (C++, INV-1-clean):** loads + validates the frozen v1.1
+   contract, emits a `RenderTrace` with one `EmittedKind::Svg` per
+   harvested cell carrying `svg_source` verbatim. No re-layout.
 
-**Audit (2026-05-17, 2 rounds): NO functional bugs.** Engine **96/96** ctest, exporter **54/54**, `/W4 /WX` clean, INV-1/INV-5 + schema/version gate intact, live e2e correct; arc math = W3C F.6.5; DEVMODE/PrinterHandle RAII no leaks. Tech-debt resolved: positional `EmittedCommand` init → C++20 designated initializers. **Text-property audit (2026-05-17): underline & strikethrough were dropped at every layer (exporter never read fontStyle bits 4/8; schema/renderer/sink had no field) — FIXED end-to-end** (additive optional `font.underline`/`font.strikethrough`, default false → backward-compatible; GDI+ `FontStyleUnderline`/`Strikeout`); italic+underline now renders both, visually verified. All other text props (family/size/bold/italic/color/align/wrap/overflow/multiline) audited correct.
+3. **Host (Windows-only, GDI+ + resvg):** `draw_trace` decodes
+   base64, calls `ISvgRasterizer::render(bytes, w, h, dpi)`, converts
+   straight RGBA → premul BGRA, blits via GDI+ `DrawImage`. The same
+   `ISvgRasterizer*` is threaded into both `render_preview` and
+   `print` so preview and print get identical pixels (INV-5 by
+   construction).
 
-**WYSIWYG-parity safety net (tested, extensive).** The exporter is a named-shape subset — NOT pixel-identical to drawio for every stencil by design. The tested guarantee: every drawio object is faithful OR loudly `ExporterUnsupportedShape`-flagged (operator-acked) — never silently wrong — and every contract is schema-valid so the engine never silently rejects/diverges. `exporter.test.mjs` (54): per supported shape, 14+ unsupported stencils, fill/stroke/gradient/opacity/dash/cap/join, **fontStyle bitmask matrix (bold=1/italic=2/underline=4/strikethrough=8 + combos incl. italic+underline=6)**, h×v align matrix, multiline/HTML-strip, edge variants, **image cells (PNG faithful as `kind:"image"`; non-PNG/URL/missing → specific `ExporterUnsupportedImage`)**, zoom-independence, complex sweep, **real-engine cross-process render**. `tests/wysiwyg_parity_tests.cpp` (engine side): every exporter shape/attr through `render_to_trace` + geometry preserved + loud-reject of non-conformant contracts. Preview==print is structural (one `draw_trace`, INV-5). NOTE: this proves the *no-silent-divergence safety invariant*, not pixel-perfection vs drawio for loud-degraded stencils.
+4. **Backend (Rust cdylib, `host/svg-rasterizer/`):** resvg-0.47
+   behind the hand-owned C ABI `host/svg_rasterizer_abi.h`. Panic-safe
+   (`catch_unwind` every export). Swap to librsvg/cairo = drop a
+   different DLL implementing the same ABI; zero C++ changes.
 
-**§2 text metrics was NOT actually blocked — re-decided & implemented.** Owner directive "as accurate as possible, WYSIWYG" is the standing tie-breaker (not an open escalation). §2 = **measure-at-the-sink** (DONE & audited): engine text path is a pure pass-through (raw text + node box + align/wrap/overflow/shrink policy; only metric-independent guards stay — missing-merge, value>maxLen); `draw_trace` does real GDI+ `MeasureString` word-wrap / shrink-to-fit / h+v align / clip+`MergeClip` notice / loud `MergeOverflowError` reject; preview & print share that code (INV-5). Host e2e visually verified. §6 hardware-margin = **decided + already implemented** (true-size, never silent scale, loud clip notice); only HIL validation remains. These are NOT escalations anymore — the WYSIWYG directive resolves accuracy-vs-other trade-offs here.
+### The WYSIWYG-killer that WAS silent and is now LOUD (2026-05-20)
 
-**Remaining work & exact contract schema:** `docs/PRINT_ENGINE_ACCURACY_TODO.md` (the accuracy work order; Appendix A is the authoritative frozen schema). Accuracy pass landed & audited for §§1, 2, 3, 4, 5, 6, 7 and the named-subset of §8; §9 partial (preview DPI follows selected stock; golden harness deferred). Genuinely-external remaining (not decisions): the SVG rasterizer library, the barcode SDK adapter, the host golden-image CI harness, the custom-stock protocol shape, and printer hardware-in-the-loop validation. Embedded-SVG rendering has its own work order: `docs/PRINT_ENGINE_SVG_TODO.md` (decided: resvg via a hand-owned C ABI in a runtime-loaded Rust cdylib, librsvg+cairo swappable behind the same ABI; engine stays rasterizer-agnostic per INV-1). Rich-text (drawio HTML labels): **code-grounded implementation plan landed — `docs/PRINT_ENGINE_RICHTEXT_PLAN.md`** (authoritative; supersedes the planning part of `PRINT_ENGINE_RICHTEXT_TODO.md`). **Schema gate CLEARED**: owner authorized additive `content.type:"rich"` on **v1.x** (2026-05-18; same additive pattern as underline/strikethrough). Metrics gate already cleared (§2). No blocking gates — ready at Phase 1. Highest-accuracy approach: exporter walks the **live rendered label DOM** (`state.text.node`, true WYSIWYG via getComputedStyle), emits a neutral `paragraphs→runs` model; engine forwards verbatim (INV-1, no HTML); the one shared sink `draw_trace` is generalized single-font→multi-run (preview==print, INV-5). Print path stays 100% browser-free. Approach: parse HTML→neutral run model in the exporter; `draw_trace` extends its measured layout to per-run styling. Explicitly NOT via the SVG/foreignObject path (resvg can't render it).
+resvg's parser **silently skips `<foreignObject>`** and returns
+`SPE_SVG_OK` with a fully-transparent output buffer. If any
+foreignObject slipped through into `svg_source` (exporter bug, edge
+case), the printer would draw a **silent blank box** — the exact C1
+violation. Closed in three places (defense-in-depth):
+
+1. **Rust shim (`host/svg-rasterizer/src/lib.rs`)**: byte-level scan
+   for `<foreignObject` before parsing; returns
+   `SPE_SVG_ERR_UNSUPPORTED` (-3) with a typed message.
+2. **Host `draw_trace`**: same scan as defense-in-depth (in case an
+   older shim DLL is dropped in); fails loud + crosshatch + named
+   notice before ever calling the shim.
+3. **Exporter Node tests (`exporter.test.mjs`)**: existing
+   `assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped')`
+   invariants on every harvest path.
+
+Pinned by `tests/svg_pixel_determinism_tests.cpp`: a real
+drawio-flavor corpus (solid fill, linear+radial gradients,
+shadow-as-clone, multiline text, marker arrowheads, dashed strokes,
+clipPath) all renders to > 0 opaque pixels (no silent blanks); the
+foreignObject case returns -3 with `"foreignObject"` in the err
+message.
+
+---
+
+## Cross-platform pixel-determinism golden
+
+`tests/svg_pixel_determinism_tests.cpp` opens the real resvg cdylib
+via dlopen/LoadLibrary (test-local, NOT through the Windows-only
+`SvgRasterizerDll`) and pins:
+
+- ABI handshake + four required exports.
+- Byte-identical RGBA for two consecutive renders of the same SVG
+  (INV-5 pixel half).
+- The pinned pixel contract (straight RGBA8, R,G,B,A, top-down).
+- Panic-safety on malformed input (typed status, never UB).
+- Buffer-too-small returns the typed `SPE_SVG_ERR_BUFFER_TOO_SMALL`.
+- A 5-SVG × 4-size hardening pack (incl. 1×1 and a non-square box)
+  all deterministic.
+- **The foreignObject refusal contract** (NEW).
+- A 9-SVG drawio-flavor realism corpus all producing > 0 opaque
+  pixels.
+
+SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
+
+---
+
+## Custom stock (DMPAPER_USER)
+
+- Wire shape: synthetic `stockId = "custom:<wMicrons>x<hMicrons>"`.
+- Parser `host/custom_stock.{hpp,cpp}` — cross-platform, strict; bound
+  is `SHRT_MAX * 100` microns (~3.27 m) so DEVMODE
+  `dmPaperWidth/Length` (signed SHORT, tenths-of-mm) cannot truncate.
+- Host: `merged_devmode_for` recognises the prefix; sets
+  `dmPaperSize = DMPAPER_USER` + dims + orientation; merges through
+  `DocumentPropertiesW` so `dmDriverExtra` survives.
+- UI: `plugins/nativeprint.js` "Custom… (set physical dimensions)"
+  option with W×H mm inputs; Print loud-gates on positive dims
+  ≤ 3276.7 mm.
+
+---
+
+## Notice taxonomy
+
+| Notice | When | Wire kind |
+|---|---|---|
+| `StubbedSvgArtwork` | Engine emits unconditionally on every SVG node (v2.0 §3.3 posture, unchanged). Host also emits when rasterization fails — naming the reason in `detail`. | `StubbedSvgArtwork` |
+| `SvgArtworkRasterized` | Host emits **on rasterization success**, carrying backend identity (e.g. `"resvg 0.47"`). Additive — operator sees both notices on success. | `SvgArtworkRasterized` |
+| `StubbedBarcode` | Engine emits on every barcode node (real adapter deferred). | `StubbedBarcode` |
+| `HardwareMarginClip` | Engine emits when content escapes the printable area. | `HardwareMarginClip` |
+| `FontSubstitution` | Host emits when a requested font family is not installed. | `FontSubstituted` |
+| `MergeClip` | Host emits when text was clipped to its box on `overflow:"clip"`. | `MergeClip` |
+| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. | — |
+
+`jobLog.svgRasterizer` records backend name+version or `"none"`.
+
+---
+
+## Load-bearing invariants (DO NOT regress)
+- **INV-1**: `include/` + `src/` (engine library) contain no
+  drawio/mxGraph concept. Banned tokens: draw.io, drawio, mxGraph,
+  mxCell, mxGeometry, mxPerimeter, mxGraphModel, palette, perimeter,
+  edgeRouting, routeEdge, layoutSolver, zOrder. Scanned by
+  `tests/architecture_tests.cpp`. Host concepts live under `host/`.
+- **INV-5**: preview and print share one render trace + one
+  rasterizer at the same DPI. Geometry/layout parity (not byte-equal
+  pixels, because the driver halftones the print). The shared
+  `draw_trace` enforces this; the `ISvgRasterizer*` is threaded into
+  both call sites from the same Win32Services instance.
+- **C1 / WYSIWYG**: faithful render or a loud notice — never a
+  silent divergence (`docs/CLAUDE.md`).
+- **C2 / No browser anywhere** in the print guarantee, verification,
+  or tests — no headless Chromium, jsdom, in-app pixel oracles,
+  screenshot diffs.
+
+---
+
+## Where things live
+
+- **Engine library** (INV-1 scanned): `include/print_engine/*.hpp`,
+  `src/*.cpp`, `tests/*.cpp`.
+- **Host** (not scanned, Windows-only build for win32_services):
+  `host/host_main.cpp` (framed-stdio transport),
+  `host/win32_services.cpp` (real `EnumPrintersW`, DEVMODE merge incl.
+  DMPAPER_USER, GDI+ paint + alpha + gradients + arcs + dashes,
+  base64 PNG decode, SVG via `ISvgRasterizer*`, foreignObject
+  defense-in-depth, per-tile pages, AbortDoc-on-mid-job-failure,
+  font-substitution notices, jobLog backend identity),
+  `host/stub_services.cpp` (non-Windows fallback),
+  `host/svg_rasterizer.{hpp,cpp}` (LoadLibraryW + handshake),
+  `host/svg_rasterizer_abi.h` (hand-owned ABI),
+  `host/custom_stock.{hpp,cpp}` (parser; cross-platform),
+  `host/svg-rasterizer/` (Rust resvg cdylib with foreignObject guard),
+  `host/test_support/fake_svg_rasterizer.c` (swap-acceptance shim).
+- **Webapp**: `src/main/webapp/vite.config.mjs` (broker = Vite
+  middleware, localhost-only, Origin check),
+  `plugins/nativeprint.js` (UI, notice-ack gate, custom-stock dims,
+  preview uses selected stock DPI),
+  `plugins/nativeprint/exporter.js` (Node-tested bake; harvest path).
 
 ---
 
 ## Important Rules & Constraints
-1. **Never make upstream contributions**: Commit and push only to your fork (`danielttran/drawio`).
-2. **Build bats over make**: If there is a `build.bat` present, use it. Do not use make.
-3. **Save tokens**: Keep this `MEMORY.md` updated so future turns can quickly understand the active state and repository design.
-
-
-## Rich-text implementation progress (2026-05-18)
-- Landed: exporter rich extraction/flag/fallback; contract rich validation; renderer/native bridge forwarding of `rich_paragraphs`; sink paragraph align/indent + paragraph-run style measurement/draw + rich font-substitution notices; loader unknown-type hard refusal.
-- Audit fix (2026-05-18): rich underline/strikethrough now bind to each emitted text segment directly (instead of style-heuristic run lookup), preventing decoration bleed/miss when multiple runs share family/size but differ in flags.
-- Still open: full mixed-run intra-line layout (run-level wrap/advance/baseline), rich golden suite + host e2e/hardware validation.
-
-## Build-regression fix (2026-05-18)
-- HEAD did not compile on GCC after the rich-text merge (MSVC `/W4` had hidden it). Fixed: `require_bool`→`read_bool` in rich-run parsing; missing `rich_paragraphs`/value-init at `NativeDrawCommand`/`PaintNodeSummary` sites; added `-Wno-missing-field-initializers` for GCC/Clang parity with the canonical MSVC build; repaired two corrupted raw-string JSON fixtures; added Catch2 v3 `catch_approx.hpp`; corrected the rich preview==print test to strip the by-design StartDoc/EndDoc wrapper. **Engine 103/103 ctest, exporter 56/1-skip.**
-
-## Embedded-SVG rasterizer (TODO #2 / resvg) progress (2026-05-20)
-- **Scope decision (owner, 2026-05-18): host print path is GDI+ → Windows-exclusive. SVG rasterizer loader is LoadLibraryW-only (no POSIX); CMake gates it + the fake-shim swap test on WIN32, same pattern as `win32_services.cpp`.**
-- **Phase 2 DONE & tested (cross-platform):** engine ferries opaque base64 SVG bytes verbatim through `EmittedCommand.svg_source`.
-- **Phase 3 DONE (Windows-only):** hand-owned C ABI `host/svg_rasterizer_abi.h`, `ISvgRasterizer` + `SvgRasterizerDll` (LoadLibraryW + hard handshake), fake-shim + WIN32-gated swap acceptance test.
-- **Phase 4 DONE & smoke-validated:** `host/svg-rasterizer/` resvg-0.47 cdylib, panic-safe, all 4 ABI symbols exported (verified via `nm` + a Linux dlopen smoke that round-tripped a red SVG to straight `RGBA=255,0,0,255`).
-- **Phase 5 DONE (2026-05-20):** `draw_trace()` Svg branch wired. `Win32Services` lazy-loads `svg_rasterizer.dll` from `<exe-dir>` (full path, never the system PATH — deterministic backend selection). The same `ISvgRasterizer*` is threaded into `draw_trace` from both `render_preview` and `print` (INV-5 by construction). On success: base64-decode `svg_source` → `render(decoded, target_w_px, target_h_px, g.GetDpiX())` → straight RGBA → premul BGRA via `straight_rgba_to_premul_bgra` (host owns the conversion; backends always emit straight RGBA per the ABI) → `Gdiplus::Bitmap(w,h,stride,PixelFormat32bppPARGB,buf)` → `g.DrawImage` honouring `image_aspect`. Emits a device-side `SvgArtworkRasterized` `DegradationNotice` carrying backend identity. On ANY failure: loud crosshatch fallback + `StubbedSvgArtwork` notice naming the reason. `jobLog.svgRasterizer` records backend name+version (or `"none"`).
-- **Phase 5 spec posture:** the engine's upstream `StubbedSvgArtwork` notice is **preserved unchanged** (no spec-owner sign-off required). The new `SvgArtworkRasterized` notice is purely additive — operator sees both notices on success (engine stub posture + softened backend identity). The owner can later flip the engine notice off in a single edit to `renderer.cpp`.
-- **Phase 6 PARTIAL:** CI workflow `.github/workflows/native-print-engine.yml` added. Builds + tests engine on Linux, full Win32 host + ctest + SVG ABI swap test on Windows, Rust cdylib on both runners with ABI-symbol export verification (`nm` / `llvm-readobj`), exporter Node `--test` suite on Linux. Pixel-level SVG goldens remain Windows-only and gated on a host-build harness.
-- **§6 escalations still open:** softened-stub posture (engine notice text) and SVG-embedded-font substitution notice — both spec-owner-gated.
-
-## Notice taxonomy update (2026-05-20)
-- Added `DegradationNoticeType::SvgArtworkRasterized` (engine) + `NoticeKind::SvgArtworkRasterized` (boundary), wired through `to_wire`/`map_notice`. Engine `StubbedSvgArtwork` posture is unchanged. Round-trips through `proto_adapter::notice_to_json` are covered by tests (proto_adapter_tests.cpp).
-
-## Cross-platform SVG pixel-determinism golden (2026-05-20)
-- New `tests/svg_pixel_determinism_tests.cpp`: a Catch2 test that opens the real resvg cdylib via dlopen/LoadLibrary (test-local, NOT through the Windows-only `SvgRasterizerDll`) and asserts the ABI pixel contract end-to-end: handshake + four required exports, byte-identical RGBA across consecutive renders of the same SVG (INV-5 pixel half), straight-RGBA byte order, panic-safety on malformed input, buffer-too-small typed-error path, and a hardening pack (5 SVGs × 4 sizes = 20 deterministic render-pair assertions including 1×1 and non-square). Runs on every CI runner (Linux engine job builds the cdylib first; the workflow passes its path via `-DSVG_RASTERIZER_LIB=...`). SKIPs cleanly without the cdylib.
-
-## C5 manual validation runbook + self-check (2026-05-20)
-- `docs/MANUAL_VALIDATION_RUNBOOK.md`: precise, click-by-click operator runbook for the C5 manual sign-off. Browser-free per C2 — no pixel oracle, only the operator's eyeball comparison of canvas vs printed paper plus a structural self-check.
-- `docs/HIL_TEST_PLAN.md`: 9 canonical HIL cases (WYSIWYG smoke, multi-copy, multi-page, named stock change, custom stock, hardware margin, SVG rendered, SVG fallback, AbortDoc on mid-job failure), each with a physically measurable acceptance criterion.
-- `tools/native-print-validate-contract.mjs`: pure-Node structural self-check the runbook runs before any printer touches paper. Asserts schema/units/box/text/svg/image/barcode invariants. Exit 0 = clean; exit 1 = `path: detail` printout per violation. 11 self-tests pin its behavior; wired into CI via `npm run test:nativeprint-validate`.
-
-## Barcode SDK adapter — proposal (2026-05-20)
-- `docs/PRINT_ENGINE_BARCODE_TODO.md`: exact mirror of the SVG TODO #2 architecture, applied to barcode. Hand-owned C ABI shape, runtime-loaded cdylib, fake-shim swap test, cross-platform pixel-determinism test. Spec-owner-gated (notice wording + backend choice + ABI confirmation); implementation is a copy-paste of the SVG pattern once the gate clears.
-
-## Custom stock — DMPAPER_USER (2026-05-20)
-- **Wire shape:** synthetic `stockId = "custom:<wMicrons>x<hMicrons>"`. Strict parser refuses anything that is not the exact shape; positive integer dims only; bounded so the tenths-of-mm conversion fits the DEVMODE WORD-wide paper dim fields.
-- **Cross-platform tests:** `host/custom_stock.{hpp,cpp}` + `tests/custom_stock_tests.cpp` build on every CI runner. The parser is host-side (outside the INV-1 scan) but pure C++ with no Win32 surface.
-- **Win32 wiring:** `merged_devmode_for` recognises `"custom:"` stockIds; sets `dmPaperSize = DMPAPER_USER`, `dmPaperWidth/Length` in tenths of mm, derived orientation, then merges through `DocumentPropertiesW` so the driver's private `dmDriverExtra` bytes are preserved. Named-stock lookup is the fall-through.
-- **UI:** `plugins/nativeprint.js` adds a "Custom… (set physical dimensions)" stock option with W×H mm inputs; the Print button is loud-gated on positive dims.
+1. **Never make upstream contributions** — fork only.
+2. **Save tokens**: keep this `MEMORY.md` updated.
+3. **No browser in print verification** — see `docs/CLAUDE.md` C2.
