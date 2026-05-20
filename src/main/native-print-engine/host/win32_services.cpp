@@ -925,13 +925,14 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       }
       g.Restore(clip_state);
     } else if (c.kind == EmittedKind::Svg) {
-      // SVG branch (TODO #2 / Phase 5): try the external rasterizer behind the
-      // hand-owned ABI. On success, draw real pixels into device_box and emit a
-      // device-side `SvgArtworkRasterized` notice carrying backend identity
-      // (the engine's upstream `StubbedSvgArtwork` notice is preserved
-      // verbatim — the spec posture is not changed by the host). On ANY
-      // failure (no backend, parse, unsupported, internal), fall through to
-      // the existing loud crosshatch stub — never silent.
+      // SVG branch: try the external rasterizer behind the hand-owned ABI.
+      // On success draw real pixels + emit `SvgArtworkRasterized`. On ANY
+      // failure (no DLL, empty source, base64 garbage, foreignObject,
+      // parse, unsupported, internal): loud crosshatch + a
+      // `StubbedSvgArtwork` notice naming the reason. The engine no longer
+      // emits the notice unconditionally, so the host's `raster_fail_detail`
+      // MUST be set on every non-rasterized path; otherwise a missing DLL
+      // would print a silently-unnoticed crosshatch.
       Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
           static_cast<Gdiplus::REAL>(c.device_box.y),
@@ -943,8 +944,13 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           static_cast<std::uint32_t>(std::max(1, c.raster_height_px));
       bool rasterized = false;
       std::string raster_fail_detail;
-      if (svg_rasterizer != nullptr && svg_rasterizer->available() &&
-          !c.svg_source.empty()) {
+      if (svg_rasterizer == nullptr || !svg_rasterizer->available()) {
+        raster_fail_detail =
+            "no svg rasterizer backend loaded "
+            "(drop svg_rasterizer.dll next to print_engine_host.exe)";
+      } else if (c.svg_source.empty()) {
+        raster_fail_detail = "svg_source is empty";
+      } else {
         std::vector<std::uint8_t> svg_bytes;
         if (!decode_base64(c.svg_source, svg_bytes)) {
           raster_fail_detail = "svg_source is not valid base64";
@@ -1014,10 +1020,11 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         }
       }
       if (!rasterized) {
-        // Loud crosshatch stub fallback: operator already saw the engine's
-        // StubbedSvgArtwork notice; we also drop a hatched box + label so the
-        // missing artwork is visible on the page. Optionally enrich the
-        // detail with the rasterizer failure reason via a stub notice.
+        // Loud crosshatch stub + named StubbedSvgArtwork notice. The engine
+        // no longer emits an upstream stub notice, so this branch is the
+        // ONLY place the operator hears that an SVG didn't render -- it
+        // must always fire, never be silent. `raster_fail_detail` is set
+        // on every non-rasterized path above.
         Gdiplus::HatchBrush hatch(Gdiplus::HatchStyleForwardDiagonal,
                                   Gdiplus::Color(255, 0, 0, 0),
                                   Gdiplus::Color(0, 255, 255, 255));
@@ -1028,15 +1035,19 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                            Gdiplus::UnitPixel);
         const std::wstring text = widen(c.label);
         g.DrawString(text.c_str(), -1, &font, box, nullptr, &black);
-        if (!raster_fail_detail.empty()) {
-          push_notice_unique(
-              result.notices,
-              DegradationNotice{DegradationNoticeType::StubbedSvgArtwork,
-                                current_page_id,
-                                "svg rasterizer fallback: " + raster_fail_detail,
-                                {},
-                                {}});
+        if (raster_fail_detail.empty()) {
+          // Defensive: every upstream branch sets a reason; if a future
+          // edit forgets, emit a generic loud notice rather than a silent
+          // crosshatch.
+          raster_fail_detail = "svg rasterization failed for an unknown reason";
         }
+        push_notice_unique(
+            result.notices,
+            DegradationNotice{DegradationNoticeType::StubbedSvgArtwork,
+                              current_page_id,
+                              "svg rasterizer fallback: " + raster_fail_detail,
+                              {},
+                              {}});
       }
     } else if (c.kind == EmittedKind::Barcode) {
       // Barcode stays a loud crosshatch stub — the real enLabel SDK adapter

@@ -1,6 +1,6 @@
 #pragma once
 
-// Host integration IPC protocol — Layer 1 (spec PRINT_ENGINE_HOST_INTEGRATION_v1.1 §3).
+// Host integration IPC protocol — Layer 1 (frozen by code; legacy spec doc removed).
 //
 // This module is the FROZEN frame codec plus the versioned control layer:
 //  - frame format never changes across protocol versions (§3.1);
