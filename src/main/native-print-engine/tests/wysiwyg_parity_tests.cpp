@@ -323,3 +323,108 @@ TEST_CASE("Rich text preview==print structural parity for mixed runs", "[wysiwyg
     }
   }
 }
+
+TEST_CASE("Rich text per-run attributes survive engine emission verbatim",
+          "[wysiwyg][rich]") {
+  // Defense-in-depth structural golden: every run attribute that draw_trace
+  // reads (text / fontFamily / sizePx / weight / italic / underline /
+  // strikethrough / color) must reach the emitted command unchanged. A
+  // regression here would silently mis-style runs at print time and there is
+  // no pixel-level test for that on Linux CI (the host is Windows-only).
+  const std::string rich_node =
+    R"({"kind":"text","box":{"x":10,"y":10,"w":200,"h":80},)"
+    R"("font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,)"
+    R"("underline":false,"strikethrough":false,"color":"#111111"},)"
+    R"("align":{"h":"left","v":"top"},)"
+    R"("content":{"type":"rich","paragraphs":[{"align":"center","indentPx":4,)"
+    R"("runs":[)"
+    R"({"text":"R1 ","fontFamily":"Verdana","sizePx":18,"weight":700,)"
+    R"("italic":true,"underline":true,"strikethrough":false,"color":"#ff0000"},)"
+    R"({"text":"R2","fontFamily":"Courier New","sizePx":10,"weight":400,)"
+    R"("italic":false,"underline":false,"strikethrough":true,"color":"#00aa00"})"
+    R"(]}]}})";
+
+  const auto loaded = load_baked_contract(contract_with(rich_node, 220, 120));
+  REQUIRE(loaded);
+
+  const auto trace = render_to_trace(loaded.value(),
+                                     RenderTarget{300.0, 96.0});
+  REQUIRE(trace);
+
+  // Find the Text command (commands[0]=StartTile, [1]=Clip, [2]=Text...
+  // depending on contract_with's emission order).
+  const print_engine::EmittedCommand* text = nullptr;
+  for (const auto& c : trace.value().commands) {
+    if (c.kind == EmittedKind::Text) { text = &c; break; }
+  }
+  REQUIRE(text != nullptr);
+  REQUIRE(text->rich_paragraphs.size() == 1);
+  const auto& para = text->rich_paragraphs[0];
+  CHECK(para.align == "center");
+  CHECK(para.indent_px == Catch::Approx(4.0));
+  REQUIRE(para.runs.size() == 2);
+
+  const auto& r1 = para.runs[0];
+  CHECK(r1.text == "R1 ");
+  CHECK(r1.font_family == "Verdana");
+  CHECK(r1.size_px == Catch::Approx(18.0));
+  CHECK(r1.weight == 700);
+  CHECK(r1.italic);
+  CHECK(r1.underline);
+  CHECK_FALSE(r1.strikethrough);
+  CHECK(r1.color.r == 0xff);
+  CHECK(r1.color.g == 0x00);
+  CHECK(r1.color.b == 0x00);
+
+  const auto& r2 = para.runs[1];
+  CHECK(r2.text == "R2");
+  CHECK(r2.font_family == "Courier New");
+  CHECK(r2.size_px == Catch::Approx(10.0));
+  CHECK(r2.weight == 400);
+  CHECK_FALSE(r2.italic);
+  CHECK_FALSE(r2.underline);
+  CHECK(r2.strikethrough);
+  CHECK(r2.color.g == 0xaa);
+}
+
+TEST_CASE("Rich text emits independent commands per text node (no run merge"
+          " across nodes)",
+          "[wysiwyg][rich]") {
+  // Two text nodes back-to-back must each yield their own EmittedKind::Text
+  // command with their own rich_paragraphs. A merge-across-nodes bug would
+  // silently lose runs at print time.
+  const std::string two_nodes =
+    R"json({"kind":"text","box":{"x":10,"y":10,"w":80,"h":30},)json"
+    R"json("font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,)json"
+    R"json("underline":false,"strikethrough":false,"color":"#000000"},)json"
+    R"json("align":{"h":"left","v":"top"},)json"
+    R"json("content":{"type":"rich","paragraphs":[{"align":"left","indentPx":0,)json"
+    R"json("runs":[{"text":"alpha","fontFamily":"Arial","sizePx":12,)json"
+    R"json("weight":400,"italic":false,"underline":false,)json"
+    R"json("strikethrough":false,"color":"#000000"}]}]}},)json"
+    R"json({"kind":"text","box":{"x":10,"y":50,"w":80,"h":30},)json"
+    R"json("font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,)json"
+    R"json("underline":false,"strikethrough":false,"color":"#000000"},)json"
+    R"json("align":{"h":"left","v":"top"},)json"
+    R"json("content":{"type":"rich","paragraphs":[{"align":"right","indentPx":0,)json"
+    R"json("runs":[{"text":"beta","fontFamily":"Arial","sizePx":12,)json"
+    R"json("weight":700,"italic":false,"underline":false,)json"
+    R"json("strikethrough":false,"color":"#0000ff"}]}]}})json";
+
+  const auto loaded = load_baked_contract(contract_with(two_nodes, 220, 120));
+  REQUIRE(loaded);
+  const auto trace = render_to_trace(loaded.value(),
+                                     RenderTarget{300.0, 96.0});
+  REQUIRE(trace);
+
+  std::vector<const print_engine::EmittedCommand*> texts;
+  for (const auto& c : trace.value().commands) {
+    if (c.kind == EmittedKind::Text) texts.push_back(&c);
+  }
+  REQUIRE(texts.size() == 2);
+  CHECK(texts[0]->rich_paragraphs.at(0).runs.at(0).text == "alpha");
+  CHECK(texts[0]->rich_paragraphs.at(0).align == "left");
+  CHECK(texts[1]->rich_paragraphs.at(0).runs.at(0).text == "beta");
+  CHECK(texts[1]->rich_paragraphs.at(0).align == "right");
+  CHECK(texts[1]->rich_paragraphs.at(0).runs.at(0).weight == 700);
+}

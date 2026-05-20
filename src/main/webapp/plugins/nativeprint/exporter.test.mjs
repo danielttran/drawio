@@ -233,10 +233,10 @@ test('exporter refuses non-schema hex lengths instead of emitting invalid paint'
 
 const SCHEMA_PAINT_SOLID = 'solid';
 
-// Minimal mirror of the engine's frozen v1.1 contract validation (Appendix A
-// of PRINT_ENGINE_ACCURACY_TODO.md). Anything the exporter emits MUST pass
-// this, otherwise the engine would loud-reject it and break WYSIWYG silently
-// at print time.
+// Minimal mirror of the engine's frozen v1.1 contract validation
+// (docs/PRINT_ENGINE_SPEC_v1.1.md). Anything the exporter emits MUST pass
+// this, otherwise the engine would loud-reject it and break WYSIWYG
+// silently at print time.
 function assertSchemaValid(contract, label) {
   const ctx = label ? `[${label}] ` : '';
   assert.equal(contract.schema.major, 1, `${ctx}schema.major`);

@@ -154,6 +154,7 @@ const char* to_wire(NoticeKind kind) noexcept {
     case NoticeKind::MergeClip:         return "MergeClip";
     case NoticeKind::SchemaMinorAhead:  return "SchemaMinorAhead";
     case NoticeKind::ProtoMinorAhead:   return "ProtoMinorAhead";
+    case NoticeKind::SvgArtworkRasterized: return "SvgArtworkRasterized";
   }
   return "StubbedBarcode";
 }
@@ -165,6 +166,7 @@ NoticeKind map_notice(DegradationNoticeType type) noexcept {
     case DegradationNoticeType::HardwareMarginClip:return NoticeKind::HardwareMarginClip;
     case DegradationNoticeType::FontSubstitution:  return NoticeKind::FontSubstituted;
     case DegradationNoticeType::MergeClip:         return NoticeKind::MergeClip;
+    case DegradationNoticeType::SvgArtworkRasterized: return NoticeKind::SvgArtworkRasterized;
   }
   return NoticeKind::StubbedBarcode;
 }

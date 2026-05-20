@@ -26,6 +26,14 @@ add_library(print_engine_contract
   src/renderer.cpp
 )
 
+# Host-side helpers that are pure C++ (no Win32) and therefore testable on
+# every CI runner. Kept in a tiny static library so its source files live
+# under host/ (outside the INV-1 architecture scan, which inspects only
+# include/ + src/) while still being linkable into the cross-platform tests.
+add_library(print_engine_host_portable STATIC host/custom_stock.cpp)
+target_include_directories(print_engine_host_portable
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/host)
+
 target_include_directories(print_engine_contract
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -55,7 +63,7 @@ add_executable(print_engine_host
   ${PRINT_ENGINE_HOST_SERVICES}
 )
 target_include_directories(print_engine_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host)
-target_link_libraries(print_engine_host PRIVATE print_engine_contract)
+target_link_libraries(print_engine_host PRIVATE print_engine_contract print_engine_host_portable)
 if(WIN32)
   target_link_libraries(print_engine_host PRIVATE print_engine_host_svg)
   target_link_libraries(print_engine_host PRIVATE gdiplus winspool gdi32 user32 ole32)
@@ -83,6 +91,7 @@ if(BUILD_TESTING)
     tests/architecture_tests.cpp
     tests/contract_validation_tests.cpp
     tests/contract_loader_tests.cpp
+    tests/custom_stock_tests.cpp
     tests/phase1_emit_tests.cpp
     tests/phase2_static_text_tests.cpp
     tests/phase3_raster_svg_tests.cpp
@@ -93,8 +102,23 @@ if(BUILD_TESTING)
     tests/paper_size_tests.cpp
     tests/proto_tests.cpp
     tests/proto_adapter_tests.cpp
+    tests/svg_pixel_determinism_tests.cpp
     tests/wysiwyg_parity_tests.cpp
   )
+
+  # Cross-platform SVG pixel-golden test: configured to a path it loads at
+  # runtime via dlopen / LoadLibrary. Empty path => tests SKIP (still pass);
+  # CI sets this when the Rust crate has been built first.
+  set(SVG_RASTERIZER_LIB "" CACHE FILEPATH
+      "Absolute path to the SVG rasterizer cdylib for pixel-golden tests")
+  target_compile_definitions(print_engine_contract_tests
+    PRIVATE
+      SVG_RASTERIZER_LIB="${SVG_RASTERIZER_LIB}"
+  )
+  if(NOT WIN32)
+    # dlopen needs libdl on Linux (no-op on macOS/BSD; harmless).
+    target_link_libraries(print_engine_contract_tests PRIVATE ${CMAKE_DL_LIBS})
+  endif()
 
   target_compile_definitions(print_engine_contract_tests
     PRIVATE
@@ -104,6 +128,7 @@ if(BUILD_TESTING)
   target_link_libraries(print_engine_contract_tests
     PRIVATE
       print_engine_contract
+      print_engine_host_portable
       Catch2::Catch2WithMain
   )
 

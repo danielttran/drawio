@@ -70,7 +70,7 @@ Always prioritize using `jcodemunch-mcp` tools over native shell commands (`grep
    `architecture_tests.cpp` / INV-1 forbid drawio/mxGraph concepts in the
    engine. Do not bypass or rewrite the engine to "make WYSIWYG easier".
    Contract-schema changes require an explicit owner decision (escalate;
-   do not infer) per `docs/PRINT_ENGINE_ACCURACY_TODO.md`.
+   do not infer) per `docs/PRINT_ENGINE_SPEC_v1.1.md`.
 
 5. **No silent heuristic fallbacks.** Named-shape geometry, `plainLabel`
    blob flattening, `edgeLabelBox`, etc. are headless-only last resorts

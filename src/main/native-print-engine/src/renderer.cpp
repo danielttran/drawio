@@ -218,12 +218,14 @@ RenderResult render_to_trace(
 
         if (node.kind == PaintKind::Image || node.kind == PaintKind::Svg) {
           const Rect device_box = transform.apply(node.box);
-          if (node.kind == PaintKind::Svg) {
-            push_notice_unique(trace.notices, make_notice(
-              DegradationNoticeType::StubbedSvgArtwork,
-              page.id,
-              "embedded SVG artwork rendered as loud stub"));
-          }
+          // SVG nodes no longer emit an unconditional StubbedSvgArtwork
+          // notice from the engine -- it was misleading once the host
+          // wired up the resvg rasterizer (operator saw "STUBBED" even
+          // when the SVG actually rendered correctly). The HOST decides:
+          // success => SvgArtworkRasterized (carries backend identity);
+          // failure => StubbedSvgArtwork (carries the failure reason).
+          // The per-command degradation_notice flag below preserves the
+          // "this is a loud primitive" signal for downstream consumers.
           trace.commands.push_back(EmittedCommand{
             .kind = node.kind == PaintKind::Image ? EmittedKind::Image
                                                   : EmittedKind::Svg,

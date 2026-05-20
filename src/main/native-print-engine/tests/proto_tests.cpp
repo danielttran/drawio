@@ -1,7 +1,7 @@
 // Layer 1 — protocol spine. Tested with a mock host and a mock engine only:
 // no Electron, no real engine, no transport. Asserts the frozen frame codec,
 // the Hello-first ordering / version gate, and the typed-error + notice
-// mapping (spec PRINT_ENGINE_HOST_INTEGRATION_v1.1 §3, build step §10.1).
+// mapping. The IPC protocol is now defined entirely in code (proto.hpp/cpp).
 
 #include "print_engine/proto.hpp"
 
@@ -165,6 +165,19 @@ TEST_CASE("notice kinds map engine notices and add boundary-only kinds",
         "ProtoMinorAhead");
   CHECK(std::string(proto::to_wire(NoticeKind::SchemaMinorAhead)) ==
         "SchemaMinorAhead");
+  // SvgArtworkRasterized: device-side success notice (loud). Host emits it
+  // when the external rasterizer succeeded; carries backend identity.
+  CHECK(map_notice(DegradationNoticeType::SvgArtworkRasterized) ==
+        NoticeKind::SvgArtworkRasterized);
+  CHECK(std::string(proto::to_wire(NoticeKind::SvgArtworkRasterized)) ==
+        "SvgArtworkRasterized");
+  // StubbedSvgArtwork: host emits this only on rasterizer failure (no DLL,
+  // foreignObject, parse error, etc.) with the failure reason in `detail`.
+  // The engine no longer emits it unconditionally for every SVG node.
+  CHECK(map_notice(DegradationNoticeType::StubbedSvgArtwork) ==
+        NoticeKind::StubbedSvgArtwork);
+  CHECK(std::string(proto::to_wire(NoticeKind::StubbedSvgArtwork)) ==
+        "StubbedSvgArtwork");
 }
 
 TEST_CASE("handshake enforces Hello-first ordering", "[proto][handshake]") {

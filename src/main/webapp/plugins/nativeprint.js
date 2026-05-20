@@ -85,6 +85,45 @@
     sRow.appendChild(stockSel);
     root.appendChild(sRow);
 
+    // Custom-stock row (v2.0 §5: DMPAPER_USER + explicit physical dims, never
+    // a named-paper enum). Hidden unless the "Custom..." stock option is
+    // selected. Width/Height are entered in millimetres; we wire-encode them
+    // as microns into the synthetic stockId "custom:WuxHu" that the host
+    // parser (host/custom_stock.cpp) and DEVMODE merge consume.
+    var customRow = el('div', { style: rowStyle + ';display:none' });
+    customRow.appendChild(el('label', { style: 'width:70px' }, 'Custom'));
+    var customW = el('input', { type: 'number', min: '1', step: '0.1',
+      style: 'width:80px' });
+    var customH = el('input', { type: 'number', min: '1', step: '0.1',
+      style: 'width:80px' });
+    customRow.appendChild(customW);
+    customRow.appendChild(el('span', null, ' × '));
+    customRow.appendChild(customH);
+    customRow.appendChild(el('span', null, ' mm'));
+    root.appendChild(customRow);
+
+    // Synthesise the stockId for the currently-selected stock. "custom" is a
+    // sentinel dropdown value; for it we emit "custom:WuxHu" (microns) from
+    // the W/H inputs. Returns null if the inputs are invalid -- the caller
+    // gates Print on that.
+    // Max custom-stock dimension the host parser accepts:
+    // SHRT_MAX (32767) tenths-of-mm == 3276.7 mm (~3.27 m), the largest
+    // physical paper DEVMODE.dmPaperWidth/Length can express. Anything
+    // larger is refused upfront with a loud UI message instead of being
+    // sent and rejected at the engine boundary.
+    var CUSTOM_STOCK_MAX_MM = 3276.7;
+
+    function effectiveStockId() {
+      if (stockSel.value !== 'custom') return stockSel.value;
+      var wmm = parseFloat(customW.value);
+      var hmm = parseFloat(customH.value);
+      if (!(wmm > 0) || !(hmm > 0)) return null;
+      if (wmm > CUSTOM_STOCK_MAX_MM || hmm > CUSTOM_STOCK_MAX_MM) return null;
+      var wu = Math.round(wmm * 1000);
+      var hu = Math.round(hmm * 1000);
+      return 'custom:' + wu + 'x' + hu;
+    }
+
     var cRow = el('div', { style: rowStyle });
     cRow.appendChild(el('label', { style: 'width:70px' }, 'Copies'));
     var copies = el('input', { type: 'number', min: '1', value: '1',
@@ -124,6 +163,22 @@
     function selectedStock() {
       var p = printers[printerSel.selectedIndex];
       var stocks = p ? p.stocks || [] : [];
+      // Custom: synthesise a StockInfo-shaped object from the W/H inputs so
+      // the rest of the dialog (paperPx, selectedDpi) works unchanged.
+      if (stockSel.value === 'custom') {
+        var wmm = parseFloat(customW.value);
+        var hmm = parseFloat(customH.value);
+        if (!(wmm > 0) || !(hmm > 0)) return null;
+        var refDpi = stocks[0] && stocks[0].dpiX ? stocks[0].dpiX : 300;
+        return {
+          id: effectiveStockId(),
+          name: 'Custom (' + wmm + ' × ' + hmm + ' mm)',
+          widthMicrons: Math.round(wmm * 1000),
+          heightMicrons: Math.round(hmm * 1000),
+          dpiX: refDpi,
+          dpiY: refDpi
+        };
+      }
       for (var i = 0; i < stocks.length; i++) {
         if (stocks[i].id === stockSel.value) return stocks[i];
       }
@@ -238,22 +293,42 @@
           Math.round(s.heightMicrons / 1000) + ' mm)');
         stockSel.appendChild(o);
       });
+      // Always offer Custom... so any printer can drive DMPAPER_USER.
+      stockSel.appendChild(el('option', { value: 'custom' },
+        'Custom… (set physical dimensions)'));
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
+      customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
       rearm(); if (rebake()) doPreview();
     });
     stockSel.addEventListener('change', function () {
+      customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
       rearm(); if (rebake()) doPreview();
     });
+    function onCustomDim() { rearm(); if (rebake()) doPreview(); }
+    customW.addEventListener('change', onCustomDim);
+    customH.addEventListener('change', onCustomDim);
     copies.addEventListener('change', rearm);
 
     cancelBtn.addEventListener('click', function () { ui.hideDialog(); });
 
     printBtn.addEventListener('click', function () {
+      var sid = effectiveStockId();
+      if (sid == null) {
+        var wmm = parseFloat(customW.value);
+        var hmm = parseFloat(customH.value);
+        if (!(wmm > 0) || !(hmm > 0)) {
+          status.textContent = 'Custom stock requires positive W and H.';
+        } else {
+          status.textContent = 'Custom stock W and H must each be ≤ ' +
+            CUSTOM_STOCK_MAX_MM + ' mm (DEVMODE limit).';
+        }
+        return;
+      }
       printBtn.disabled = true;
       status.textContent = 'Sending to printer…';
       rpc({ action: 'print', contract: contract,
         printerId: printers[printerSel.selectedIndex].id,
-        stockId: stockSel.value,
+        stockId: sid,
         copies: parseInt(copies.value, 10) || 1 }).then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';

@@ -312,9 +312,12 @@ TEST_CASE("Phase 7 v2 native surface renders barcode and svg as distinct loud st
     false);
 
   REQUIRE(surface);
-  REQUIRE(surface.value().notices.size() == 2);
+  // The engine no longer emits an unconditional StubbedSvgArtwork notice
+  // for SVG nodes -- the host decides at draw time (Rasterized on success,
+  // Stubbed on failure). Only StubbedBarcode survives as an engine-side
+  // unconditional notice (barcode SDK is still spec-deferred).
+  REQUIRE(surface.value().notices.size() == 1);
   CHECK(surface.value().notices[0].type == DegradationNoticeType::StubbedBarcode);
-  CHECK(surface.value().notices[1].type == DegradationNoticeType::StubbedSvgArtwork);
 
   bool saw_barcode = false;
   bool saw_svg = false;
@@ -346,10 +349,11 @@ TEST_CASE("Phase 7 v2 preview and print parity includes stub notices") {
 
   REQUIRE(print_preview);
   REQUIRE(design_preview);
-  REQUIRE(print_preview.value().notices.size() == 2);
-  REQUIRE(design_preview.value().notices.size() == 2);
+  // Engine no longer emits an unconditional StubbedSvgArtwork notice; only
+  // StubbedBarcode (still spec-deferred) survives at the engine layer.
+  REQUIRE(print_preview.value().notices.size() == 1);
+  REQUIRE(design_preview.value().notices.size() == 1);
   CHECK(print_preview.value().notices[0].type == design_preview.value().notices[0].type);
-  CHECK(print_preview.value().notices[1].type == design_preview.value().notices[1].type);
   CHECK(print_preview.value().commands[3].style_signature == design_preview.value().commands[3].style_signature);
   CHECK(print_preview.value().commands[4].style_signature == design_preview.value().commands[4].style_signature);
 }
@@ -368,9 +372,11 @@ TEST_CASE("Phase 7 v2 print lifecycle surfaces stub notices once per job not onc
     lifecycle);
 
   REQUIRE(result);
-  REQUIRE(result.value().notices.size() == 2);
+  // The engine no longer emits an unconditional StubbedSvgArtwork notice
+  // for SVG nodes -- the host decides at draw time. Only StubbedBarcode
+  // remains unconditional (barcode SDK still spec-deferred).
+  REQUIRE(result.value().notices.size() == 1);
   CHECK(result.value().notices[0].type == DegradationNoticeType::StubbedBarcode);
-  CHECK(result.value().notices[1].type == DegradationNoticeType::StubbedSvgArtwork);
 }
 
 TEST_CASE("Phase 7 v2 native image decode failure is typed and loud") {

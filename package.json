@@ -5,7 +5,8 @@
   "description": "Local development environment for draw.io",
   "scripts": {
     "dev": "vite src/main/webapp --host localhost --port 3000 --open",
-    "test:nativeprint-exporter": "node --test src/main/webapp/plugins/nativeprint/exporter.test.mjs"
+    "test:nativeprint-exporter": "node --test src/main/webapp/plugins/nativeprint/exporter.test.mjs",
+    "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs"
   },
   "devDependencies": {
     "vite": "^5.2.11"

@@ -7,7 +7,9 @@
 
 #include "engine_services_factory.hpp"
 
+#include "custom_stock.hpp"
 #include "print_engine/renderer.hpp"
+#include "svg_rasterizer.hpp"
 
 // GDI+ / Win32 system headers warn under /W4 /WX; silence only the system
 // headers, not our own code (which stays warning-clean).
@@ -40,6 +42,13 @@
 
 namespace print_engine::proto {
 namespace {
+
+using ::print_engine::host::CustomStock;
+using ::print_engine::host::ISvgRasterizer;
+using ::print_engine::host::SvgRasterizerDll;
+using ::print_engine::host::SvgRasterResult;
+using ::print_engine::host::SvgRasterStatus;
+using ::print_engine::host::parse_custom_stock_id;
 
 std::wstring widen(const std::string& s) {
   if (s.empty()) return std::wstring();
@@ -127,6 +136,38 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
   }
 
   if (!stock_id.empty()) {
+    // Custom stock (v2.0 §5): "custom:<wMicrons>x<hMicrons>" => DMPAPER_USER
+    // + dmPaperWidth/Length in tenths of millimetre. No DC_PAPERNAMES lookup;
+    // the DEVMODE carries the exact requested physical dimensions, which is
+    // the spec's "explicit dims, never a named-paper enum" rule.
+    if (const auto custom = parse_custom_stock_id(stock_id); custom) {
+      devmode->dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
+      devmode->dmPaperSize = DMPAPER_USER;
+      // Microns / 100 == tenths of millimetre (the dmPaperWidth/Length unit).
+      devmode->dmPaperWidth =
+          static_cast<short>(custom->width_microns / 100);
+      devmode->dmPaperLength =
+          static_cast<short>(custom->height_microns / 100);
+      devmode->dmFields |= DM_ORIENTATION;
+      devmode->dmOrientation =
+          static_cast<short>(custom->width_microns > custom->height_microns
+                                 ? DMORIENT_LANDSCAPE
+                                 : DMORIENT_PORTRAIT);
+      // Merge through DocumentProperties so the driver can fold this with its
+      // private (dmDriverExtra) bytes; same code path as the named-stock case.
+      devmode->dmFields |= DM_COPIES;
+      devmode->dmCopies = 1;
+      if (DocumentPropertiesW(nullptr, printer.handle,
+                              const_cast<LPWSTR>(printer_name.c_str()),
+                              devmode, devmode,
+                              DM_IN_BUFFER | DM_OUT_BUFFER) != IDOK) {
+        return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+            ContractErrorCode::PrintDeviceError, narrow(printer_name),
+            "DocumentProperties merge (custom stock) failed"});
+      }
+      return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
+    }
+
     const int paper_count = DeviceCapabilitiesW(
         const_cast<LPWSTR>(printer_name.c_str()), nullptr, DC_PAPERNAMES,
         nullptr, nullptr);
@@ -458,10 +499,38 @@ void push_notice_unique(std::vector<DegradationNotice>& notices,
   }
 }
 
+// Convert straight RGBA8 (top-down, stride=w*4, byte order R,G,B,A per the
+// svg_rasterizer_abi.h pixel contract) to GDI+ 32bppPARGB (premultiplied,
+// byte order in memory B,G,R,A per the GDI+ format). The host owns this
+// conversion (the ABI says backends always emit straight RGBA), so swapping
+// resvg -> librsvg+cairo never touches the conversion code.
+void straight_rgba_to_premul_bgra(const std::uint8_t* src,
+                                  std::uint8_t* dst,
+                                  std::size_t pixel_count) {
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    const std::uint8_t r = src[i * 4 + 0];
+    const std::uint8_t green = src[i * 4 + 1];
+    const std::uint8_t b = src[i * 4 + 2];
+    const std::uint8_t a = src[i * 4 + 3];
+    const std::uint32_t a32 = static_cast<std::uint32_t>(a);
+    dst[i * 4 + 0] = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(b) * a32 + 127u) / 255u);
+    dst[i * 4 + 1] = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(green) * a32 + 127u) / 255u);
+    dst[i * 4 + 2] = static_cast<std::uint8_t>(
+        (static_cast<std::uint32_t>(r) * a32 + 127u) / 255u);
+    dst[i * 4 + 3] = a;
+  }
+}
+
 // Draw one render trace onto a Graphics already translated so device (0,0) is
 // the page origin. Shared by preview and print so they cannot diverge (INV-5).
+// `svg_rasterizer` may be null (no backend installed); when null OR the
+// backend fails for any reason, the SVG branch falls back to the existing
+// loud crosshatch stub — never silent.
 Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
-                                             const RenderTrace& trace) {
+                                             const RenderTrace& trace,
+                                             ISvgRasterizer* svg_rasterizer) {
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
   Gdiplus::SolidBrush black(Gdiplus::Color(255, 0, 0, 0));
@@ -855,9 +924,134 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         y += (line.height > 0.0 ? line.height : lay.line_h);
       }
       g.Restore(clip_state);
-    } else if (c.kind == EmittedKind::Barcode || c.kind == EmittedKind::Svg) {
-      // Loud stub: hatched box + the stub label so the operator sees it is
-      // NOT real artwork (the matching DegradationNotice is in trace.notices).
+    } else if (c.kind == EmittedKind::Svg) {
+      // SVG branch: try the external rasterizer behind the hand-owned ABI.
+      // On success draw real pixels + emit `SvgArtworkRasterized`. On ANY
+      // failure (no DLL, empty source, base64 garbage, foreignObject,
+      // parse, unsupported, internal): loud crosshatch + a
+      // `StubbedSvgArtwork` notice naming the reason. The engine no longer
+      // emits the notice unconditionally, so the host's `raster_fail_detail`
+      // MUST be set on every non-rasterized path; otherwise a missing DLL
+      // would print a silently-unnoticed crosshatch.
+      Gdiplus::RectF box(
+          static_cast<Gdiplus::REAL>(c.device_box.x),
+          static_cast<Gdiplus::REAL>(c.device_box.y),
+          static_cast<Gdiplus::REAL>(c.device_box.w),
+          static_cast<Gdiplus::REAL>(c.device_box.h));
+      const std::uint32_t target_w =
+          static_cast<std::uint32_t>(std::max(1, c.raster_width_px));
+      const std::uint32_t target_h =
+          static_cast<std::uint32_t>(std::max(1, c.raster_height_px));
+      bool rasterized = false;
+      std::string raster_fail_detail;
+      if (svg_rasterizer == nullptr || !svg_rasterizer->available()) {
+        raster_fail_detail =
+            "no svg rasterizer backend loaded "
+            "(drop svg_rasterizer.dll next to print_engine_host.exe)";
+      } else if (c.svg_source.empty()) {
+        raster_fail_detail = "svg_source is empty";
+      } else {
+        std::vector<std::uint8_t> svg_bytes;
+        if (!decode_base64(c.svg_source, svg_bytes)) {
+          raster_fail_detail = "svg_source is not valid base64";
+        } else {
+          const std::string decoded(
+              reinterpret_cast<const char*>(svg_bytes.data()),
+              svg_bytes.size());
+          // Defense-in-depth WYSIWYG guard (mirrors the Rust shim's check):
+          // resvg renders <foreignObject> as fully-transparent with no error
+          // status, so a stale shim without the in-Rust guard would print a
+          // BLANK box -- silent C1 violation. Detect upfront, never call the
+          // shim, fall to loud crosshatch + named notice.
+          const bool has_foreign_object =
+              decoded.find("<foreignObject") != std::string::npos;
+          if (has_foreign_object) {
+            raster_fail_detail =
+                "svg_source contains <foreignObject>; refusing loudly "
+                "(host transcribes HTML labels before bake)";
+          } else {
+            const SvgRasterResult rr = svg_rasterizer->render(
+                decoded, target_w, target_h,
+                static_cast<double>(g.GetDpiX()));
+            // Promote to size_t BEFORE multiplying so a 64K x 64K SVG
+            // cannot wrap uint32 (the ABI lets the backend return up-to-
+            // 32-bit dimensions; the buffer is in host address space).
+            const std::size_t out_w_sz =
+                static_cast<std::size_t>(rr.raster.width);
+            const std::size_t out_h_sz =
+                static_cast<std::size_t>(rr.raster.height);
+            if (rr.ok() && out_w_sz > 0u && out_h_sz > 0u &&
+                rr.raster.rgba.size() == out_w_sz * out_h_sz * 4u) {
+              const std::size_t pixel_count = out_w_sz * out_h_sz;
+              std::vector<std::uint8_t> premul(pixel_count * 4u);
+              straight_rgba_to_premul_bgra(rr.raster.rgba.data(),
+                                           premul.data(), pixel_count);
+              const INT stride = static_cast<INT>(out_w_sz) * 4;
+              Gdiplus::Bitmap bitmap(static_cast<INT>(out_w_sz),
+                                     static_cast<INT>(out_h_sz), stride,
+                                     PixelFormat32bppPARGB, premul.data());
+              if (bitmap.GetLastStatus() == Gdiplus::Ok) {
+                const Gdiplus::RectF dst = image_destination(
+                    c, static_cast<Gdiplus::REAL>(out_w_sz),
+                    static_cast<Gdiplus::REAL>(out_h_sz));
+                g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
+                            static_cast<Gdiplus::REAL>(out_w_sz),
+                            static_cast<Gdiplus::REAL>(out_h_sz),
+                            Gdiplus::UnitPixel);
+                rasterized = true;
+                push_notice_unique(
+                    result.notices,
+                    DegradationNotice{
+                        DegradationNoticeType::SvgArtworkRasterized,
+                        current_page_id,
+                        "svg rendered via external rasterizer: " +
+                            svg_rasterizer->backend_id(),
+                        {},
+                        {}});
+              } else {
+                raster_fail_detail = "GDI+ bitmap construction failed";
+              }
+            } else {
+              raster_fail_detail = rr.message.empty()
+                                       ? std::string("rasterizer failed")
+                                       : rr.message;
+            }
+          }
+        }
+      }
+      if (!rasterized) {
+        // Loud crosshatch stub + named StubbedSvgArtwork notice. The engine
+        // no longer emits an upstream stub notice, so this branch is the
+        // ONLY place the operator hears that an SVG didn't render -- it
+        // must always fire, never be silent. `raster_fail_detail` is set
+        // on every non-rasterized path above.
+        Gdiplus::HatchBrush hatch(Gdiplus::HatchStyleForwardDiagonal,
+                                  Gdiplus::Color(255, 0, 0, 0),
+                                  Gdiplus::Color(0, 255, 255, 255));
+        g.FillRectangle(&hatch, box);
+        g.DrawRectangle(&black_pen, box);
+        Gdiplus::FontFamily arial(L"Arial");
+        Gdiplus::Font font(&arial, 10.0f, Gdiplus::FontStyleRegular,
+                           Gdiplus::UnitPixel);
+        const std::wstring text = widen(c.label);
+        g.DrawString(text.c_str(), -1, &font, box, nullptr, &black);
+        if (raster_fail_detail.empty()) {
+          // Defensive: every upstream branch sets a reason; if a future
+          // edit forgets, emit a generic loud notice rather than a silent
+          // crosshatch.
+          raster_fail_detail = "svg rasterization failed for an unknown reason";
+        }
+        push_notice_unique(
+            result.notices,
+            DegradationNotice{DegradationNoticeType::StubbedSvgArtwork,
+                              current_page_id,
+                              "svg rasterizer fallback: " + raster_fail_detail,
+                              {},
+                              {}});
+      }
+    } else if (c.kind == EmittedKind::Barcode) {
+      // Barcode stays a loud crosshatch stub — the real enLabel SDK adapter
+      // is an external dependency (spec v1.1 §12).
       Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
           static_cast<Gdiplus::REAL>(c.device_box.y),
@@ -986,8 +1180,26 @@ void trace_extent(const RenderTrace& trace, int& w, int& h) {
   h = std::max(1, static_cast<int>(std::lround(mh)));
 }
 
+// Resolve the rasterizer DLL path the same way Windows does for
+// LoadLibrary(bare-name): next to the host executable. We use the full path
+// (not the bare name) so we never accidentally pick up a same-named DLL from
+// the system search path — security + deterministic backend identity.
+std::filesystem::path resolve_svg_rasterizer_path() {
+  wchar_t buf[MAX_PATH];
+  const DWORD got = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
+  if (got == 0 || got >= MAX_PATH) {
+    return std::filesystem::path();
+  }
+  std::filesystem::path exe(buf);
+  return exe.parent_path() / L"svg_rasterizer.dll";
+}
+
 class Win32Services final : public EngineServices {
  public:
+  Win32Services() {
+    svg_rasterizer_ = SvgRasterizerDll::load(resolve_svg_rasterizer_path());
+  }
+
   std::vector<PrinterInfo> enumerate_printers() override {
     std::vector<PrinterInfo> out;
     DWORD needed = 0, count = 0;
@@ -1046,7 +1258,7 @@ class Win32Services final : public EngineServices {
       for (std::size_t index = 0; index < tiles.size(); ++index) {
         Gdiplus::GraphicsState state = g.Save();
         g.TranslateTransform(0.0f, static_cast<Gdiplus::REAL>(y_offset));
-        auto drawn = draw_trace(g, tiles[index].trace);
+        auto drawn = draw_trace(g, tiles[index].trace, svg_rasterizer_.get());
         g.Restore(state);
         if (!drawn) {
           return Result<PreviewOutput, ContractError>::err(drawn.error());
@@ -1162,7 +1374,7 @@ class Win32Services final : public EngineServices {
           // would misread them by printerDPI/100 and break true 1:1. Force
           // pixel units so print matches the preview bitmap exactly (INV-5).
           g.SetPageUnit(Gdiplus::UnitPixel);
-          auto drawn = draw_trace(g, tile.trace);
+          auto drawn = draw_trace(g, tile.trace, svg_rasterizer_.get());
           if (!drawn) {
             aborted = true;
             fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
@@ -1203,6 +1415,14 @@ class Win32Services final : public EngineServices {
     job.job_log.set("printerId", Json::str(printer_id));
     job.job_log.set("stockId", Json::str(stock_id));
     job.job_log.set("copies", Json::number(n_copies));
+    // SVG rasterizer backend identity (regulated traceability). "none"
+    // => no DLL loaded => any SVG fell
+    // through to the loud crosshatch stub.
+    job.job_log.set(
+        "svgRasterizer",
+        Json::str(svg_rasterizer_ && svg_rasterizer_->available()
+                      ? svg_rasterizer_->backend_id()
+                      : std::string("none")));
     // Merged values are redaction-gated (default off, §7): keys only.
     Json keys = Json::array();
     for (const auto& kv : merge) keys.push_back(Json::str(kv.first));
@@ -1212,6 +1432,12 @@ class Win32Services final : public EngineServices {
 
  private:
   GdiplusScope gdiplus_;
+  // Optional external SVG rasterizer behind the hand-owned C ABI. Lazy-loaded
+  // in the constructor from <exe-dir>/svg_rasterizer.dll. nullptr (or load
+  // failure) is fine -- draw_trace's Svg branch falls back to the loud
+  // crosshatch stub. Same instance feeds both render_preview and print so the
+  // exact same pixels appear in both sinks (INV-5).
+  std::unique_ptr<ISvgRasterizer> svg_rasterizer_;
 
   static void enumerate_stocks(LPWSTR printer, PrinterInfo& p) {
     const int paper_count = DeviceCapabilitiesW(printer, nullptr, DC_PAPERNAMES,

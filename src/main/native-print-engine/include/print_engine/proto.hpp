@@ -1,6 +1,6 @@
 #pragma once
 
-// Host integration IPC protocol — Layer 1 (spec PRINT_ENGINE_HOST_INTEGRATION_v1.1 §3).
+// Host integration IPC protocol — Layer 1 (frozen by code; legacy spec doc removed).
 //
 // This module is the FROZEN frame codec plus the versioned control layer:
 //  - frame format never changes across protocol versions (§3.1);
@@ -118,7 +118,10 @@ enum class NoticeKind {
   FontSubstituted,
   MergeClip,
   SchemaMinorAhead,
-  ProtoMinorAhead
+  ProtoMinorAhead,
+  // Device-side success notice for embedded SVG that was rasterized by an
+  // external backend. Carries backend identity in `detail`; never silent.
+  SvgArtworkRasterized
 };
 
 [[nodiscard]] const char* to_wire(NoticeKind kind) noexcept;
