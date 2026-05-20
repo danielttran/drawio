@@ -34,15 +34,25 @@ jobs:
   engine-linux:
     name: Engine library + tests (Linux, no host)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build SVG rasterizer cdylib (resvg)
+        # Build first so the engine-side cross-platform pixel-determinism
+        # golden actually exercises the real cdylib via dlopen instead of
+        # SKIPping. The Rust shim is the source of truth for "preview ==
+        # print pixels" determinism (INV-5) for embedded SVG artwork.
+        working-directory: src/main/native-print-engine/host/svg-rasterizer
+        run: cargo build --release
       - name: Configure
         run: |
           cmake -S src/main/native-print-engine \
                 -B src/main/native-print-engine/build \
                 -DBUILD_TESTING=ON \
-                -DCMAKE_BUILD_TYPE=Release
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSVG_RASTERIZER_LIB="$PWD/src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so"
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
       - name: Test (ctest)
@@ -51,6 +61,11 @@ jobs:
         # The architecture_tests case scans include/ + src/ for banned tokens.
         # Re-running it as its own step makes the failure mode obvious in CI logs.
         run: ctest --test-dir src/main/native-print-engine/build -R "INV-1" --output-on-failure
+      - name: SVG pixel-determinism golden (cross-platform, via dlopen)
+        # Re-runs the cross-platform pixel-golden tests as their own step so
+        # the failure (SVG drift between two consecutive renders -> INV-5
+        # break) is obvious in CI logs.
+        run: ctest --test-dir src/main/native-print-engine/build -R "SVG rasterizer cdylib" --output-on-failure
 
   engine-windows:
     name: Engine + Win32 host + SVG ABI swap test (Windows)
@@ -136,3 +151,8 @@ jobs:
         run: npm ci || npm install
       - name: Run exporter tests
         run: npm run test:nativeprint-exporter
+      - name: Run contract self-check (no-browser validator)
+        # The C5 manual-validation runbook calls this script as a hard
+        # precondition; CI runs its self-tests so a broken validator
+        # never blesses a broken contract.
+        run: npm run test:nativeprint-validate

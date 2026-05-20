@@ -102,8 +102,23 @@ if(BUILD_TESTING)
     tests/paper_size_tests.cpp
     tests/proto_tests.cpp
     tests/proto_adapter_tests.cpp
+    tests/svg_pixel_determinism_tests.cpp
     tests/wysiwyg_parity_tests.cpp
   )
+
+  # Cross-platform SVG pixel-golden test: configured to a path it loads at
+  # runtime via dlopen / LoadLibrary. Empty path => tests SKIP (still pass);
+  # CI sets this when the Rust crate has been built first.
+  set(SVG_RASTERIZER_LIB "" CACHE FILEPATH
+      "Absolute path to the SVG rasterizer cdylib for pixel-golden tests")
+  target_compile_definitions(print_engine_contract_tests
+    PRIVATE
+      SVG_RASTERIZER_LIB="${SVG_RASTERIZER_LIB}"
+  )
+  if(NOT WIN32)
+    # dlopen needs libdl on Linux (no-op on macOS/BSD; harmless).
+    target_link_libraries(print_engine_contract_tests PRIVATE ${CMAKE_DL_LIBS})
+  endif()
 
   target_compile_definitions(print_engine_contract_tests
     PRIVATE

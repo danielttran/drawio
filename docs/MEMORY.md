@@ -30,7 +30,7 @@
 - **`etc/build/`**: Build scripts using Apache Ant (`build.xml`).
 - **`src/main/native-print-engine/`**: Isolated C++20 native print engine (`docs/PRINT_ENGINE_SPEC_v1.1.md` + `_v2.0.md` bridge) plus its host-integration layer.
   - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`, `cmake --build … --config Debug`, `ctest --test-dir … -C Debug --output-on-failure`. Catch2 v3 via FetchContent. Strict `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`. Spec matrix: `docs/SPEC_COVERAGE.md`; status: `docs/IMPLEMENTATION_STATUS.md`.
-  - **Status: native print accuracy pass landed & audited; SVG Phase 5 wired (host rasterization via the resvg cdylib); custom-stock DMPAPER_USER plumbed; rich-text engine-side structural goldens pinned. Linux CTest 113/113 green, `npm run test:nativeprint-exporter` 85/86 (1 Windows-only skip).**
+  - **Status: native print accuracy pass landed & audited; SVG Phase 5 wired (host rasterization via the resvg cdylib); custom-stock DMPAPER_USER plumbed; rich-text engine-side structural goldens pinned; cross-platform SVG pixel-determinism golden running on Linux CI; C5 manual runbook + HIL test plan + no-browser self-check published; barcode adapter pattern proposed. Linux CTest 117/117 green, `npm run test:nativeprint-exporter` 85/86 (1 Windows-only skip), `npm run test:nativeprint-validate` 11/11 green.**
 
 ---
 
@@ -85,6 +85,17 @@ End-to-end working: launch webapp → design diagram → **File > Native Print**
 
 ## Notice taxonomy update (2026-05-20)
 - Added `DegradationNoticeType::SvgArtworkRasterized` (engine) + `NoticeKind::SvgArtworkRasterized` (boundary), wired through `to_wire`/`map_notice`. Engine `StubbedSvgArtwork` posture is unchanged. Round-trips through `proto_adapter::notice_to_json` are covered by tests (proto_adapter_tests.cpp).
+
+## Cross-platform SVG pixel-determinism golden (2026-05-20)
+- New `tests/svg_pixel_determinism_tests.cpp`: a Catch2 test that opens the real resvg cdylib via dlopen/LoadLibrary (test-local, NOT through the Windows-only `SvgRasterizerDll`) and asserts the ABI pixel contract end-to-end: handshake + four required exports, byte-identical RGBA across consecutive renders of the same SVG (INV-5 pixel half), straight-RGBA byte order, panic-safety on malformed input, buffer-too-small typed-error path, and a hardening pack (5 SVGs × 4 sizes = 20 deterministic render-pair assertions including 1×1 and non-square). Runs on every CI runner (Linux engine job builds the cdylib first; the workflow passes its path via `-DSVG_RASTERIZER_LIB=...`). SKIPs cleanly without the cdylib.
+
+## C5 manual validation runbook + self-check (2026-05-20)
+- `docs/MANUAL_VALIDATION_RUNBOOK.md`: precise, click-by-click operator runbook for the C5 manual sign-off. Browser-free per C2 — no pixel oracle, only the operator's eyeball comparison of canvas vs printed paper plus a structural self-check.
+- `docs/HIL_TEST_PLAN.md`: 9 canonical HIL cases (WYSIWYG smoke, multi-copy, multi-page, named stock change, custom stock, hardware margin, SVG rendered, SVG fallback, AbortDoc on mid-job failure), each with a physically measurable acceptance criterion.
+- `tools/native-print-validate-contract.mjs`: pure-Node structural self-check the runbook runs before any printer touches paper. Asserts schema/units/box/text/svg/image/barcode invariants. Exit 0 = clean; exit 1 = `path: detail` printout per violation. 11 self-tests pin its behavior; wired into CI via `npm run test:nativeprint-validate`.
+
+## Barcode SDK adapter — proposal (2026-05-20)
+- `docs/PRINT_ENGINE_BARCODE_TODO.md`: exact mirror of the SVG TODO #2 architecture, applied to barcode. Hand-owned C ABI shape, runtime-loaded cdylib, fake-shim swap test, cross-platform pixel-determinism test. Spec-owner-gated (notice wording + backend choice + ABI confirmation); implementation is a copy-paste of the SVG pattern once the gate clears.
 
 ## Custom stock — DMPAPER_USER (2026-05-20)
 - **Wire shape:** synthetic `stockId = "custom:<wMicrons>x<hMicrons>"`. Strict parser refuses anything that is not the exact shape; positive integer dims only; bounded so the tenths-of-mm conversion fits the DEVMODE WORD-wide paper dim fields.

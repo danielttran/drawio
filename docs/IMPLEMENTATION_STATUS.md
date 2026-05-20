@@ -124,4 +124,54 @@ See `SPEC_COVERAGE.md` for the full section-by-section coverage matrix.
 - `.github/workflows/native-print-engine.yml` gates the engine library +
   tests on Linux, the full Win32 host build + ctest + SVG ABI swap test on
   Windows, the Rust cdylib on both runners (with ABI-symbol export
-  verification), and the exporter Node `--test` suite on Linux.
+  verification), the exporter Node `--test` suite on Linux, and the
+  contract self-check validator's tests.
+- The Linux engine job builds the Rust SVG cdylib first and configures
+  the engine tests with `-DSVG_RASTERIZER_LIB=...` so the cross-platform
+  pixel-determinism Catch2 tests dlopen the real backend and assert
+  byte-identical RGBA across consecutive renders — a true pixel golden
+  that runs on every push, not just on a Windows golden harness.
+
+## Cross-platform pixel-determinism golden (real backend)
+
+- `tests/svg_pixel_determinism_tests.cpp` is a test-local dlopen /
+  LoadLibrary loader (independent of the production
+  `SvgRasterizerDll`, which is Windows-only by owner ruling) that
+  exercises the real resvg cdylib on every CI runner. It covers:
+  - ABI handshake + the four required exports.
+  - Byte-identical RGBA for two consecutive renders of the same SVG
+    (INV-5 pixel half).
+  - The pinned pixel contract (straight RGBA, R,G,B,A, top-down).
+  - Panic-safety on malformed SVG (typed status, no UB across the
+    boundary).
+  - Caller-allocates buffer-too-small returns the typed error code
+    (`SPE_SVG_ERR_BUFFER_TOO_SMALL`).
+  - A hardening pack: 5 SVGs × 4 sizes (incl. 1×1 and a non-square box)
+    all deterministic.
+- Skips cleanly when `SVG_RASTERIZER_LIB` is not configured, so a
+  contributor without the Rust toolchain can still run the rest of the
+  suite.
+
+## C5 manual sign-off — runbook + browser-free self-check
+
+- `docs/MANUAL_VALIDATION_RUNBOOK.md` is the precise, ordered runbook
+  the operator follows to sign off the C5 manual pass. The HIL subset
+  is split into `docs/HIL_TEST_PLAN.md` (9 canonical cases with
+  physically measurable acceptance criteria).
+- `tools/native-print-validate-contract.mjs` is the no-browser
+  structural self-check the runbook runs **before** any printer touches
+  paper. Pure Node (no jsdom, no Playwright); exit 0 on every invariant
+  satisfied, 1 on any violation with a precise `path: detail` printout.
+- `tools/native-print-validate-contract.test.mjs` pins the validator's
+  behavior on well-formed and malformed contracts (11 cases). Wired
+  into CI via `npm run test:nativeprint-validate`.
+
+## Barcode adapter — proposal published
+
+- `docs/PRINT_ENGINE_BARCODE_TODO.md` lays out the barcode backend
+  pattern as an exact mirror of the SVG TODO #2 architecture:
+  hand-owned C ABI under `host/barcode_renderer_abi.h`, runtime-loaded
+  cdylib, fake-shim swap acceptance test, cross-platform
+  pixel-determinism Catch2 test. The proposal is gated on spec-owner
+  sign-off (same gate as SVG §6); implementation is a copy-paste of the
+  SVG pattern once the gate clears.
