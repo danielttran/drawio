@@ -1433,6 +1433,80 @@ test('WYSIWYG architecture lock: live DOM => one svg node, zero re-derivation', 
   assertSchemaValid(r.contract, 'architecture-lock');
 });
 
+// WYSIWYG Z-ORDER: drawio z-order lives in `parent.children[]`. "Send to
+// Back" / "Bring to Front" reorder children WITHOUT touching the cells dict;
+// iterating `Object.keys(model.cells)` would silently paint overlapping
+// shapes in the wrong order on print — a C1 violation. The exporter must
+// walk root → layers → descendants depth-first when the model exposes the
+// mxGraphModel tree API, so the paint list matches the canvas exactly.
+test('WYSIWYG: paint order follows mxGraph parent.children[] (z-order), not dict insertion', () => {
+  // Three vertices created A,B,C (so the dict iterates A,B,C); the LIVE
+  // z-order is C,A,B (user sent A behind C, then sent B to front). The
+  // contract paint must come out C,A,B so the printed output matches what
+  // the operator sees on the canvas.
+  const A = { id: 'A', vertex: true };
+  const B = { id: 'B', vertex: true };
+  const C = { id: 'C', vertex: true };
+  const layer = { id: 'L', children: [C, A, B] };       // z-order: C,A,B
+  const root  = { id: 'root', children: [layer] };
+  const cells = { A, B, C, L: layer, root };
+
+  const model = {
+    cells,
+    isVertex: (cell) => cell.vertex === true,
+    isEdge: (cell) => cell.edge === true,
+    getRoot: () => root,
+    getChildAt: (parent, i) => (parent.children || [])[i] || null,
+    getChildCount: (parent) => (parent.children || []).length
+  };
+  const states = {
+    A: { x: 0,  y: 0,  width: 40, height: 40 },
+    B: { x: 30, y: 30, width: 40, height: 40 },
+    C: { x: 60, y: 60, width: 40, height: 40 }
+  };
+  const styles = {
+    A: { shape: 'rectangle', fillColor: '#ff0000', strokeColor: '#000000' },
+    B: { shape: 'rectangle', fillColor: '#00ff00', strokeColor: '#000000' },
+    C: { shape: 'rectangle', fillColor: '#0000ff', strokeColor: '#000000' }
+  };
+
+  const graph = {
+    getModel: () => model,
+    view: { scale: 1, getState: (cell) => states[cell.id] },
+    getGraphBounds: () => ({ x: 0, y: 0, width: 200, height: 200 }),
+    getCellStyle: (cell) => styles[cell.id] || {},
+    getLabel: () => '',
+    isHtmlLabel: () => false
+  };
+
+  const r = exporter.buildResult(graph);
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  // Each vertex contributes exactly one path (no live SVG); paint order is
+  // C (blue) -> A (red) -> B (green), back-to-front, matching the canvas.
+  assert.deepEqual(paths.map((p) => p.fill.color), ['#0000ff', '#ff0000', '#00ff00'],
+    'paint order must follow parent.children[] (z-order), NOT cells-dict insertion order');
+});
+
+// Defense-in-depth: the dict-fallback (used by minimal Node fixtures lacking
+// getRoot/getChildAt) still works. Existing tests rely on this.
+test('WYSIWYG z-order: dict fallback preserved when model has no tree API', () => {
+  const cells = {
+    a: { id: 'a', vertex: true },
+    b: { id: 'b', vertex: true }
+  };
+  const states = {
+    a: { x: 0,  y: 0,  width: 30, height: 30 },
+    b: { x: 40, y: 40, width: 30, height: 30 }
+  };
+  const styles = {
+    a: { shape: 'rectangle', fillColor: '#111111', strokeColor: '#000000' },
+    b: { shape: 'rectangle', fillColor: '#222222', strokeColor: '#000000' }
+  };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, styles));
+  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.deepEqual(paths.map((p) => p.fill.color), ['#111111', '#222222']);
+});
+
 // ---- Cross-process gate: real engine accepts every exporter output -------
 test('real engine renders the complex exporter document (no silent reject)',
   { skip: existsSync(ENGINE_EXE) ? false : 'engine binary not built' },

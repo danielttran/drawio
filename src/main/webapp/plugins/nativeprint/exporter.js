@@ -1540,6 +1540,39 @@
   // NOT scale the diagram up). The single tile == one physical sheet; content
   // beyond it is clipped by the engine, which raises a loud notice. When no
   // paper is given the legacy diagram-bounds page is kept (back-compat).
+  // Depth-first traversal of the mxGraph tree, yielding cells in the same
+  // back-to-front order the canvas paints them in. Layers are children of
+  // root; cells inside a layer are children of the layer; group children
+  // sit under their group, painted ON TOP of the group's body (matching
+  // mxGraph's own cell-state validation order). This is the load-bearing
+  // ordering for WYSIWYG with overlapping shapes / changed z-order.
+  function collectCellsInZOrder(model) {
+    if (!model || typeof model.getRoot !== 'function' ||
+        typeof model.getChildAt !== 'function' ||
+        typeof model.getChildCount !== 'function') {
+      // Headless / minimal fixtures: preserve legacy behaviour. The browser
+      // path always has these methods (mxGraphModel) so the live print uses
+      // true z-order; this fallback only fires in Node tests / harnesses.
+      var out = [];
+      var dict = (model && model.cells) || {};
+      Object.keys(dict).forEach(function (id) { out.push(dict[id]); });
+      return out;
+    }
+    var root = model.getRoot();
+    if (root == null) return [];
+    var out = [];
+    (function walk(parent) {
+      var n = model.getChildCount(parent);
+      for (var i = 0; i < n; i++) {
+        var child = model.getChildAt(parent, i);
+        if (child == null) continue;
+        out.push(child);     // parent body BEFORE its descendants (z-order)
+        walk(child);
+      }
+    })(root);
+    return out;
+  }
+
   function buildResult(graph, paper) {
     var model = graph.getModel();
     var view = graph.view;
@@ -1557,8 +1590,16 @@
       : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
           h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
 
-    Object.keys(model.cells || {}).forEach(function (id) {
-      var cell = model.cells[id];
+    // WYSIWYG paint order = mxGraph z-order. The model's `cells` dict is keyed
+    // by id (creation order); "Send to Back" / "Bring to Front" reorder a
+    // cell's parent.children[] WITHOUT changing the dict. Iterating the dict
+    // would silently print overlapping shapes in the wrong order — a C1
+    // violation. Walk root → layers → descendants depth-first so the paint
+    // list matches what the canvas draws back-to-front, exactly. The
+    // dict-fallback path stays for headless fixtures / harnesses that do not
+    // expose getRoot/getChildAt.
+    var orderedCells = collectCellsInZOrder(model);
+    orderedCells.forEach(function (cell) {
       if (cell == null || (!model.isVertex(cell) && !model.isEdge(cell))) return;
       var state = view.getState(cell);
       if (state == null) return;
