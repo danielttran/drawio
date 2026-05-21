@@ -142,7 +142,7 @@ SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
 
 ---
 
-## Audit fixes (rounds 1–3, 2026-05-21)
+## Audit fixes (rounds 1–4, 2026-05-21)
 
 Closed silent-divergence holes against the C1 WYSIWYG mandate. Each
 fix has a red-then-green regression test on the appropriate side.
@@ -177,12 +177,47 @@ fix has a red-then-green regression test on the appropriate side.
    would emit corrupt 3-byte sequences for unpaired surrogates. Now
    substitutes U+FFFD so the encoded output is always valid UTF-8.
 
+6. **CI on Linux had a self-consistent silent-blank**: the SVG corpus
+   determinism test asks resvg to render `font-family="Arial"`, but
+   `ubuntu-latest` ships no Arial. fontdb v0.23's `load_system_fonts()`
+   is exact-name-match at query time (fontconfig is used for
+   enumeration but NOT for alias resolution), so Liberation Sans
+   doesn't satisfy an Arial lookup. resvg then silently emits zero
+   opaque pixels -- which the test correctly flagged but couldn't
+   distinguish from a real C1 bug, so the corpus self-tripped on every
+   Linux CI run. Fixed by giving the two text cases a CSS fallback
+   chain `Arial, "Liberation Sans", "DejaVu Sans", sans-serif`. Plus
+   `fonts-liberation` install on the runner for determinism. Note: the
+   underlying "resvg silently blanks unknown fonts" is real for
+   non-Windows deployments; the host print path is Win32-only today,
+   where Arial is always installed, so it does not affect production
+   WYSIWYG. Tracked here as a future audit item if a Linux host is
+   ever introduced.
+
+7. **Windows CI swap-acceptance regression**: `fake_svg_rasterizer.c`
+   (the §5 swap-acceptance fixture) had no `__declspec(dllexport)`
+   decoration and no `WINDOWS_EXPORT_ALL_SYMBOLS`. The ABI header is
+   intentionally neutral so the Rust shim's `#[no_mangle]` works
+   uniformly, but on Windows that meant the MODULE DLL exported zero
+   symbols. The windows-2022 runner image's MSVC was forgiving here
+   somehow (or the test had never actually run there); the in-flight
+   transition to windows-2025-vs2026 surfaced the latent bug. Fixed
+   by setting `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the fake-DLL CMake
+   target. Real Rust shim is unaffected.
+
 Test counts moved from 119 + 86 = 205 active to **151 + 125 = 276
 active** through these rounds (+34 / +29 in rounds 2/3 cover path-
 parser edge cases, transform precision at extreme DPIs, multi-page,
 multi-tile, preview/print parity, z-order, theme colors, schema
 invariants, Unicode labels, gradient/UTF-8 hardening, and the spurious
 HardwareMarginClip regression).
+
+**CI gate status (post-audit, all 10 jobs green):**
+- Engine library + tests (Linux, no host) ✅
+- Engine + Win32 host + SVG ABI swap test (Windows) ✅
+- SVG rasterizer cdylib (resvg, cross-platform) (ubuntu-latest) ✅
+- SVG rasterizer cdylib (resvg, cross-platform) (windows-latest) ✅
+- Exporter (Node --test) ✅
 
 ---
 

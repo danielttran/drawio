@@ -80,10 +80,6 @@ jobs:
     name: Engine + Win32 host + SVG ABI swap test (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - name: Configure (MSVC, strict /W4 /WX)
@@ -97,39 +93,8 @@ jobs:
         shell: pwsh
         run: cmake --build src/main/native-print-engine/build --config Release -j
       - name: Test (ctest, Release)
-        id: ctest
         shell: pwsh
-        run: |
-          ctest --test-dir src/main/native-print-engine/build -C Release --output-on-failure 2>&1 |
-            Tee-Object -FilePath $env:RUNNER_TEMP\ctest.log
-          $rc = $LASTEXITCODE
-          if ($rc -ne 0) {
-            $tail = (Get-Content $env:RUNNER_TEMP\ctest.log -Tail 250) -join "`n"
-            "log<<NPE_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            $tail | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            "NPE_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            exit $rc
-          }
-      - name: Post Windows ctest failure as PR comment
-        if: failure() && steps.ctest.outputs.log != ''
-        uses: actions/github-script@v7
-        env:
-          LOG: ${{ steps.ctest.outputs.log }}
-        with:
-          script: |
-            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner: context.repo.owner, repo: context.repo.repo,
-              commit_sha: context.sha,
-            });
-            const num = (prs.data[0] && prs.data[0].number)
-              || (context.payload.pull_request && context.payload.pull_request.number);
-            if (!num) { core.warning('no PR for ' + context.sha); return; }
-            const body = "### Windows engine ctest failure tail (commit " +
-              context.sha.slice(0,7) + ")\n\n```\n" + process.env.LOG + "\n```\n";
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: num, body,
-            });
+        run: ctest --test-dir src/main/native-print-engine/build -C Release --output-on-failure
       - name: Upload host exe + fake shim (for downstream golden harness)
         uses: actions/upload-artifact@v4
         with:
