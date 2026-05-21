@@ -26,7 +26,7 @@
 - **`etc/build/`**: Ant.
 - **`src/main/native-print-engine/`**: C++20 native print engine + Win32 host.
   - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`; `cmake --build … -j`; `ctest --test-dir …`. Catch2 v3 via FetchContent. MSVC `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`.
-  - **Status (2026-05-20):** Linux ctest **119/119** green; exporter `node --test` **85/86** (1 Windows-only skip).
+  - **Status (2026-05-21, post audit-3):** Linux ctest **151/151** green (6 svg-rasterizer-cdylib tests skip cleanly when the resvg shim is not built); exporter `node --test` **125/126** (1 skip = engine binary not built on Linux).
 
 ---
 
@@ -135,9 +135,54 @@ SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
 | `HardwareMarginClip` | Engine emits when content escapes the printable area. | `HardwareMarginClip` |
 | `FontSubstitution` | Host emits when a requested font family is not installed. | `FontSubstituted` |
 | `MergeClip` | Host emits when text was clipped to its box on `overflow:"clip"`. | `MergeClip` |
-| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. | — |
+| `GradientDirectionApprox` | Exporter emits (once, deduped) when ANY fallback-path paint node carries a gradient fill/stroke. The v1 contract has no `p0/p1` (linear) or `center/focus/radius` (radial), so the host renders linear gradients always L→R and radial gradients always box-centered. Live path (`kind:"svg"`) is unaffected — direction lives inside the literal SVG bytes. | `GradientDirectionApprox` |
+| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. `ExporterUnsupportedShape` also fires when `transformPath` rejects a malformed harvested fragment (loud-skip, never silent-drop). | — |
 
 `jobLog.svgRasterizer` records backend name+version or `"none"`.
+
+---
+
+## Audit fixes (rounds 1–3, 2026-05-21)
+
+Closed silent-divergence holes against the C1 WYSIWYG mandate. Each
+fix has a red-then-green regression test on the appropriate side.
+
+1. **Z-order**: `buildResult` walked `Object.keys(model.cells)`
+   (creation-order dict) → "Send to Back" / "Bring to Front" silently
+   re-stacked nothing on print. Now walks `model.getRoot()` via
+   `getChildAt`/`getChildCount` depth-first when the model exposes the
+   mxGraphModel tree API; the dict iteration remains the fallback for
+   minimal Node fixtures only.
+
+2. **Spurious `HardwareMarginClip`**: exporter pads each `kind:"svg"`
+   node's box by `SVG_PAD = 2` contract units per side for stroke/marker
+   slop. A cell at the canvas top-left (`state.x == bounds.x`) mapped
+   to `box.x == -2`, which made `escapes_page` fire on EVERY real print.
+   Engine now applies a 4-unit tolerance (= `SVG_PAD * 2`) in
+   `escapes_page`; real overhang (> 4 units) still fires the notice.
+
+3. **Silent gradient direction loss on fallback paths**: contract has
+   no `p0/p1` / `center/focus/radius`, so the host always renders
+   linear gradients L→R and radial gradients box-centered. Fixed by
+   emitting a single deduped `GradientDirectionApprox` notice when any
+   fallback-path paint node carries a gradient. The live (`kind:"svg"`)
+   path is unaffected.
+
+4. **Silent path-fragment drop**: `transformPath` returning null
+   (numbers after Z, missing args, etc.) silently lost geometry. Now
+   pushes a loud `ExporterUnsupportedShape` notice naming the cell and
+   tag; the rest of the shape stays faithful.
+
+5. **Invalid UTF-8 for lone surrogates**: `utf8Bytes` manual fallback
+   would emit corrupt 3-byte sequences for unpaired surrogates. Now
+   substitutes U+FFFD so the encoded output is always valid UTF-8.
+
+Test counts moved from 119 + 86 = 205 active to **151 + 125 = 276
+active** through these rounds (+34 / +29 in rounds 2/3 cover path-
+parser edge cases, transform precision at extreme DPIs, multi-page,
+multi-tile, preview/print parity, z-order, theme colors, schema
+invariants, Unicode labels, gradient/UTF-8 hardening, and the spurious
+HardwareMarginClip regression).
 
 ---
 
