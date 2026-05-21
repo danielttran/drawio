@@ -55,32 +55,27 @@ jobs:
                 -DSVG_RASTERIZER_LIB="$PWD/src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so"
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
-      - name: Test (ctest)
-        # If anything fails, dump the catch2 binary's full output into
-        # $GITHUB_STEP_SUMMARY (anonymously viewable on the run page) so
-        # we can see which test failed even without GitHub auth on the
-        # log endpoint.
+      - name: Test (ctest) - capture failures as annotations
         run: |
           set +e
           ctest --test-dir src/main/native-print-engine/build \
                 --output-on-failure --verbose > /tmp/ctest.log 2>&1
           rc=$?
-          tail -200 /tmp/ctest.log
+          tail -100 /tmp/ctest.log
           if [ "$rc" -ne 0 ]; then
-            {
-              echo "## ctest exit code $rc"
-              echo ""
-              echo "### Catch2 direct run (full output)"
-              echo '```'
-              ./src/main/native-print-engine/build/print_engine_contract_tests \
-                --reporter=console --colour-mode=none 2>&1 | tail -400
-              echo '```'
-              echo ""
-              echo "### ctest log tail"
-              echo '```'
-              tail -200 /tmp/ctest.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            # Run the Catch2 binary directly so we get a clean FAILED:
+            # block. Echo every failure-relevant line as a workflow
+            # annotation — these are exposed through the check_runs API
+            # without auth, unlike step logs and step summaries.
+            ./src/main/native-print-engine/build/print_engine_contract_tests \
+              --reporter=console --colour-mode=none 2>&1 \
+              > /tmp/catch2.log || true
+            tail -200 /tmp/catch2.log
+            grep -E "FAILED|test cases:|assertions:|REQUIRE|CHECK|due to a fatal error|due to unexpected|with expansion|^/" /tmp/catch2.log | head -60 | while IFS= read -r line; do
+              # Sanitize: GH commands don't allow embedded newlines/CR
+              clean=$(printf '%s' "$line" | tr -d '\r\n' | head -c 400)
+              echo "::error title=ctest failure::${clean}"
+            done
             exit "$rc"
           fi
       - name: Architecture invariant (INV-1) check
