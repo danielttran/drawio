@@ -56,7 +56,20 @@ jobs:
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
       - name: Test (ctest)
-        run: ctest --test-dir src/main/native-print-engine/build --output-on-failure
+        # -V (verbose) ensures the failing test name + Catch2 output prints
+        # inline in the CI annotation when something goes wrong; ctest's
+        # bare --output-on-failure used to swallow names on this runner.
+        run: |
+          set -e
+          ctest --test-dir src/main/native-print-engine/build \
+                --output-on-failure --verbose || {
+            echo "=== ctest failed; dumping ALL test names ==="
+            ctest --test-dir src/main/native-print-engine/build -N
+            echo "=== running test binary directly for full Catch2 output ==="
+            ./src/main/native-print-engine/build/print_engine_contract_tests \
+              --reporter=console --colour-mode=none || true
+            exit 1
+          }
       - name: Architecture invariant (INV-1) check
         # The architecture_tests case scans include/ + src/ for banned tokens.
         # Re-running it as its own step makes the failure mode obvious in CI logs.
@@ -85,7 +98,16 @@ jobs:
         run: cmake --build src/main/native-print-engine/build --config Release -j
       - name: Test (ctest, Release)
         shell: pwsh
-        run: ctest --test-dir src/main/native-print-engine/build -C Release --output-on-failure
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ctest --test-dir src/main/native-print-engine/build `
+                -C Release --output-on-failure --verbose
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "=== ctest failed; running test binary directly ==="
+            & "src/main/native-print-engine/build/Release/print_engine_contract_tests.exe" `
+                --reporter=console --colour-mode=none
+            exit 1
+          }
       - name: Upload host exe + fake shim (for downstream golden harness)
         uses: actions/upload-artifact@v4
         with:
