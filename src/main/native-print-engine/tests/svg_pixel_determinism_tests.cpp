@@ -368,13 +368,26 @@ TEST_CASE("SVG rasterizer cdylib: a real drawio-flavor SVG corpus all renders"
        "<rect x='10' y='10' width='80' height='60' fill='#000'/></g>"
        "<rect x='10' y='10' width='80' height='60' fill='#fff' "
        "stroke='#222' stroke-width='2'/></svg>"},
+      // Font-family declared with a fallback chain so the corpus runs on
+      // every CI runner: Arial first (matches drawio's typical bake on
+      // Windows print boxes), then Liberation Sans (Ubuntu's metric clone
+      // installed via fonts-liberation), then DejaVu Sans (preinstalled on
+      // most Linux images), then the CSS generic sans-serif as a last
+      // resort. fontdb's family-name lookup is strict (no fontconfig alias
+      // at query time), so without the chain a Linux runner without Arial
+      // resolves to nothing and resvg silently emits a blank — which the
+      // corpus invariant correctly flags but cannot distinguish from a
+      // real C1 bug. This test pins "no silent blanks", not "Arial works".
       {"text font-family + bold + anchor",
        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='40'>"
-       "<text x='100' y='25' text-anchor='middle' font-family='Arial' "
+       "<text x='100' y='25' text-anchor='middle' "
+       "font-family='Arial, &quot;Liberation Sans&quot;, &quot;DejaVu Sans&quot;, sans-serif' "
        "font-size='14' font-weight='bold' fill='#222'>Hello world</text></svg>"},
       {"multi-line text via tspan dy",
        "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='80'>"
-       "<text x='10' y='20' font-family='Arial' font-size='12'>"
+       "<text x='10' y='20' "
+       "font-family='Arial, &quot;Liberation Sans&quot;, &quot;DejaVu Sans&quot;, sans-serif' "
+       "font-size='12'>"
        "<tspan x='10' dy='0'>Line one</tspan>"
        "<tspan x='10' dy='14'>Line two</tspan></text></svg>"},
       {"cubic-bezier path + marker arrowhead",
