@@ -55,29 +55,44 @@ jobs:
                 -DSVG_RASTERIZER_LIB="$PWD/src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so"
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
-      - name: Test (ctest) - capture failures as annotations
+      - name: Test (ctest) — capture failures
+        id: ctest
         run: |
           set +e
-          ctest --test-dir src/main/native-print-engine/build \
-                --output-on-failure --verbose > /tmp/ctest.log 2>&1
+          ./src/main/native-print-engine/build/print_engine_contract_tests \
+            --reporter=console --colour-mode=none > /tmp/catch2.log 2>&1
           rc=$?
-          tail -100 /tmp/ctest.log
+          tail -200 /tmp/catch2.log
           if [ "$rc" -ne 0 ]; then
-            # Run the Catch2 binary directly so we get a clean FAILED:
-            # block. Echo every failure-relevant line as a workflow
-            # annotation — these are exposed through the check_runs API
-            # without auth, unlike step logs and step summaries.
-            ./src/main/native-print-engine/build/print_engine_contract_tests \
-              --reporter=console --colour-mode=none 2>&1 \
-              > /tmp/catch2.log || true
-            tail -200 /tmp/catch2.log
-            grep -E "FAILED|test cases:|assertions:|REQUIRE|CHECK|due to a fatal error|due to unexpected|with expansion|^/" /tmp/catch2.log | head -60 | while IFS= read -r line; do
-              # Sanitize: GH commands don't allow embedded newlines/CR
-              clean=$(printf '%s' "$line" | tr -d '\r\n' | head -c 400)
-              echo "::error title=ctest failure::${clean}"
-            done
+            {
+              echo "log<<NPE_EOF"
+              tail -150 /tmp/catch2.log
+              echo NPE_EOF
+            } >> "$GITHUB_OUTPUT"
             exit "$rc"
           fi
+      - name: Post failing test output as PR comment
+        if: failure() && steps.ctest.outputs.log != ''
+        uses: actions/github-script@v7
+        env:
+          LOG: ${{ steps.ctest.outputs.log }}
+        with:
+          script: |
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            const num = (prs.data[0] && prs.data[0].number)
+              || (context.payload.pull_request && context.payload.pull_request.number);
+            if (!num) { core.warning('no PR found for ' + context.sha); return; }
+            const body = "### Linux engine ctest failure tail (commit " +
+              context.sha.slice(0,7) + ")\n\n```\n" +
+              process.env.LOG + "\n```\n";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: num, body,
+            });
       - name: Architecture invariant (INV-1) check
         # The architecture_tests case scans include/ + src/ for banned tokens.
         # Re-running it as its own step makes the failure mode obvious in CI logs.
