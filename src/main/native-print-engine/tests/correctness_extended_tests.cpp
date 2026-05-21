@@ -11,10 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <algorithm>
 #include <array>
-#include <cmath>
-#include <set>
 #include <string>
 
 using print_engine::ContractErrorCode;
@@ -23,7 +20,6 @@ using print_engine::EmittedKind;
 using print_engine::PaintKind;
 using print_engine::PathCommandKind;
 using print_engine::RenderTarget;
-using print_engine::Rect;
 using print_engine::load_baked_contract;
 using print_engine::nearly_equal;
 using print_engine::parse_absolute_svg_path;
