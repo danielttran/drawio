@@ -56,20 +56,33 @@ jobs:
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
       - name: Test (ctest)
-        # -V (verbose) ensures the failing test name + Catch2 output prints
-        # inline in the CI annotation when something goes wrong; ctest's
-        # bare --output-on-failure used to swallow names on this runner.
+        # If anything fails, dump the catch2 binary's full output into
+        # $GITHUB_STEP_SUMMARY (anonymously viewable on the run page) so
+        # we can see which test failed even without GitHub auth on the
+        # log endpoint.
         run: |
-          set -e
+          set +e
           ctest --test-dir src/main/native-print-engine/build \
-                --output-on-failure --verbose || {
-            echo "=== ctest failed; dumping ALL test names ==="
-            ctest --test-dir src/main/native-print-engine/build -N
-            echo "=== running test binary directly for full Catch2 output ==="
-            ./src/main/native-print-engine/build/print_engine_contract_tests \
-              --reporter=console --colour-mode=none || true
-            exit 1
-          }
+                --output-on-failure --verbose > /tmp/ctest.log 2>&1
+          rc=$?
+          tail -200 /tmp/ctest.log
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "## ctest exit code $rc"
+              echo ""
+              echo "### Catch2 direct run (full output)"
+              echo '```'
+              ./src/main/native-print-engine/build/print_engine_contract_tests \
+                --reporter=console --colour-mode=none 2>&1 | tail -400
+              echo '```'
+              echo ""
+              echo "### ctest log tail"
+              echo '```'
+              tail -200 /tmp/ctest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$rc"
+          fi
       - name: Architecture invariant (INV-1) check
         # The architecture_tests case scans include/ + src/ for banned tokens.
         # Re-running it as its own step makes the failure mode obvious in CI logs.
@@ -99,14 +112,20 @@ jobs:
       - name: Test (ctest, Release)
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
           ctest --test-dir src/main/native-print-engine/build `
-                -C Release --output-on-failure --verbose
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "=== ctest failed; running test binary directly ==="
+                -C Release --output-on-failure --verbose | Tee-Object -FilePath $env:RUNNER_TEMP\ctest.log
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## ctest exit code $rc"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Catch2 direct run (full output)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
             & "src/main/native-print-engine/build/Release/print_engine_contract_tests.exe" `
-                --reporter=console --colour-mode=none
-            exit 1
+                --reporter=console --colour-mode=none 2>&1 |
+              Select-Object -Last 400 |
+              ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $_ }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            exit $rc
           }
       - name: Upload host exe + fake shim (for downstream golden harness)
         uses: actions/upload-artifact@v4
