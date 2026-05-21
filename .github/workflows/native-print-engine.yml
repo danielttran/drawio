@@ -35,10 +35,6 @@ jobs:
     name: Engine library + tests (Linux, no host)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - name: Install fonts (deterministic glyph coverage for SVG corpus)
@@ -69,40 +65,7 @@ jobs:
       - name: Build
         run: cmake --build src/main/native-print-engine/build -j
       - name: Test (ctest)
-        id: ctest
-        run: |
-          set +e
-          ctest --test-dir src/main/native-print-engine/build --output-on-failure > /tmp/ctest.log 2>&1
-          rc=$?
-          tail -300 /tmp/ctest.log
-          if [ "$rc" -ne 0 ]; then
-            {
-              echo "log<<NPE_EOF"
-              tail -200 /tmp/ctest.log
-              echo NPE_EOF
-            } >> "$GITHUB_OUTPUT"
-            exit "$rc"
-          fi
-      - name: Post failing test output as PR comment
-        if: failure() && steps.ctest.outputs.log != ''
-        uses: actions/github-script@v7
-        env:
-          LOG: ${{ steps.ctest.outputs.log }}
-        with:
-          script: |
-            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner: context.repo.owner, repo: context.repo.repo,
-              commit_sha: context.sha,
-            });
-            const num = (prs.data[0] && prs.data[0].number)
-              || (context.payload.pull_request && context.payload.pull_request.number);
-            if (!num) { core.warning('no PR for ' + context.sha); return; }
-            const body = "### Linux engine ctest failure tail (commit " +
-              context.sha.slice(0,7) + ")\n\n```\n" + process.env.LOG + "\n```\n";
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: num, body,
-            });
+        run: ctest --test-dir src/main/native-print-engine/build --output-on-failure
       - name: Architecture invariant (INV-1) check
         # The architecture_tests case scans include/ + src/ for banned tokens.
         # Re-running it as its own step makes the failure mode obvious in CI logs.
