@@ -35,6 +35,10 @@ jobs:
     name: Engine library + tests (Linux, no host)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust (stable)
