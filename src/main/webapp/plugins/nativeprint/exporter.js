@@ -1285,7 +1285,10 @@
   //   double|groove|ridge|inset|outset -> approximated as solid (loud)
   //   none|hidden -> skipped
   // Width 0 / style 'none' / fully-transparent color -> nothing emitted.
-  function borderRect(cs, rect, notices, cellId) {
+  // Per-side differences (e.g. border-left=red, border-right=blue) are
+  // also loudly noticed because this code emits one uniform stroked
+  // rectangle taking the TOP side's spec.
+  function borderRect(cs, rect, noticeOnce) {
     if (!cs || !rect || (!rect.width && !rect.height)) return '';
     var style = (cs.borderTopStyle || cs.borderStyle || 'none').toLowerCase();
     if (style === 'none' || style === 'hidden') return '';
@@ -1293,13 +1296,36 @@
     if (!Number.isFinite(w) || w <= 0) return '';
     var cp = colorParts(cs.borderTopColor || cs.borderColor || '');
     if (!cp || cp.none || cp.alpha === 0) return '';
+    // Per-side mismatch detection. Compare top vs right vs bottom vs left
+    // for each of style/width/color; if any differ we are about to flatten
+    // them into a single uniform stroke and must say so.
+    if (typeof noticeOnce === 'function') {
+      var sides = ['Top', 'Right', 'Bottom', 'Left'];
+      var firstStyle = cs['border' + sides[0] + 'Style'];
+      var firstWidth = cs['border' + sides[0] + 'Width'];
+      var firstColor = cs['border' + sides[0] + 'Color'];
+      var mixed = false;
+      for (var si = 1; si < sides.length; si++) {
+        if (cs['border' + sides[si] + 'Style'] !== firstStyle ||
+            cs['border' + sides[si] + 'Width'] !== firstWidth ||
+            cs['border' + sides[si] + 'Color'] !== firstColor) {
+          mixed = true; break;
+        }
+      }
+      if (mixed) {
+        noticeOnce('RichApproximate',
+          'HTML-label has per-side CSS borders (left/right/top/bottom ' +
+          'differ); printed as one uniform border using the top side\'s ' +
+          'style/width/color');
+      }
+    }
     var dash = null;
     if (style === 'dashed') dash = Math.max(2, Math.round(w * 3)) + ',' + Math.max(1, Math.round(w * 1.5));
     else if (style === 'dotted') dash = Math.max(1, Math.round(w)) + ',' + Math.max(1, Math.round(w * 2));
-    else if (style !== 'solid' && Array.isArray(notices)) {
-      notices.push(degradation('RichApproximate',
+    else if (style !== 'solid' && typeof noticeOnce === 'function') {
+      noticeOnce('RichApproximate',
         'border-style "' + style + '" rendered as solid (no SVG primitive ' +
-        'reproduces double/groove/ridge/inset/outset losslessly)', cellId));
+        'reproduces double/groove/ridge/inset/outset losslessly)');
     }
     // Stroke is drawn centred on the path; offset the rect inward by half
     // the stroke width so the visible border matches the box edge a
@@ -1318,15 +1344,14 @@
   // without a browser-style rasterizer; the bake captures only solid
   // background-color via bgRect(). Detect and loudly notice so the
   // operator knows a textured label background will print blank-but-text.
-  function checkBackgroundImage(cs, notices, cellId) {
-    if (!Array.isArray(notices)) return;
+  function checkBackgroundImage(cs, noticeOnce) {
+    if (typeof noticeOnce !== 'function') return;
     var bgi = cs && cs.backgroundImage;
     if (bgi && bgi !== 'none' && bgi !== '') {
-      notices.push(degradation('RichUnsupported',
+      noticeOnce('RichUnsupported',
         'HTML-label CSS background-image is not transcribed (only solid ' +
         'background-color is); the printed label will show its background ' +
-        'color but not the image / gradient / pattern',
-        cellId));
+        'color but not the image / gradient / pattern');
     }
   }
 
@@ -1399,6 +1424,20 @@
   function transcribeForeignObjects(fos, M, cellId, notices) {
     var bg = [], runs = [];
     var measurable = root && typeof root.getComputedStyle === 'function';
+    // Per-cell notice dedup. A label with N nested divs all carrying the
+    // same unsupported CSS feature would otherwise emit N identical
+    // notices; we want one per cell + kind so the operator UI is not
+    // spammed. Closure captures the notices array; each helper checks
+    // before pushing.
+    var firedHere = {};
+    function noticeOnce(kind, detail) {
+      var key = kind + '\0' + detail;
+      if (firedHere[key]) return;
+      firedHere[key] = true;
+      if (Array.isArray(notices)) {
+        notices.push(degradation(kind, detail, cellId));
+      }
+    }
     for (var k = 0; k < fos.length; k++) {
       var fo = fos[k];
       var doc = fo.ownerDocument;
@@ -1423,8 +1462,8 @@
         var rcs = root.getComputedStyle(rootEl);
         var rr = rootEl.getBoundingClientRect();
         bg.push(bgRect(rcs, rr));
-        bg.push(borderRect(rcs, rr, notices, cellId));
-        checkBackgroundImage(rcs, notices, cellId);
+        bg.push(borderRect(rcs, rr, noticeOnce));
+        checkBackgroundImage(rcs, noticeOnce);
       }
       var walk = function (n) {
         if (!n) return;
@@ -1433,8 +1472,8 @@
           if (n !== rootEl) {
             var er = n.getBoundingClientRect();
             bg.push(bgRect(ecs, er));
-            bg.push(borderRect(ecs, er, notices, cellId));
-            checkBackgroundImage(ecs, notices, cellId);
+            bg.push(borderRect(ecs, er, noticeOnce));
+            checkBackgroundImage(ecs, noticeOnce);
           }
           if ((ecs.display || '').indexOf('list-item') >= 0 &&
             (ecs.listStyleType || 'disc') !== 'none') {
@@ -1482,16 +1521,15 @@
                 '" width="' + fmt(ir.width) + '" height="' + fmt(ir.height) +
                 '" preserveAspectRatio="none" xlink:href="data:image/png;base64,' +
                 parsed.data + '"/>');
-            } else if (Array.isArray(notices)) {
-              notices.push(degradation('RichUnsupported',
+            } else {
+              noticeOnce('RichUnsupported',
                 'inline <img> in HTML label is not a PNG data URI (' +
                 (parsed && parsed.unsupportedFormat
                   ? 'format=' + parsed.unsupportedFormat
                   : parsed && parsed.externalUrl
                     ? 'external URL'
                     : 'unreadable src') +
-                '); printed without the image',
-                cellId));
+                '); printed without the image');
             }
             // <img> has no children; skip the recursive descent that
             // would just visit its empty text content.
@@ -1545,13 +1583,16 @@
     var doc = (shapeNode.ownerDocument) || root.document || null;
     var shapeStr = serializeEl(shapeNode);
     if (!shapeStr) return null;
-    // LOUD-OR-FAITHFUL: resvg / tiny-skia render <animate*> as a static
-    // frame-0 snapshot with NO error or notice — a silent divergence for
-    // any animated stencil. Detect at bake time and surface a loud
-    // AnimatedSvgFrozen notice naming the cell so the operator knows the
-    // print will be still even though the canvas was moving.
+    // LOUD-OR-FAITHFUL: resvg / tiny-skia render SMIL animation elements
+    // as a static frame-0 snapshot with NO error or notice — a silent
+    // divergence for any animated stencil. Detect at bake time and
+    // surface a loud AnimatedSvgFrozen notice naming the cell so the
+    // operator knows the print will be still even though the canvas was
+    // moving. Covers every SMIL element with the silent-freeze
+    // signature: <animate>, <animateTransform>, <animateMotion>,
+    // <animateColor> (deprecated but supported), <set>, <discard>.
     if (Array.isArray(notices) &&
-        /<animate(?:Transform|Motion)?[\s/>]/i.test(shapeStr)) {
+        /<(?:animate(?:Transform|Motion|Color)?|set|discard)[\s/>]/i.test(shapeStr)) {
       notices.push(degradation('AnimatedSvgFrozen',
         'SVG animation element found in this cell; the print rasterizer ' +
         'cannot animate ink and will render the initial frame only',

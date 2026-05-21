@@ -2347,3 +2347,169 @@ test('LOUD: static SVG (no <animate>) does NOT fire AnimatedSvgFrozen', () => {
     r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'), undefined,
     'no animation -> no notice (no false positives)');
 });
+
+// AnimatedSvgFrozen detection expanded to cover the rest of the SMIL set:
+// <animateColor> (deprecated but supported), <set>, <discard>.
+test('LOUD: <animateColor>, <set>, <discard> also trigger AnimatedSvgFrozen', () => {
+  for (const tag of ['animateColor', 'set', 'discard']) {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
+      '<' + tag + ' attributeName="fill" to="#0f0" begin="2s"/>' +
+      '</rect></g>';
+    const r = svgFixture(shape, null, { shape: 'rectangle' });
+    assert.ok(r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'),
+      'AnimatedSvgFrozen must fire for <' + tag + '>');
+  }
+});
+
+test('LOUD: tag names that merely START with "animate" (e.g. <animator>) do NOT false-positive', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
+    // A made-up element whose name starts with "animate" — must not match.
+    '<animator data-x="0"/>' +
+    '</rect></g>';
+  const r = svgFixture(shape, null, { shape: 'rectangle' });
+  assert.equal(
+    r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'), undefined,
+    'regex must be anchored on the SMIL element names, not substrings');
+});
+
+// ===========================================================================
+// HTML-label transcription enhancements (round-6 production audit):
+//   - CSS border transcription (new fidelity)
+//   - Per-cell notice dedup
+//   - Per-side border mismatch noticed
+//   - Inline <img> PNG transcription / non-PNG loudly noticed
+//   - CSS background-image loudly noticed (once per cell)
+// ===========================================================================
+
+// CSS border on root label element -> stroked <rect> in the emitted SVG.
+test('HTML-label border: solid root border transcribes to stroked rect', () => {
+  const styleMap = {
+    rootdiv: { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+      fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+      backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+      letterSpacing: 'normal',
+      borderTopStyle: 'solid', borderRightStyle: 'solid',
+      borderBottomStyle: 'solid', borderLeftStyle: 'solid',
+      borderTopWidth: '2px', borderRightWidth: '2px',
+      borderBottomWidth: '2px', borderLeftWidth: '2px',
+      borderTopColor: 'rgb(255, 0, 0)', borderRightColor: 'rgb(255, 0, 0)',
+      borderBottomColor: 'rgb(255, 0, 0)', borderLeftColor: 'rgb(255, 0, 0)' },
+  };
+  const span = { nodeType: 1, tagName: 'span', _styleKey: 'span',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [span], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  styleMap.span = styleMap.rootdiv;
+  globalThis.getComputedStyle = (el) => styleMap[el && el._styleKey] || styleMap.rootdiv;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // Expect a stroked <rect> at rootDiv's rect, inset by half the stroke
+    // width (2/2 = 1). So x=91 y=41 w=98 h=38, no dasharray (solid).
+    assert.match(svg, /<rect [^>]*x="91"[^>]*y="41"[^>]*width="98"[^>]*height="38"[^>]*fill="none"[^>]*stroke="#ff0000"[^>]*stroke-width="2"/,
+      'CSS solid border emitted as stroked <rect>');
+    assert.ok(!/stroke-dasharray=/.test(svg.match(/<rect[^>]*stroke="#ff0000"[^>]*\/>/)[0]),
+      'solid -> no stroke-dasharray');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label border: per-side mismatch fires RichApproximate (deduped)', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderTopStyle: 'solid', borderRightStyle: 'dashed',
+    borderBottomStyle: 'solid', borderLeftStyle: 'solid',
+    borderTopWidth: '2px', borderRightWidth: '2px',
+    borderBottomWidth: '2px', borderLeftWidth: '2px',
+    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
+    borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => sty;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const mixed = r.notices.filter((n) => n.kind === 'RichApproximate' &&
+      /per-side/.test(n.detail.detail));
+    assert.equal(mixed.length, 1,
+      'mixed per-side borders -> exactly one RichApproximate notice');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: loud RichUnsupported (deduped across nested elements)', () => {
+  const styWithBgi = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    backgroundImage: 'linear-gradient(to right, red, blue)' };
+  // Nested: root + 3 inner spans, each with same background-image.
+  const mkSpan = () => ({ nodeType: 1, tagName: 'span', _styleKey: 'span',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 30, height: 14 }) });
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [mkSpan(), mkSpan(), mkSpan()], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => styWithBgi;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const bgi = r.notices.filter((n) => n.kind === 'RichUnsupported' &&
+      /background-image/.test(n.detail.detail));
+    assert.equal(bgi.length, 1,
+      '4 elements with same bg-image -> ONE notice (per-cell dedup)');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label inline <img>: PNG data URI transcribed to <image>; non-PNG loud', () => {
+  // 1x1 transparent PNG data URI (valid base64).
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const baseStyle = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal' };
+  const mkImg = (src) => ({ nodeType: 1, tagName: 'img', _styleKey: 'img',
+    childNodes: [], previousElementSibling: null,
+    getAttribute: (n) => (n === 'src' ? src : null),
+    getBoundingClientRect: () => ({ left: 10, top: 10, width: 16, height: 16 }) });
+  // Two images: one PNG data URI (should embed), one external URL (loud).
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [mkImg('data:image/png;base64,' + PNG),
+                 mkImg('https://example.com/icon.png')],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => baseStyle;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(/<image [^>]*xlink:href="data:image\/png;base64,/.test(svg),
+      'inline PNG <img> transcribed as SVG <image> with embedded data URI');
+    const imgNotice = r.notices.find((n) => n.kind === 'RichUnsupported' &&
+      /inline.*img/i.test(n.detail.detail));
+    assert.ok(imgNotice, 'external-URL <img> loudly noticed');
+    assert.match(imgNotice.detail.detail, /external URL/);
+  } finally { delete globalThis.getComputedStyle; }
+});
