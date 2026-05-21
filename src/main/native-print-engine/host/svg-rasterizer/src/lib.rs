@@ -107,6 +107,80 @@ fn contains_foreign_object(bytes: &[u8]) -> bool {
     bytes.windows(14).any(|w| w == b"<foreignObject")
 }
 
+/// Walk every text span in the parsed tree; if any non-empty span carries
+/// a font-family list whose entries all fail to resolve in the database,
+/// return a descriptive reason. Used to convert resvg's silent "render
+/// missing font as zero glyphs" into a loud SPE_SVG_ERR_UNSUPPORTED so
+/// the host emits its existing StubbedSvgArtwork notice instead of
+/// printing a blank label without warning.
+fn unresolvable_text_font(
+    tree: &resvg::usvg::Tree,
+    db: &resvg::usvg::fontdb::Database,
+) -> Option<String> {
+    use resvg::usvg::Node;
+    fn family_resolves(
+        family: &resvg::usvg::FontFamily,
+        db: &resvg::usvg::fontdb::Database,
+    ) -> bool {
+        use resvg::usvg::fontdb::Family;
+        // svgtypes::FontFamily is exhaustive (6 variants). Match-without-
+        // catch-all so a future variant becomes a non-exhaustive compile
+        // error rather than a silent "be lenient" branch.
+        let key = match family {
+            resvg::usvg::FontFamily::Named(name) => Family::Name(name.as_str()),
+            resvg::usvg::FontFamily::Serif => Family::Serif,
+            resvg::usvg::FontFamily::SansSerif => Family::SansSerif,
+            resvg::usvg::FontFamily::Cursive => Family::Cursive,
+            resvg::usvg::FontFamily::Fantasy => Family::Fantasy,
+            resvg::usvg::FontFamily::Monospace => Family::Monospace,
+        };
+        let q = resvg::usvg::fontdb::Query {
+            families: &[key],
+            ..Default::default()
+        };
+        db.query(&q).is_some()
+    }
+    fn walk(
+        group: &resvg::usvg::Group,
+        db: &resvg::usvg::fontdb::Database,
+    ) -> Option<String> {
+        for n in group.children() {
+            match n {
+                Node::Group(g) => {
+                    if let Some(r) = walk(g, db) { return Some(r); }
+                }
+                Node::Text(t) => {
+                    for chunk in t.chunks() {
+                        if chunk.text().trim().is_empty() {
+                            continue;
+                        }
+                        for span in chunk.spans() {
+                            let families = span.font().families();
+                            if families.is_empty() {
+                                continue;
+                            }
+                            if !families.iter().any(|f| family_resolves(f, db)) {
+                                let listed: Vec<String> = families
+                                    .iter()
+                                    .map(|f| format!("{:?}", f))
+                                    .collect();
+                                return Some(format!(
+                                    "no font in family list [{}] resolved against the system font db; \
+                                     refusing loudly to avoid a silent blank label",
+                                    listed.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    walk(tree.root(), db)
+}
+
 fn write_err(err_buf: *mut c_char, err_buf_len: usize, msg: &str) {
     if err_buf.is_null() || err_buf_len == 0 {
         return;
@@ -169,6 +243,19 @@ pub extern "C" fn spe_svg_render(
                 return SPE_SVG_ERR_PARSE;
             }
         };
+
+        // WYSIWYG guard #2 (C1). resvg silently shapes <text> with no
+        // glyphs when every font-family in a span fails to resolve --
+        // the rendered text region ends up fully transparent. This is
+        // the "Linux box without Arial" scenario: the SVG asked for
+        // font-family="Arial", fontdb has no Arial face, resvg returns
+        // a successful render of blank pixels for that text. Catch it
+        // up front: walk every text span, check the family list, and
+        // loud-refuse if a non-empty span has no resolvable family.
+        if let Some(reason) = unresolvable_text_font(&tree, &opt.fontdb) {
+            write_err(err_buf, err_buf_len, &reason);
+            return SPE_SVG_ERR_UNSUPPORTED;
+        }
 
         let mut pixmap = match resvg::tiny_skia::Pixmap::new(target_w_px, target_h_px) {
             Some(p) => p,

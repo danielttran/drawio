@@ -320,6 +320,47 @@ TEST_CASE("SVG rasterizer cdylib: <foreignObject> is refused LOUDLY (status="
   CHECK(std::string(err).find("foreignObject") != std::string::npos);
 }
 
+// LOUD-OR-FAITHFUL: when an SVG asks for a font-family list whose entries
+// all fail to resolve against the system font database, resvg silently
+// shapes the text with zero glyphs (the rendered text region is fully
+// transparent, status=OK). That is the silent-blank-label class C1
+// forbids on the production print path. Pinned here: the shim must
+// return SPE_SVG_ERR_UNSUPPORTED with a descriptive message so the host
+// emits its existing StubbedSvgArtwork notice instead.
+TEST_CASE("SVG rasterizer cdylib: unresolvable font family is refused LOUDLY",
+          "[svg][cdylib][wysiwyg]") {
+  const char* lib_path = SVG_RASTERIZER_LIB;
+  if (lib_path == nullptr || lib_path[0] == '\0') {
+    SKIP("SVG_RASTERIZER_LIB not configured");
+  }
+  Lib lib = open_lib(lib_path);
+  if (lib.handle == nullptr) {
+    SKIP("could not open svg rasterizer cdylib");
+  }
+  using FnRender = std::int32_t (*)(const std::uint8_t*, std::size_t,
+                                    std::uint32_t, std::uint32_t, double,
+                                    std::uint8_t*, std::size_t,
+                                    char*, std::size_t);
+  auto fn_render = lib.sym<FnRender>("spe_svg_render");
+  REQUIRE(fn_render != nullptr);
+  // A font-family unlikely to be installed on any CI runner. If the local
+  // box happens to have it the test would falsely pass; the name is chosen
+  // to be vanishingly unlikely.
+  const std::string svg =
+      "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='40'>"
+      "<text x='100' y='25' text-anchor='middle' "
+      "font-family='ZZZ-DefinitelyNotInstalledFontFamily-2026' "
+      "font-size='14' fill='#222'>Hello world</text></svg>";
+  std::array<std::uint8_t, 200 * 40 * 4> px{};
+  char err[512] = {0};
+  const std::int32_t st = fn_render(
+      reinterpret_cast<const std::uint8_t*>(svg.data()), svg.size(),
+      200, 40, 96.0, px.data(), px.size(), err, sizeof(err));
+  // SPE_SVG_ERR_UNSUPPORTED == -3 per svg_rasterizer_abi.h.
+  CHECK(st == -3);
+  CHECK(std::string(err).find("font") != std::string::npos);
+}
+
 TEST_CASE("SVG rasterizer cdylib: a real drawio-flavor SVG corpus all renders"
           " with non-empty output (no silent blank cells)",
           "[svg][cdylib][wysiwyg]") {

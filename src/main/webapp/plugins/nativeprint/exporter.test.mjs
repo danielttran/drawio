@@ -2304,3 +2304,46 @@ test('utf8 fallback: lone high/low surrogates encoded as U+FFFD (no invalid UTF-
     assert.ok(text, 'label still emitted (no crash on lone surrogate)');
   }
 });
+
+// ===========================================================================
+// Round 6 fidelity additions — close remaining silent gaps and add new
+// HTML-label capabilities. Per the C1 mandate every divergence here is
+// either faithfully rendered or loudly noticed.
+// ===========================================================================
+
+// --- LOUD: SVG with <animate> inside fires AnimatedSvgFrozen notice ------
+test('LOUD: <animate> in a cell SVG triggers AnimatedSvgFrozen notice', () => {
+  // The bake serializes the cell SVG; if it contains <animate*>, resvg
+  // would render frame-0 only with no error. The bake must loudly notice.
+  const shape = domEl('g', {}, [
+    domEl('rect', { width: '40', height: '30', fill: '#abc' }),
+    // Self-closed <animate> form inside the rect, baked into outerHTML.
+  ]);
+  // Inject an <animate> directly into the serialized shape outerHTML.
+  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
+    '<animate attributeName="x" from="0" to="20" dur="1s" repeatCount="indefinite"/>' +
+    '</rect></g>';
+  const r = svgFixture(shape, null, { shape: 'rectangle' });
+  const notice = r.notices.find((n) => n.kind === 'AnimatedSvgFrozen');
+  assert.ok(notice, 'AnimatedSvgFrozen must fire for SVG with <animate>');
+  assert.match(notice.detail.detail, /animation/i);
+  assert.equal(notice.detail.cellId, 'v');
+});
+
+test('LOUD: <animateTransform> also triggers AnimatedSvgFrozen', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
+    '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s"/>' +
+    '</rect></g>';
+  const r = svgFixture(shape, null, { shape: 'rectangle' });
+  assert.ok(r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'));
+});
+
+test('LOUD: static SVG (no <animate>) does NOT fire AnimatedSvgFrozen', () => {
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc" stroke="#000"/></g>';
+  const r = svgFixture(shape, null, { shape: 'rectangle' });
+  assert.equal(
+    r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'), undefined,
+    'no animation -> no notice (no false positives)');
+});

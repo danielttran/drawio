@@ -1277,6 +1277,59 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
+  // CSS border around an HTML-label element. Transcribed as a stroked
+  // <rect> so the bordered look survives into the printer. Style mapping:
+  //   solid  -> no dasharray
+  //   dashed -> width-proportional dasharray
+  //   dotted -> 1:2 dashes
+  //   double|groove|ridge|inset|outset -> approximated as solid (loud)
+  //   none|hidden -> skipped
+  // Width 0 / style 'none' / fully-transparent color -> nothing emitted.
+  function borderRect(cs, rect, notices, cellId) {
+    if (!cs || !rect || (!rect.width && !rect.height)) return '';
+    var style = (cs.borderTopStyle || cs.borderStyle || 'none').toLowerCase();
+    if (style === 'none' || style === 'hidden') return '';
+    var w = parseFloat(cs.borderTopWidth || cs.borderWidth || '0');
+    if (!Number.isFinite(w) || w <= 0) return '';
+    var cp = colorParts(cs.borderTopColor || cs.borderColor || '');
+    if (!cp || cp.none || cp.alpha === 0) return '';
+    var dash = null;
+    if (style === 'dashed') dash = Math.max(2, Math.round(w * 3)) + ',' + Math.max(1, Math.round(w * 1.5));
+    else if (style === 'dotted') dash = Math.max(1, Math.round(w)) + ',' + Math.max(1, Math.round(w * 2));
+    else if (style !== 'solid' && Array.isArray(notices)) {
+      notices.push(degradation('RichApproximate',
+        'border-style "' + style + '" rendered as solid (no SVG primitive ' +
+        'reproduces double/groove/ridge/inset/outset losslessly)', cellId));
+    }
+    // Stroke is drawn centred on the path; offset the rect inward by half
+    // the stroke width so the visible border matches the box edge a
+    // browser would draw it on.
+    var inset = w / 2;
+    return '<rect x="' + fmt(rect.left + inset) + '" y="' + fmt(rect.top + inset) +
+      '" width="' + fmt(Math.max(0, rect.width - w)) +
+      '" height="' + fmt(Math.max(0, rect.height - w)) +
+      '" fill="none" stroke="' + cp.hex +
+      '" stroke-width="' + fmt(w) + '"' +
+      (cp.alpha < 1 ? ' stroke-opacity="' + fmt(cp.alpha) + '"' : '') +
+      (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/>';
+  }
+
+  // CSS background-image (gradient, url(), pattern) cannot be transcribed
+  // without a browser-style rasterizer; the bake captures only solid
+  // background-color via bgRect(). Detect and loudly notice so the
+  // operator knows a textured label background will print blank-but-text.
+  function checkBackgroundImage(cs, notices, cellId) {
+    if (!Array.isArray(notices)) return;
+    var bgi = cs && cs.backgroundImage;
+    if (bgi && bgi !== 'none' && bgi !== '') {
+      notices.push(degradation('RichUnsupported',
+        'HTML-label CSS background-image is not transcribed (only solid ' +
+        'background-color is); the printed label will show its background ' +
+        'color but not the image / gradient / pattern',
+        cellId));
+    }
+  }
+
   function pushListMarkerApprox(notices, detail, cellId) {
     if (!Array.isArray(notices)) return;
     notices.push(degradation('SvgListMarkerApprox', detail, cellId));
@@ -1359,21 +1412,29 @@
         }
         continue;
       }
-      // Outermost element background = drawio label background.
+      // Outermost element background = drawio label background. Also
+      // transcribes a CSS border (if any) and flags a CSS
+      // background-image as loud-noticed.
       var rootEl = null;
       for (var c = 0; fo.childNodes && c < fo.childNodes.length; c++) {
         if (fo.childNodes[c].nodeType === 1) { rootEl = fo.childNodes[c]; break; }
       }
       if (rootEl) {
-        bg.push(bgRect(root.getComputedStyle(rootEl),
-          rootEl.getBoundingClientRect()));
+        var rcs = root.getComputedStyle(rootEl);
+        var rr = rootEl.getBoundingClientRect();
+        bg.push(bgRect(rcs, rr));
+        bg.push(borderRect(rcs, rr, notices, cellId));
+        checkBackgroundImage(rcs, notices, cellId);
       }
       var walk = function (n) {
         if (!n) return;
         if (n.nodeType === 1) {
           var ecs = root.getComputedStyle(n);
           if (n !== rootEl) {
-            bg.push(bgRect(ecs, n.getBoundingClientRect()));
+            var er = n.getBoundingClientRect();
+            bg.push(bgRect(ecs, er));
+            bg.push(borderRect(ecs, er, notices, cellId));
+            checkBackgroundImage(ecs, notices, cellId);
           }
           if ((ecs.display || '').indexOf('list-item') >= 0 &&
             (ecs.listStyleType || 'disc') !== 'none') {
@@ -1407,6 +1468,34 @@
                 width: 0, height: mr.height },
                 text: glyph, f: fr0, anchor: cRect ? 'end' : 'start' });
             }
+          }
+          // Inline images (<img>) in HTML labels: a common drawio pattern
+          // is "icon + text" inside a label. Previously silently dropped.
+          // Transcribe inline PNG data URIs as <image> at the rendered
+          // position; loudly notice anything else (external URL, JPEG, ...).
+          if (String(n.tagName || '').toLowerCase() === 'img') {
+            var src = n.getAttribute && n.getAttribute('src');
+            var ir = n.getBoundingClientRect();
+            var parsed = parseImage(src);
+            if (parsed && parsed.format === 'png' && ir && ir.width && ir.height) {
+              bg.push('<image x="' + fmt(ir.left) + '" y="' + fmt(ir.top) +
+                '" width="' + fmt(ir.width) + '" height="' + fmt(ir.height) +
+                '" preserveAspectRatio="none" xlink:href="data:image/png;base64,' +
+                parsed.data + '"/>');
+            } else if (Array.isArray(notices)) {
+              notices.push(degradation('RichUnsupported',
+                'inline <img> in HTML label is not a PNG data URI (' +
+                (parsed && parsed.unsupportedFormat
+                  ? 'format=' + parsed.unsupportedFormat
+                  : parsed && parsed.externalUrl
+                    ? 'external URL'
+                    : 'unreadable src') +
+                '); printed without the image',
+                cellId));
+            }
+            // <img> has no children; skip the recursive descent that
+            // would just visit its empty text content.
+            return;
           }
           for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
             walk(n.childNodes[i]);
@@ -1456,6 +1545,18 @@
     var doc = (shapeNode.ownerDocument) || root.document || null;
     var shapeStr = serializeEl(shapeNode);
     if (!shapeStr) return null;
+    // LOUD-OR-FAITHFUL: resvg / tiny-skia render <animate*> as a static
+    // frame-0 snapshot with NO error or notice — a silent divergence for
+    // any animated stencil. Detect at bake time and surface a loud
+    // AnimatedSvgFrozen notice naming the cell so the operator knows the
+    // print will be still even though the canvas was moving.
+    if (Array.isArray(notices) &&
+        /<animate(?:Transform|Motion)?[\s/>]/i.test(shapeStr)) {
+      notices.push(degradation('AnimatedSvgFrozen',
+        'SVG animation element found in this cell; the print rasterizer ' +
+        'cannot animate ink and will render the initial frame only',
+        cell && cell.id));
+    }
     var textStr = (state.text && state.text.node)
       ? serializeEl(state.text.node) : null;
     // HTML labels serialize as <foreignObject>, which native SVG rasterizers

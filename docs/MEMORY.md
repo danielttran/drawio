@@ -26,7 +26,7 @@
 - **`etc/build/`**: Ant.
 - **`src/main/native-print-engine/`**: C++20 native print engine + Win32 host.
   - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`; `cmake --build … -j`; `ctest --test-dir …`. Catch2 v3 via FetchContent. MSVC `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`.
-  - **Status (2026-05-21, post audit-3):** Linux ctest **151/151** green (6 svg-rasterizer-cdylib tests skip cleanly when the resvg shim is not built); exporter `node --test` **125/126** (1 skip = engine binary not built on Linux).
+  - **Status (2026-05-21, post audit-6):** Linux ctest **152/152** green (6 svg-rasterizer-cdylib tests skip cleanly when the resvg shim is not built; 7 with shim built); exporter `node --test` **128/129** (1 skip = engine binary not built on Linux).
 
 ---
 
@@ -136,13 +136,15 @@ SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
 | `FontSubstitution` | Host emits when a requested font family is not installed. | `FontSubstituted` |
 | `MergeClip` | Host emits when text was clipped to its box on `overflow:"clip"`. | `MergeClip` |
 | `GradientDirectionApprox` | Exporter emits (once, deduped) when ANY fallback-path paint node carries a gradient fill/stroke. The v1 contract has no `p0/p1` (linear) or `center/focus/radius` (radial), so the host renders linear gradients always L→R and radial gradients always box-centered. Live path (`kind:"svg"`) is unaffected — direction lives inside the literal SVG bytes. | `GradientDirectionApprox` |
-| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. `ExporterUnsupportedShape` also fires when `transformPath` rejects a malformed harvested fragment (loud-skip, never silent-drop). | — |
+| `AnimatedSvgFrozen` | Exporter emits when a cell's serialized SVG contains `<animate>` / `<animateTransform>` / `<animateMotion>`. resvg renders these as a static frame-0 snapshot with no error; the loud notice closes that silent gap. | `AnimatedSvgFrozen` |
+| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. `ExporterUnsupportedShape` also fires when `transformPath` rejects a malformed harvested fragment (loud-skip, never silent-drop). `RichApproximate` also fires for CSS `border-style` values that have no lossless SVG primitive (double/groove/ridge/inset/outset → rendered as solid). `RichUnsupported` also fires for CSS `background-image` on HTML labels (transcribed only solid `background-color`) and for inline `<img>` whose `src` is not an inline PNG data URI. | — |
+| `StubbedSvgArtwork` | Host emits when resvg refuses an SVG cell loudly (foreignObject, parse error, unresolvable font, etc). The Rust shim now walks every text span post-parse and returns `SPE_SVG_ERR_UNSUPPORTED` when the font-family list resolves to nothing in the system font db — converting the previously-silent "missing font → blank pixels" failure into the host's loud crosshatch + named notice. | `StubbedSvgArtwork` |
 
 `jobLog.svgRasterizer` records backend name+version or `"none"`.
 
 ---
 
-## Audit fixes (rounds 1–4, 2026-05-21)
+## Audit fixes (rounds 1–6, 2026-05-21)
 
 Closed silent-divergence holes against the C1 WYSIWYG mandate. Each
 fix has a red-then-green regression test on the appropriate side.
@@ -194,7 +196,30 @@ fix has a red-then-green regression test on the appropriate side.
    WYSIWYG. Tracked here as a future audit item if a Linux host is
    ever introduced.
 
-7. **Windows CI swap-acceptance regression**: `fake_svg_rasterizer.c`
+7. **Round 6 — fidelity-maximization pass.**
+   a. **Animated SVG silent-frame-0**: cells whose serialized SVG carried
+      `<animate>` / `<animateTransform>` / `<animateMotion>` rendered as
+      a still image with no notice. Bake now byte-scans for these tags
+      and emits `AnimatedSvgFrozen`.
+   b. **CSS `background-image` on HTML labels**: silently dropped (only
+      solid `background-color` was transcribed). Now loud
+      `RichUnsupported`.
+   c. **CSS border on HTML labels**: previously skipped entirely. Now
+      transcribed as a stroked `<rect>` with dasharray mapping for
+      dashed / dotted; double/groove/etc loudly approximated as solid
+      via `RichApproximate`.
+   d. **Inline `<img>` in HTML labels**: previously silently dropped.
+      PNG data URIs now transcribed as SVG `<image>` at the rendered
+      position; non-PNG / external URLs loudly noticed via
+      `RichUnsupported`.
+   e. **resvg silently blanks text with no resolvable font**: the Rust
+      shim now walks every parsed `<text>` span and queries fontdb for
+      each family in the list. If a non-empty span has no resolvable
+      family, returns `SPE_SVG_ERR_UNSUPPORTED` with a descriptive
+      reason — the host's existing `StubbedSvgArtwork` notice fires
+      with a clear cause instead of silently printing a blank label.
+
+8. **Windows CI swap-acceptance regression**: `fake_svg_rasterizer.c`
    (the §5 swap-acceptance fixture) had no `__declspec(dllexport)`
    decoration and no `WINDOWS_EXPORT_ALL_SYMBOLS`. The ABI header is
    intentionally neutral so the Rust shim's `#[no_mangle]` works
@@ -205,12 +230,14 @@ fix has a red-then-green regression test on the appropriate side.
    by setting `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the fake-DLL CMake
    target. Real Rust shim is unaffected.
 
-Test counts moved from 119 + 86 = 205 active to **151 + 125 = 276
+Test counts moved from 119 + 86 = 205 active to **152 + 128 = 280
 active** through these rounds (+34 / +29 in rounds 2/3 cover path-
 parser edge cases, transform precision at extreme DPIs, multi-page,
 multi-tile, preview/print parity, z-order, theme colors, schema
 invariants, Unicode labels, gradient/UTF-8 hardening, and the spurious
-HardwareMarginClip regression).
+HardwareMarginClip regression; +1 ctest in round 6 pins the
+unresolvable-font loud-fail; +3 Node tests in round 6 pin the
+AnimatedSvgFrozen notice posture).
 
 **CI gate status (post-audit, all 10 jobs green):**
 - Engine library + tests (Linux, no host) ✅
