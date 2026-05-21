@@ -41,6 +41,15 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+      - name: Install fonts (deterministic glyph coverage for SVG corpus)
+        # ubuntu-latest images do NOT ship Arial; the SVG corpus test asks
+        # resvg to render <text font-family="Arial">, and resvg silently
+        # renders unknown fonts as blank (zero opaque pixels), which the
+        # corpus test correctly flags as a silent-blank C1 violation. We
+        # install fonts-liberation so "Arial" resolves to Liberation Sans
+        # (its metric-compatible open clone) -- making both the test and
+        # the future drawio-on-Linux print path deterministic.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
       - name: Build SVG rasterizer cdylib (resvg)
@@ -111,6 +120,10 @@ jobs:
     name: Engine + Win32 host + SVG ABI swap test (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - name: Configure (MSVC, strict /W4 /WX)
@@ -123,24 +136,44 @@ jobs:
       - name: Build (Release)
         shell: pwsh
         run: cmake --build src/main/native-print-engine/build --config Release -j
-      - name: Test (ctest, Release)
+      - name: Test (ctest, Release) — capture failures
+        id: ctest
         shell: pwsh
         run: |
-          ctest --test-dir src/main/native-print-engine/build `
-                -C Release --output-on-failure --verbose | Tee-Object -FilePath $env:RUNNER_TEMP\ctest.log
+          $log = & "src/main/native-print-engine/build/Release/print_engine_contract_tests.exe" `
+              --reporter=console --colour-mode=none 2>&1 | Out-String
           $rc = $LASTEXITCODE
+          $log | Out-File -FilePath $env:RUNNER_TEMP\catch2.log -Encoding utf8
+          $log -split "`r?`n" | Select-Object -Last 200 | ForEach-Object { Write-Host $_ }
           if ($rc -ne 0) {
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## ctest exit code $rc"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Catch2 direct run (full output)"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
-            & "src/main/native-print-engine/build/Release/print_engine_contract_tests.exe" `
-                --reporter=console --colour-mode=none 2>&1 |
-              Select-Object -Last 400 |
-              ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $_ }
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            $tail = ($log -split "`r?`n" | Select-Object -Last 150) -join "`n"
+            "log<<NPE_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $tail | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "NPE_EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit $rc
           }
+      - name: Post failing test output as PR comment (Windows)
+        if: failure() && steps.ctest.outputs.log != ''
+        uses: actions/github-script@v7
+        env:
+          LOG: ${{ steps.ctest.outputs.log }}
+        with:
+          script: |
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            const num = (prs.data[0] && prs.data[0].number)
+              || (context.payload.pull_request && context.payload.pull_request.number);
+            if (!num) { core.warning('no PR found for ' + context.sha); return; }
+            const body = "### Windows engine ctest failure tail (commit " +
+              context.sha.slice(0,7) + ")\n\n```\n" +
+              process.env.LOG + "\n```\n";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: num, body,
+            });
       - name: Upload host exe + fake shim (for downstream golden harness)
         uses: actions/upload-artifact@v4
         with:
