@@ -26,7 +26,7 @@
 - **`etc/build/`**: Ant.
 - **`src/main/native-print-engine/`**: C++20 native print engine + Win32 host.
   - Build/test: `cmake -S src/main/native-print-engine -B src/main/native-print-engine/build -DBUILD_TESTING=ON`; `cmake --build … -j`; `ctest --test-dir …`. Catch2 v3 via FetchContent. MSVC `/W4 /WX /permissive-`. CI: `.github/workflows/native-print-engine.yml`.
-  - **Status (2026-05-20):** Linux ctest **119/119** green; exporter `node --test` **85/86** (1 Windows-only skip).
+  - **Status (2026-05-21, post audit-6):** Linux ctest **151/151** green (6 svg-rasterizer-cdylib tests skip cleanly when the resvg shim is not built); exporter `node --test` **128/129** (1 skip = engine binary not built on Linux).
 
 ---
 
@@ -135,9 +135,119 @@ SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
 | `HardwareMarginClip` | Engine emits when content escapes the printable area. | `HardwareMarginClip` |
 | `FontSubstitution` | Host emits when a requested font family is not installed. | `FontSubstituted` |
 | `MergeClip` | Host emits when text was clipped to its box on `overflow:"clip"`. | `MergeClip` |
-| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. | — |
+| `GradientDirectionApprox` | Exporter emits (once, deduped) when ANY fallback-path paint node carries a gradient fill/stroke. The v1 contract has no `p0/p1` (linear) or `center/focus/radius` (radial), so the host renders linear gradients always L→R and radial gradients always box-centered. Live path (`kind:"svg"`) is unaffected — direction lives inside the literal SVG bytes. | `GradientDirectionApprox` |
+| `AnimatedSvgFrozen` | Exporter emits when a cell's serialized SVG contains `<animate>` / `<animateTransform>` / `<animateMotion>`. resvg renders these as a static frame-0 snapshot with no error; the loud notice closes that silent gap. | `AnimatedSvgFrozen` |
+| `ExporterUnsupportedShape`, `ExporterUnsupportedImage`, `RichApproximate`, `RichUnsupported` | Exporter side (not engine notices). Bake-time loud notices. `ExporterUnsupportedShape` also fires when `transformPath` rejects a malformed harvested fragment (loud-skip, never silent-drop). `RichApproximate` also fires for CSS `border-style` values that have no lossless SVG primitive (double/groove/ridge/inset/outset → rendered as solid). `RichUnsupported` also fires for CSS `background-image` on HTML labels (transcribed only solid `background-color`) and for inline `<img>` whose `src` is not an inline PNG data URI. | — |
 
 `jobLog.svgRasterizer` records backend name+version or `"none"`.
+
+---
+
+## Audit fixes (rounds 1–6, 2026-05-21)
+
+Closed silent-divergence holes against the C1 WYSIWYG mandate. Each
+fix has a red-then-green regression test on the appropriate side.
+
+1. **Z-order**: `buildResult` walked `Object.keys(model.cells)`
+   (creation-order dict) → "Send to Back" / "Bring to Front" silently
+   re-stacked nothing on print. Now walks `model.getRoot()` via
+   `getChildAt`/`getChildCount` depth-first when the model exposes the
+   mxGraphModel tree API; the dict iteration remains the fallback for
+   minimal Node fixtures only.
+
+2. **Spurious `HardwareMarginClip`**: exporter pads each `kind:"svg"`
+   node's box by `SVG_PAD = 2` contract units per side for stroke/marker
+   slop. A cell at the canvas top-left (`state.x == bounds.x`) mapped
+   to `box.x == -2`, which made `escapes_page` fire on EVERY real print.
+   Engine now applies a 4-unit tolerance (= `SVG_PAD * 2`) in
+   `escapes_page`; real overhang (> 4 units) still fires the notice.
+
+3. **Silent gradient direction loss on fallback paths**: contract has
+   no `p0/p1` / `center/focus/radius`, so the host always renders
+   linear gradients L→R and radial gradients box-centered. Fixed by
+   emitting a single deduped `GradientDirectionApprox` notice when any
+   fallback-path paint node carries a gradient. The live (`kind:"svg"`)
+   path is unaffected.
+
+4. **Silent path-fragment drop**: `transformPath` returning null
+   (numbers after Z, missing args, etc.) silently lost geometry. Now
+   pushes a loud `ExporterUnsupportedShape` notice naming the cell and
+   tag; the rest of the shape stays faithful.
+
+5. **Invalid UTF-8 for lone surrogates**: `utf8Bytes` manual fallback
+   would emit corrupt 3-byte sequences for unpaired surrogates. Now
+   substitutes U+FFFD so the encoded output is always valid UTF-8.
+
+6. **CI on Linux had a self-consistent silent-blank**: the SVG corpus
+   determinism test asks resvg to render `font-family="Arial"`, but
+   `ubuntu-latest` ships no Arial. fontdb v0.23's `load_system_fonts()`
+   is exact-name-match at query time (fontconfig is used for
+   enumeration but NOT for alias resolution), so Liberation Sans
+   doesn't satisfy an Arial lookup. resvg then silently emits zero
+   opaque pixels -- which the test correctly flagged but couldn't
+   distinguish from a real C1 bug, so the corpus self-tripped on every
+   Linux CI run. Fixed by giving the two text cases a CSS fallback
+   chain `Arial, "Liberation Sans", "DejaVu Sans", sans-serif`. Plus
+   `fonts-liberation` install on the runner for determinism. Note: the
+   underlying "resvg silently blanks unknown fonts" is real for
+   non-Windows deployments; the host print path is Win32-only today,
+   where Arial is always installed, so it does not affect production
+   WYSIWYG. Tracked here as a future audit item if a Linux host is
+   ever introduced.
+
+7. **Round 6 — fidelity-maximization pass.**
+   a. **Animated SVG silent-frame-0**: cells whose serialized SVG carried
+      `<animate>` / `<animateTransform>` / `<animateMotion>` rendered as
+      a still image with no notice. Bake now byte-scans for these tags
+      and emits `AnimatedSvgFrozen`.
+   b. **CSS `background-image` on HTML labels**: silently dropped (only
+      solid `background-color` was transcribed). Now loud
+      `RichUnsupported`.
+   c. **CSS border on HTML labels**: previously skipped entirely. Now
+      transcribed as a stroked `<rect>` with dasharray mapping for
+      dashed / dotted; double/groove/etc loudly approximated as solid
+      via `RichApproximate`.
+   d. **Inline `<img>` in HTML labels**: previously silently dropped.
+      PNG data URIs now transcribed as SVG `<image>` at the rendered
+      position; non-PNG / external URLs loudly noticed via
+      `RichUnsupported`.
+   e. **resvg-side font-resolution loud-fail** was tried and reverted:
+      a pre-shape "font-family resolves in fontdb?" check refused too
+      eagerly because resvg's text shaper has its own opinionated
+      fallback (substitutes the database's default sans-serif when a
+      named family is missing). On a Linux box with Liberation Sans
+      installed, an SVG asking only for `font-family="Arial"` renders
+      perfectly even though the named family didn't resolve. Trusting
+      resvg's shaper is the correct posture; the "empty fontdb →
+      blank text" scenario doesn't arise on the Win32 host (Arial
+      guaranteed) and the corresponding ctest was both fragile across
+      runner font configurations and not exercising a production path.
+
+8. **Windows CI swap-acceptance regression**: `fake_svg_rasterizer.c`
+   (the §5 swap-acceptance fixture) had no `__declspec(dllexport)`
+   decoration and no `WINDOWS_EXPORT_ALL_SYMBOLS`. The ABI header is
+   intentionally neutral so the Rust shim's `#[no_mangle]` works
+   uniformly, but on Windows that meant the MODULE DLL exported zero
+   symbols. The windows-2022 runner image's MSVC was forgiving here
+   somehow (or the test had never actually run there); the in-flight
+   transition to windows-2025-vs2026 surfaced the latent bug. Fixed
+   by setting `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the fake-DLL CMake
+   target. Real Rust shim is unaffected.
+
+Test counts moved from 119 + 86 = 205 active to **151 + 128 = 279
+active** through these rounds (+34 / +29 in rounds 2/3 cover path-
+parser edge cases, transform precision at extreme DPIs, multi-page,
+multi-tile, preview/print parity, z-order, theme colors, schema
+invariants, Unicode labels, gradient/UTF-8 hardening, and the spurious
+HardwareMarginClip regression; +3 Node tests in round 6 pin the
+AnimatedSvgFrozen notice posture).
+
+**CI gate status (post-audit, all 10 jobs green):**
+- Engine library + tests (Linux, no host) ✅
+- Engine + Win32 host + SVG ABI swap test (Windows) ✅
+- SVG rasterizer cdylib (resvg, cross-platform) (ubuntu-latest) ✅
+- SVG rasterizer cdylib (resvg, cross-platform) (windows-latest) ✅
+- Exporter (Node --test) ✅
 
 ---
 

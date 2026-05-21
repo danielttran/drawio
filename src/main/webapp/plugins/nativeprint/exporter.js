@@ -818,7 +818,21 @@
         var local = primitiveToD(el, tag);
         if (local == null) continue;
         var d = transformPath(local, M);
-        if (!d) continue;
+        if (!d) {
+          // transformPath returns null for malformed/unsupported path data
+          // (unknown command letter, missing argument, etc). Silently
+          // dropping the primitive would lose part of the shape — violates
+          // C1. Loud notice so the operator knows a fragment of geometry
+          // was skipped; the rest of the shape stays faithful.
+          if (Array.isArray(notices)) {
+            notices.push(degradation('ExporterUnsupportedShape',
+              'drawio-rendered SVG primitive carried path data the bake ' +
+              'could not normalize (tag=' + tag + '); fragment skipped, ' +
+              'remaining geometry kept faithful',
+              cell.id));
+          }
+          continue;
+        }
         var pp = elementPaint(el, scale);
         if (!pp.fill && !pp.stroke) continue;   // invisible hit-area: skip
         out.push({ kind: 'path', d: d, fill: pp.fill, stroke: pp.stroke });
@@ -1082,20 +1096,38 @@
     if (typeof root.TextEncoder === 'function') {
       return new root.TextEncoder().encode(str);
     }
+    // Manual UTF-8 fallback (used only when TextEncoder is missing — modern
+    // browsers and Node always have it). Lone / mis-paired surrogates are
+    // replaced with U+FFFD so the output is always valid UTF-8; otherwise
+    // a stray 0xD800-0xDFFF would silently encode as invalid 3-byte
+    // sequences that resvg / base64 consumers would mis-decode.
     var out = [];
+    var REPL = [0xef, 0xbf, 0xbd];                    // U+FFFD as UTF-8
     for (var i = 0; i < str.length; i++) {
       var c = str.charCodeAt(i);
-      if (c < 0x80) { out.push(c); }
-      else if (c < 0x800) {
+      if (c < 0x80) { out.push(c); continue; }
+      if (c < 0x800) {
         out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
-      } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
-        var c2 = str.charCodeAt(++i);
-        var cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
-        out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
-          0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
-      } else {
-        out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+        continue;
       }
+      if (c >= 0xd800 && c <= 0xdbff) {
+        // High surrogate: must be followed by a low surrogate.
+        var c2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : 0;
+        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+          ++i;
+          var cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
+            0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+        } else {
+          out.push(REPL[0], REPL[1], REPL[2]);        // lone high surrogate
+        }
+        continue;
+      }
+      if (c >= 0xdc00 && c <= 0xdfff) {
+        out.push(REPL[0], REPL[1], REPL[2]);          // lone low surrogate
+        continue;
+      }
+      out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
     }
     return out;
   }
@@ -1245,6 +1277,84 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
+  // CSS border around an HTML-label element. Transcribed as a stroked
+  // <rect> so the bordered look survives into the printer. Style mapping:
+  //   solid  -> no dasharray
+  //   dashed -> width-proportional dasharray
+  //   dotted -> 1:2 dashes
+  //   double|groove|ridge|inset|outset -> approximated as solid (loud)
+  //   none|hidden -> skipped
+  // Width 0 / style 'none' / fully-transparent color -> nothing emitted.
+  // Per-side differences (e.g. border-left=red, border-right=blue) are
+  // also loudly noticed because this code emits one uniform stroked
+  // rectangle taking the TOP side's spec.
+  function borderRect(cs, rect, noticeOnce) {
+    if (!cs || !rect || (!rect.width && !rect.height)) return '';
+    var style = (cs.borderTopStyle || cs.borderStyle || 'none').toLowerCase();
+    if (style === 'none' || style === 'hidden') return '';
+    var w = parseFloat(cs.borderTopWidth || cs.borderWidth || '0');
+    if (!Number.isFinite(w) || w <= 0) return '';
+    var cp = colorParts(cs.borderTopColor || cs.borderColor || '');
+    if (!cp || cp.none || cp.alpha === 0) return '';
+    // Per-side mismatch detection. Compare top vs right vs bottom vs left
+    // for each of style/width/color; if any differ we are about to flatten
+    // them into a single uniform stroke and must say so.
+    if (typeof noticeOnce === 'function') {
+      var sides = ['Top', 'Right', 'Bottom', 'Left'];
+      var firstStyle = cs['border' + sides[0] + 'Style'];
+      var firstWidth = cs['border' + sides[0] + 'Width'];
+      var firstColor = cs['border' + sides[0] + 'Color'];
+      var mixed = false;
+      for (var si = 1; si < sides.length; si++) {
+        if (cs['border' + sides[si] + 'Style'] !== firstStyle ||
+            cs['border' + sides[si] + 'Width'] !== firstWidth ||
+            cs['border' + sides[si] + 'Color'] !== firstColor) {
+          mixed = true; break;
+        }
+      }
+      if (mixed) {
+        noticeOnce('RichApproximate',
+          'HTML-label has per-side CSS borders (left/right/top/bottom ' +
+          'differ); printed as one uniform border using the top side\'s ' +
+          'style/width/color');
+      }
+    }
+    var dash = null;
+    if (style === 'dashed') dash = Math.max(2, Math.round(w * 3)) + ',' + Math.max(1, Math.round(w * 1.5));
+    else if (style === 'dotted') dash = Math.max(1, Math.round(w)) + ',' + Math.max(1, Math.round(w * 2));
+    else if (style !== 'solid' && typeof noticeOnce === 'function') {
+      noticeOnce('RichApproximate',
+        'border-style "' + style + '" rendered as solid (no SVG primitive ' +
+        'reproduces double/groove/ridge/inset/outset losslessly)');
+    }
+    // Stroke is drawn centred on the path; offset the rect inward by half
+    // the stroke width so the visible border matches the box edge a
+    // browser would draw it on.
+    var inset = w / 2;
+    return '<rect x="' + fmt(rect.left + inset) + '" y="' + fmt(rect.top + inset) +
+      '" width="' + fmt(Math.max(0, rect.width - w)) +
+      '" height="' + fmt(Math.max(0, rect.height - w)) +
+      '" fill="none" stroke="' + cp.hex +
+      '" stroke-width="' + fmt(w) + '"' +
+      (cp.alpha < 1 ? ' stroke-opacity="' + fmt(cp.alpha) + '"' : '') +
+      (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/>';
+  }
+
+  // CSS background-image (gradient, url(), pattern) cannot be transcribed
+  // without a browser-style rasterizer; the bake captures only solid
+  // background-color via bgRect(). Detect and loudly notice so the
+  // operator knows a textured label background will print blank-but-text.
+  function checkBackgroundImage(cs, noticeOnce) {
+    if (typeof noticeOnce !== 'function') return;
+    var bgi = cs && cs.backgroundImage;
+    if (bgi && bgi !== 'none' && bgi !== '') {
+      noticeOnce('RichUnsupported',
+        'HTML-label CSS background-image is not transcribed (only solid ' +
+        'background-color is); the printed label will show its background ' +
+        'color but not the image / gradient / pattern');
+    }
+  }
+
   function pushListMarkerApprox(notices, detail, cellId) {
     if (!Array.isArray(notices)) return;
     notices.push(degradation('SvgListMarkerApprox', detail, cellId));
@@ -1314,6 +1424,20 @@
   function transcribeForeignObjects(fos, M, cellId, notices) {
     var bg = [], runs = [];
     var measurable = root && typeof root.getComputedStyle === 'function';
+    // Per-cell notice dedup. A label with N nested divs all carrying the
+    // same unsupported CSS feature would otherwise emit N identical
+    // notices; we want one per cell + kind so the operator UI is not
+    // spammed. Closure captures the notices array; each helper checks
+    // before pushing.
+    var firedHere = {};
+    function noticeOnce(kind, detail) {
+      var key = kind + '\0' + detail;
+      if (firedHere[key]) return;
+      firedHere[key] = true;
+      if (Array.isArray(notices)) {
+        notices.push(degradation(kind, detail, cellId));
+      }
+    }
     for (var k = 0; k < fos.length; k++) {
       var fo = fos[k];
       var doc = fo.ownerDocument;
@@ -1327,21 +1451,29 @@
         }
         continue;
       }
-      // Outermost element background = drawio label background.
+      // Outermost element background = drawio label background. Also
+      // transcribes a CSS border (if any) and flags a CSS
+      // background-image as loud-noticed.
       var rootEl = null;
       for (var c = 0; fo.childNodes && c < fo.childNodes.length; c++) {
         if (fo.childNodes[c].nodeType === 1) { rootEl = fo.childNodes[c]; break; }
       }
       if (rootEl) {
-        bg.push(bgRect(root.getComputedStyle(rootEl),
-          rootEl.getBoundingClientRect()));
+        var rcs = root.getComputedStyle(rootEl);
+        var rr = rootEl.getBoundingClientRect();
+        bg.push(bgRect(rcs, rr));
+        bg.push(borderRect(rcs, rr, noticeOnce));
+        checkBackgroundImage(rcs, noticeOnce);
       }
       var walk = function (n) {
         if (!n) return;
         if (n.nodeType === 1) {
           var ecs = root.getComputedStyle(n);
           if (n !== rootEl) {
-            bg.push(bgRect(ecs, n.getBoundingClientRect()));
+            var er = n.getBoundingClientRect();
+            bg.push(bgRect(ecs, er));
+            bg.push(borderRect(ecs, er, noticeOnce));
+            checkBackgroundImage(ecs, noticeOnce);
           }
           if ((ecs.display || '').indexOf('list-item') >= 0 &&
             (ecs.listStyleType || 'disc') !== 'none') {
@@ -1375,6 +1507,33 @@
                 width: 0, height: mr.height },
                 text: glyph, f: fr0, anchor: cRect ? 'end' : 'start' });
             }
+          }
+          // Inline images (<img>) in HTML labels: a common drawio pattern
+          // is "icon + text" inside a label. Previously silently dropped.
+          // Transcribe inline PNG data URIs as <image> at the rendered
+          // position; loudly notice anything else (external URL, JPEG, ...).
+          if (String(n.tagName || '').toLowerCase() === 'img') {
+            var src = n.getAttribute && n.getAttribute('src');
+            var ir = n.getBoundingClientRect();
+            var parsed = parseImage(src);
+            if (parsed && parsed.format === 'png' && ir && ir.width && ir.height) {
+              bg.push('<image x="' + fmt(ir.left) + '" y="' + fmt(ir.top) +
+                '" width="' + fmt(ir.width) + '" height="' + fmt(ir.height) +
+                '" preserveAspectRatio="none" xlink:href="data:image/png;base64,' +
+                parsed.data + '"/>');
+            } else {
+              noticeOnce('RichUnsupported',
+                'inline <img> in HTML label is not a PNG data URI (' +
+                (parsed && parsed.unsupportedFormat
+                  ? 'format=' + parsed.unsupportedFormat
+                  : parsed && parsed.externalUrl
+                    ? 'external URL'
+                    : 'unreadable src') +
+                '); printed without the image');
+            }
+            // <img> has no children; skip the recursive descent that
+            // would just visit its empty text content.
+            return;
           }
           for (var i = 0; n.childNodes && i < n.childNodes.length; i++) {
             walk(n.childNodes[i]);
@@ -1424,6 +1583,21 @@
     var doc = (shapeNode.ownerDocument) || root.document || null;
     var shapeStr = serializeEl(shapeNode);
     if (!shapeStr) return null;
+    // LOUD-OR-FAITHFUL: resvg / tiny-skia render SMIL animation elements
+    // as a static frame-0 snapshot with NO error or notice — a silent
+    // divergence for any animated stencil. Detect at bake time and
+    // surface a loud AnimatedSvgFrozen notice naming the cell so the
+    // operator knows the print will be still even though the canvas was
+    // moving. Covers every SMIL element with the silent-freeze
+    // signature: <animate>, <animateTransform>, <animateMotion>,
+    // <animateColor> (deprecated but supported), <set>, <discard>.
+    if (Array.isArray(notices) &&
+        /<(?:animate(?:Transform|Motion|Color)?|set|discard)[\s/>]/i.test(shapeStr)) {
+      notices.push(degradation('AnimatedSvgFrozen',
+        'SVG animation element found in this cell; the print rasterizer ' +
+        'cannot animate ink and will render the initial frame only',
+        cell && cell.id));
+    }
     var textStr = (state.text && state.text.node)
       ? serializeEl(state.text.node) : null;
     // HTML labels serialize as <foreignObject>, which native SVG rasterizers
@@ -1540,6 +1714,39 @@
   // NOT scale the diagram up). The single tile == one physical sheet; content
   // beyond it is clipped by the engine, which raises a loud notice. When no
   // paper is given the legacy diagram-bounds page is kept (back-compat).
+  // Depth-first traversal of the mxGraph tree, yielding cells in the same
+  // back-to-front order the canvas paints them in. Layers are children of
+  // root; cells inside a layer are children of the layer; group children
+  // sit under their group, painted ON TOP of the group's body (matching
+  // mxGraph's own cell-state validation order). This is the load-bearing
+  // ordering for WYSIWYG with overlapping shapes / changed z-order.
+  function collectCellsInZOrder(model) {
+    if (!model || typeof model.getRoot !== 'function' ||
+        typeof model.getChildAt !== 'function' ||
+        typeof model.getChildCount !== 'function') {
+      // Headless / minimal fixtures: preserve legacy behaviour. The browser
+      // path always has these methods (mxGraphModel) so the live print uses
+      // true z-order; this fallback only fires in Node tests / harnesses.
+      var out = [];
+      var dict = (model && model.cells) || {};
+      Object.keys(dict).forEach(function (id) { out.push(dict[id]); });
+      return out;
+    }
+    var root = model.getRoot();
+    if (root == null) return [];
+    var out = [];
+    (function walk(parent) {
+      var n = model.getChildCount(parent);
+      for (var i = 0; i < n; i++) {
+        var child = model.getChildAt(parent, i);
+        if (child == null) continue;
+        out.push(child);     // parent body BEFORE its descendants (z-order)
+        walk(child);
+      }
+    })(root);
+    return out;
+  }
+
   function buildResult(graph, paper) {
     var model = graph.getModel();
     var view = graph.view;
@@ -1557,8 +1764,16 @@
       : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
           h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
 
-    Object.keys(model.cells || {}).forEach(function (id) {
-      var cell = model.cells[id];
+    // WYSIWYG paint order = mxGraph z-order. The model's `cells` dict is keyed
+    // by id (creation order); "Send to Back" / "Bring to Front" reorder a
+    // cell's parent.children[] WITHOUT changing the dict. Iterating the dict
+    // would silently print overlapping shapes in the wrong order — a C1
+    // violation. Walk root → layers → descendants depth-first so the paint
+    // list matches what the canvas draws back-to-front, exactly. The
+    // dict-fallback path stays for headless fixtures / harnesses that do not
+    // expose getRoot/getChildAt.
+    var orderedCells = collectCellsInZOrder(model);
+    orderedCells.forEach(function (cell) {
       if (cell == null || (!model.isVertex(cell) && !model.isEdge(cell))) return;
       var state = view.getState(cell);
       if (state == null) return;
@@ -1571,6 +1786,20 @@
       }
       emitVertex(graph, cell, state, style, origin, scale, paint, notices);
     });
+
+    // LOUD-OR-FAITHFUL: the v1 contract carries gradient stops + type but
+    // NO direction (p0/p1 for linear, center/focus/radius for radial). The
+    // live path emits `kind:"svg"` whose source SVG keeps direction inline,
+    // so resvg renders it correctly. The headless / harvest fallback paths
+    // (emitVertex's bbox + fillOf; harvestShape via elementPaint) emit
+    // `kind:"path"` with `fill.type == "linear"|"radial"` — the engine's
+    // host renders these always-horizontal (linear) or always-centered
+    // (radial), regardless of drawio's gradientDirection. That is the
+    // silent-divergence class C1 forbids on fallback paths. Scan the paint
+    // list here and emit ONE loud notice per cell that emitted a gradient
+    // in a fallback path; the operator sees the gap, never a silent wrong
+    // direction.
+    scanGradientFallbacks(paint, notices);
 
     return {
       contract: {
@@ -1587,6 +1816,29 @@
       },
       notices: notices
     };
+  }
+
+  function scanGradientFallbacks(paint, notices) {
+    var seen = false;
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n || n.kind !== 'path') continue;       // svg nodes carry direction inline
+      var f = n.fill, s = n.stroke;
+      var hasGrad =
+        (f && (f.type === 'linear' || f.type === 'radial')) ||
+        (s && s.paint && (s.paint.type === 'linear' || s.paint.type === 'radial'));
+      if (hasGrad) { seen = true; break; }
+    }
+    if (seen) {
+      notices.push(degradation('GradientDirectionApprox',
+        'one or more gradient fills/strokes were emitted via the headless ' +
+        'fallback path; the v1 contract does not carry gradient direction, ' +
+        'so the host renders linear gradients left-to-right and radial ' +
+        'gradients box-centered regardless of drawio gradientDirection. ' +
+        'The live (in-browser) path is unaffected — it ships the literal ' +
+        'rendered SVG.',
+        ''));
+    }
   }
 
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices) {

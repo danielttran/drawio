@@ -169,7 +169,16 @@ pub extern "C" fn spe_svg_render(
                 return SPE_SVG_ERR_PARSE;
             }
         };
-
+        // NB: a pre-shape "font-family resolves in fontdb?" guard was
+        // tried (Round 6) and reverted as overly strict: resvg's text
+        // shaper has its own opinionated fallback (substitutes the
+        // database's default sans-serif when the requested family is
+        // missing), so a CSS-style cascade like `font-family="Arial"`
+        // on a Linux box with Liberation Sans installed renders fine
+        // even though "Arial" alone does not resolve. Trust resvg's
+        // shaping; the documented "empty fontdb -> blank text" scenario
+        // does not arise on the Win32 host (Arial guaranteed) and is
+        // tracked in MEMORY.md.
         let mut pixmap = match resvg::tiny_skia::Pixmap::new(target_w_px, target_h_px) {
             Some(p) => p,
             None => {

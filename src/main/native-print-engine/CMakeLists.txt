@@ -73,7 +73,16 @@ if(WIN32)
   # only -- never shipped.
   enable_language(C)
   add_library(fake_svg_rasterizer MODULE host/test_support/fake_svg_rasterizer.c)
-  set_target_properties(fake_svg_rasterizer PROPERTIES PREFIX "")
+  set_target_properties(fake_svg_rasterizer PROPERTIES
+    PREFIX ""
+    # Windows DLLs export nothing unless explicitly decorated. The ABI
+    # header carries no __declspec(dllexport) (it has to be neutral so
+    # the Rust shim can build with #[no_mangle] only), so we let CMake
+    # auto-generate the export table from the symbol table at link
+    # time. Without this the windows-2025 runner image's MSVC produces
+    # a DLL with zero exports -- LoadLibrary succeeds, GetProcAddress
+    # returns null on every symbol, and the loader returns nullptr.
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
 include(CTest)
@@ -104,6 +113,7 @@ if(BUILD_TESTING)
     tests/proto_adapter_tests.cpp
     tests/svg_pixel_determinism_tests.cpp
     tests/wysiwyg_parity_tests.cpp
+    tests/correctness_extended_tests.cpp
   )
 
   # Cross-platform SVG pixel-golden test: configured to a path it loads at

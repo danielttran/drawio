@@ -16,6 +16,19 @@ Transform make_world_transform(const RenderTarget& target, const TileSummary& ti
 
 namespace {
 
+// Padding tolerance for the exporter's SVG_PAD convention: each `svg`
+// node's box is padded by ~2 contract units per side so resvg has room
+// for strokes/markers that extend past the cell's nominal bounds. The
+// padded area is transparent — clipping it doesn't lose visible
+// content. Without tolerance, EVERY diagram with a cell at its top-left
+// (state.x == bounds.x) fires a spurious "diagram extends beyond the
+// selected paper" notice on every print. 4 units (= SVG_PAD * 2) is
+// tight enough that genuine overhang (real content past the page) still
+// fires the notice. Hoisted to namespace scope so the inner lambda can
+// reach it as a constant expression on every toolchain (MSVC strict mode
+// does not implicitly capture local constexpr non-integral types).
+constexpr double kPageEscapeTolerance = 4.0;
+
 [[nodiscard]] std::string barcode_stub_label(const std::string& symbology, const std::string& value) {
   return std::string("BARCODE STUB \xE2\x80\x94 symbology=") + symbology + " value=" + value;
 }
@@ -78,9 +91,10 @@ RenderResult render_to_trace(
     // NOT clipped — only escaping the whole page is.
     const Rect page_rect{0.0, 0.0, page.width, page.height};
     const auto escapes_page = [&page_rect](const Rect& b) {
-      return b.x < page_rect.x || b.y < page_rect.y ||
-             b.x + b.w > page_rect.x + page_rect.w ||
-             b.y + b.h > page_rect.y + page_rect.h;
+      return b.x < page_rect.x - kPageEscapeTolerance ||
+             b.y < page_rect.y - kPageEscapeTolerance ||
+             b.x + b.w > page_rect.x + page_rect.w + kPageEscapeTolerance ||
+             b.y + b.h > page_rect.y + page_rect.h + kPageEscapeTolerance;
     };
     for (const auto& node : page.paint) {
       if (escapes_page(node.box)) {

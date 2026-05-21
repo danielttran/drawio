@@ -37,6 +37,15 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Install fonts (deterministic glyph coverage for SVG corpus)
+        # ubuntu-latest images do NOT ship Arial; the SVG corpus test asks
+        # resvg to render <text font-family="Arial">, and resvg silently
+        # renders unknown fonts as blank (zero opaque pixels), which the
+        # corpus test correctly flags as a silent-blank C1 violation. We
+        # install fonts-liberation so "Arial" resolves to Liberation Sans
+        # (its metric-compatible open clone) -- making both the test and
+        # the future drawio-on-Linux print path deterministic.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
       - name: Build SVG rasterizer cdylib (resvg)
