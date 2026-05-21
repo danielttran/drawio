@@ -250,6 +250,57 @@ TEST_CASE("Transform: contract.units==px maps 1:1 at 96 dpi (sanity)") {
 // HardwareMarginClip notice per page when *any* paint escapes; never silent.
 // ===========================================================================
 
+TEST_CASE("SVG node padding (SVG_PAD slop) does NOT trigger spurious HardwareMarginClip") {
+  // The exporter wraps each cell's literal SVG in a contract `svg` node whose
+  // `box` is padded by SVG_PAD (2 contract units) on every side so resvg has
+  // room for strokes/markers that extend past the cell's nominal bounds. A
+  // cell at the canvas top-left (state.x == bounds.x) maps to box.x == -2 in
+  // contract space. Without a tolerance, EVERY real diagram with content at
+  // its top-left fires a wrong "diagram extends beyond the selected paper"
+  // notice on every print. The engine must treat tiny (≤ SVG_PAD * 2) box
+  // overhang as the documented stroke-slop, not as content clipping.
+  const std::string p = R"({"kind":"svg","box":{"x":-2,"y":-2,"w":54,"h":54},)"
+    R"("source":"PHN2Zy8+","aspect":"preserve"})";
+  const auto loaded = load_baked_contract(fixture_with_paint(p));
+  REQUIRE(loaded);
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(rendered);
+  for (const auto& n : rendered.value().notices) {
+    INFO("notice: " << n.detail);
+    CHECK(n.type != DegradationNoticeType::HardwareMarginClip);
+  }
+}
+
+TEST_CASE("SVG_PAD-sized overhang at all four edges still tolerated") {
+  // 200x200 page, an SVG cell that just touches the page corner on every
+  // side via SVG_PAD overhang (-2,-2,204,204). No real content clipping.
+  const std::string p = R"({"kind":"svg","box":{"x":-2,"y":-2,"w":204,"h":204},)"
+    R"("source":"PHN2Zy8+","aspect":"preserve"})";
+  const auto loaded = load_baked_contract(fixture_with_paint(p));
+  REQUIRE(loaded);
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(rendered);
+  for (const auto& n : rendered.value().notices) {
+    CHECK(n.type != DegradationNoticeType::HardwareMarginClip);
+  }
+}
+
+TEST_CASE("Real overhang (> SVG_PAD slop) still fires HardwareMarginClip") {
+  // 5-unit overhang is far more than padding slop — content is genuinely
+  // off the page; the notice must still fire.
+  const std::string p = R"({"kind":"svg","box":{"x":-5,"y":-5,"w":60,"h":60},)"
+    R"("source":"PHN2Zy8+","aspect":"preserve"})";
+  const auto loaded = load_baked_contract(fixture_with_paint(p));
+  REQUIRE(loaded);
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(rendered);
+  int margin_count = 0;
+  for (const auto& n : rendered.value().notices) {
+    if (n.type == DegradationNoticeType::HardwareMarginClip) ++margin_count;
+  }
+  CHECK(margin_count == 1);
+}
+
 TEST_CASE("Cell exactly inside the page: no HardwareMarginClip notice") {
   // 200x200 page, cell rect at (0,0,200,200) — touches the edge but does
   // not escape. The "false positive" check.
