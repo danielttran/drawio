@@ -818,7 +818,21 @@
         var local = primitiveToD(el, tag);
         if (local == null) continue;
         var d = transformPath(local, M);
-        if (!d) continue;
+        if (!d) {
+          // transformPath returns null for malformed/unsupported path data
+          // (unknown command letter, missing argument, etc). Silently
+          // dropping the primitive would lose part of the shape — violates
+          // C1. Loud notice so the operator knows a fragment of geometry
+          // was skipped; the rest of the shape stays faithful.
+          if (Array.isArray(notices)) {
+            notices.push(degradation('ExporterUnsupportedShape',
+              'drawio-rendered SVG primitive carried path data the bake ' +
+              'could not normalize (tag=' + tag + '); fragment skipped, ' +
+              'remaining geometry kept faithful',
+              cell.id));
+          }
+          continue;
+        }
         var pp = elementPaint(el, scale);
         if (!pp.fill && !pp.stroke) continue;   // invisible hit-area: skip
         out.push({ kind: 'path', d: d, fill: pp.fill, stroke: pp.stroke });
@@ -1082,20 +1096,38 @@
     if (typeof root.TextEncoder === 'function') {
       return new root.TextEncoder().encode(str);
     }
+    // Manual UTF-8 fallback (used only when TextEncoder is missing — modern
+    // browsers and Node always have it). Lone / mis-paired surrogates are
+    // replaced with U+FFFD so the output is always valid UTF-8; otherwise
+    // a stray 0xD800-0xDFFF would silently encode as invalid 3-byte
+    // sequences that resvg / base64 consumers would mis-decode.
     var out = [];
+    var REPL = [0xef, 0xbf, 0xbd];                    // U+FFFD as UTF-8
     for (var i = 0; i < str.length; i++) {
       var c = str.charCodeAt(i);
-      if (c < 0x80) { out.push(c); }
-      else if (c < 0x800) {
+      if (c < 0x80) { out.push(c); continue; }
+      if (c < 0x800) {
         out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
-      } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
-        var c2 = str.charCodeAt(++i);
-        var cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
-        out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
-          0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
-      } else {
-        out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+        continue;
       }
+      if (c >= 0xd800 && c <= 0xdbff) {
+        // High surrogate: must be followed by a low surrogate.
+        var c2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : 0;
+        if (c2 >= 0xdc00 && c2 <= 0xdfff) {
+          ++i;
+          var cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+          out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f),
+            0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+        } else {
+          out.push(REPL[0], REPL[1], REPL[2]);        // lone high surrogate
+        }
+        continue;
+      }
+      if (c >= 0xdc00 && c <= 0xdfff) {
+        out.push(REPL[0], REPL[1], REPL[2]);          // lone low surrogate
+        continue;
+      }
+      out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
     }
     return out;
   }
@@ -1613,6 +1645,20 @@
       emitVertex(graph, cell, state, style, origin, scale, paint, notices);
     });
 
+    // LOUD-OR-FAITHFUL: the v1 contract carries gradient stops + type but
+    // NO direction (p0/p1 for linear, center/focus/radius for radial). The
+    // live path emits `kind:"svg"` whose source SVG keeps direction inline,
+    // so resvg renders it correctly. The headless / harvest fallback paths
+    // (emitVertex's bbox + fillOf; harvestShape via elementPaint) emit
+    // `kind:"path"` with `fill.type == "linear"|"radial"` — the engine's
+    // host renders these always-horizontal (linear) or always-centered
+    // (radial), regardless of drawio's gradientDirection. That is the
+    // silent-divergence class C1 forbids on fallback paths. Scan the paint
+    // list here and emit ONE loud notice per cell that emitted a gradient
+    // in a fallback path; the operator sees the gap, never a silent wrong
+    // direction.
+    scanGradientFallbacks(paint, notices);
+
     return {
       contract: {
         schema: { major: 1, minor: 0 },
@@ -1628,6 +1674,29 @@
       },
       notices: notices
     };
+  }
+
+  function scanGradientFallbacks(paint, notices) {
+    var seen = false;
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n || n.kind !== 'path') continue;       // svg nodes carry direction inline
+      var f = n.fill, s = n.stroke;
+      var hasGrad =
+        (f && (f.type === 'linear' || f.type === 'radial')) ||
+        (s && s.paint && (s.paint.type === 'linear' || s.paint.type === 'radial'));
+      if (hasGrad) { seen = true; break; }
+    }
+    if (seen) {
+      notices.push(degradation('GradientDirectionApprox',
+        'one or more gradient fills/strokes were emitted via the headless ' +
+        'fallback path; the v1 contract does not carry gradient direction, ' +
+        'so the host renders linear gradients left-to-right and radial ' +
+        'gradients box-centered regardless of drawio gradientDirection. ' +
+        'The live (in-browser) path is unaffected — it ships the literal ' +
+        'rendered SVG.',
+        ''));
+    }
   }
 
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices) {

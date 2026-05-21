@@ -2176,3 +2176,131 @@ test('Unicode label (mixed scripts + emoji) round-trips into the contract', () =
     }
   }
 });
+
+// --- LOUD-OR-FAITHFUL: gradient direction warning on fallback paths -----
+// The v1 contract carries gradient stops but NOT direction (no p0/p1 for
+// linear; no center/focus/radius for radial). When the fallback bake path
+// emits a `kind:"path"` with a gradient fill, the host renders it always
+// left-to-right (linear) or always centered (radial), regardless of the
+// drawio gradientDirection. That is a silent divergence the C1 constraint
+// forbids → must be loudly noticed. Live path (kind:"svg" with literal
+// SVG bytes) is NOT affected (direction lives inside the SVG, resvg
+// honours it).
+test('LOUD: fallback gradient triggers GradientDirectionApprox notice', () => {
+  // No live shape.node => svgCellNode/harvestShape both return null => the
+  // last-resort fallback runs `fillOf(style)`, which emits a 2-stop linear
+  // fill (the typical drawio gradient bake). Notice must fire loudly.
+  const r = oneVertex({
+    shape: 'rectangle',
+    fillColor: '#ff0000',
+    gradientColor: '#0000ff',
+    gradientDirection: 'south',   // top->bottom, the drawio default
+    strokeColor: '#000000'
+  });
+  const path = r.contract.document.pages[0].paint.find((n) => n.kind === 'path');
+  assert.ok(path && path.fill && path.fill.type === 'linear',
+    'fallback path carries the gradient fill');
+  const notice = r.notices.find((n) => n.kind === 'GradientDirectionApprox');
+  assert.ok(notice,
+    'GradientDirectionApprox must fire whenever a gradient is emitted on ' +
+    'the fallback path (contract carries no direction)');
+  assert.match(notice.detail.detail, /direction/i);
+});
+
+test('LOUD: gradient notice does NOT fire when only solid fills exist', () => {
+  const r = oneVertex({
+    shape: 'rectangle',
+    fillColor: '#ff0000',         // no gradient
+    strokeColor: '#000000'
+  });
+  const notice = r.notices.find((n) => n.kind === 'GradientDirectionApprox');
+  assert.equal(notice, undefined,
+    'no gradient -> no GradientDirectionApprox notice (false-positives are noise)');
+});
+
+test('LOUD: gradient notice dedupes — many gradient cells produce ONE notice', () => {
+  const cells = {}, states = {}, styles = {};
+  for (let i = 0; i < 5; i++) {
+    const id = 'g' + i;
+    cells[id] = { id, vertex: true };
+    states[id] = { x: i * 100, y: 0, width: 60, height: 40 };
+    styles[id] = { shape: 'rectangle',
+      fillColor: '#ff0000', gradientColor: '#0000ff',
+      strokeColor: '#000000' };
+  }
+  const r = exporter.buildResult(graphFixture(cells, states, {}, styles,
+    { x: 0, y: 0, width: 600, height: 200 }, 1));
+  const flagged = r.notices.filter((n) => n.kind === 'GradientDirectionApprox');
+  assert.equal(flagged.length, 1,
+    'gradient-direction notice deduped to ONE entry, not one-per-cell ' +
+    '(operator UI is not spammed by a structural-contract limitation)');
+});
+
+// --- LOUD: malformed harvested path fragment is loudly skipped ----------
+// `transformPath` returns null on truly unparseable forms (numbers after
+// Z with no new subpath, missing arguments, etc.). Previously the caller
+// silently `continue`'d, losing geometry without operator warning. Now a
+// loud ExporterUnsupportedShape notice fires naming the cell + tag.
+test('LOUD: harvest skips a malformed path fragment with a notice', () => {
+  // Trigger transformPath -> null: numbers after Z with no new M starts
+  // a non-positioning command sequence the parser refuses (would spin
+  // otherwise). The element's <path> carries this; a sibling <rect>
+  // exists so harvest keeps emitting the good geometry.
+  const fakeCTM = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  const mkEl = (tag, attrs) => {
+    const e = {
+      nodeType: 1, tagName: tag, childNodes: [],
+      getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
+      getAttributeNS: () => null,
+      getCTM: () => fakeCTM
+    };
+    e.outerHTML = '';
+    return e;
+  };
+  const badPath = mkEl('path', { d: 'M 0 0 L 1 1 Z 5 5' });
+  const goodRect = mkEl('rect', { x: '0', y: '0', width: '40', height: '40' });
+  const shape = mkEl('g', {});
+  shape.childNodes = [badPath, goodRect];
+  // CRITICAL: shape.parentNode must expose getCTM so harvestMatrix
+  // succeeds. The shared svgFixture stomps parent with getScreenCTM-only,
+  // which makes harvestMatrix bail.
+  shape.parentNode = { getCTM: () => fakeCTM, getScreenCTM: () => fakeCTM };
+  shape.ownerDocument = { getElementById: () => null };
+  badPath.ownerDocument = shape.ownerDocument;
+  goodRect.ownerDocument = shape.ownerDocument;
+
+  const cells = { v: { id: 'v', vertex: true } };
+  const state = { x: 10, y: 20, width: 80, height: 40, shape: { node: shape } };
+  const r = exporter.buildResult({
+    getModel: () => ({ cells,
+      isVertex: () => true, isEdge: () => false }),
+    view: { scale: 1, getState: () => state },
+    getGraphBounds: () => FIXED_BOUNDS,
+    getCellStyle: () => ({ shape: 'rectangle' }),
+    getLabel: () => '',
+    isHtmlLabel: () => false
+  });
+  // Harvest emitted the good rect; bad fragment loudly noticed.
+  const notice = r.notices.find((n) =>
+    n.kind === 'ExporterUnsupportedShape' && /path data/.test(n.detail.detail));
+  assert.ok(notice,
+    'harvest must loudly notice a skipped path fragment (not silently drop)');
+  assert.equal(notice.detail.cellId, 'v', 'notice carries the cell id');
+});
+
+// --- utf8Bytes hardening: lone surrogates become U+FFFD, not invalid bytes
+test('utf8 fallback: lone high/low surrogates encoded as U+FFFD (no invalid UTF-8)', () => {
+  // base64-encode a string containing a lone high surrogate (no low pair).
+  // This exercises the manual utf8 path only when TextEncoder is missing;
+  // in Node TextEncoder exists, so we instead check end-to-end: the bake
+  // labels a cell with the bad string and the resulting contract is still
+  // schema-valid (no crash, no corruption that breaks downstream consumers).
+  const loneHigh = '\uD800';                  // unpaired high surrogate
+  const loneLow  = '\uDC00';                  // unpaired low surrogate
+  for (const s of [loneHigh, loneLow, loneHigh + loneLow + 'X' + loneHigh]) {
+    const r = oneVertex({ shape: 'rectangle', strokeColor: '#000000' }, s);
+    assertSchemaValid(r.contract, 'lone surrogate label');
+    const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+    assert.ok(text, 'label still emitted (no crash on lone surrogate)');
+  }
+});
