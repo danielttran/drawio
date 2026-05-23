@@ -429,6 +429,211 @@ TEST_CASE("SVG rasterizer cdylib: a real drawio-flavor SVG corpus all renders"
   }
 }
 
+TEST_CASE("SVG rasterizer cdylib: the FULL mxSvgCanvas feature vocabulary"
+          " renders (no failure, no silent blank) — built-in stencils never"
+          " trip StubbedSvgArtwork",
+          "[svg][cdylib][wysiwyg][conformance]") {
+  // GOAL pin: a diagram built only from drawio's built-in objects must print
+  // with NO host-side StubbedSvgArtwork notice. The live bake turns every cell
+  // into drawio's OWN rendered SVG, and drawio's vector renderer (mxSvgCanvas2D)
+  // emits a fixed, finite SVG vocabulary. A stencil is just a COMPOSITION of
+  // these primitives, so if resvg renders every feature below with status 0 and
+  // >0 opaque pixels, it renders every built-in stencil. This is the strongest
+  // browser-free guarantee (no per-stencil DOM, no browser, C2-clean): cover the
+  // grammar, not each of thousands of shape instances. Every case here was first
+  // validated against the real cdylib. If a future resvg bump regresses any
+  // feature, CI (which builds the Rust crate) fails HERE instead of silently
+  // crosshatching a user's print.
+  const char* lib_path = SVG_RASTERIZER_LIB;
+  if (lib_path == nullptr || lib_path[0] == '\0') {
+    SKIP("SVG_RASTERIZER_LIB not configured");
+  }
+  Lib lib = open_lib(lib_path);
+  if (lib.handle == nullptr) {
+    SKIP("could not open svg rasterizer cdylib");
+  }
+  using FnRender = std::int32_t (*)(const std::uint8_t*, std::size_t,
+                                    std::uint32_t, std::uint32_t, double,
+                                    std::uint8_t*, std::size_t,
+                                    char*, std::size_t);
+  auto fn_render = lib.sym<FnRender>("spe_svg_render");
+  REQUIRE(fn_render != nullptr);
+
+  // Minimal, real, validated raster/vector image payloads (1x1) so the
+  // <image> cases exercise resvg's actual decoders — the formats the exporter
+  // now embeds (PNG/JPEG/GIF) plus a nested SVG. This is what proves the
+  // image-cell / inline-<img> embedding change prints, not just bakes.
+  const std::string PNG =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ"
+      "/pLvAAAAAElFTkSuQmCC";
+  const std::string GIF =
+      "R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
+  const std::string JPG =
+      "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+      "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAAB"
+      "AAAAAAAAAAAAAAAAAAAAAv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q==";
+  const std::string SVGB64 =
+      "PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScxJyBoZWln"
+      "aHQ9JzEnPjxyZWN0IHdpZHRoPScxJyBoZWlnaHQ9JzEnIGZpbGw9J3JlZCcvPjwvc3ZnPg==";
+  const std::string img = [&](const char* mime, const std::string& d) {
+    return std::string(
+        "<svg xmlns='http://www.w3.org/2000/svg' "
+        "xmlns:xlink='http://www.w3.org/1999/xlink' width='200' height='120'>"
+        "<image x='0' y='0' width='200' height='120' preserveAspectRatio='none' "
+        "xlink:href='data:") + mime + ";base64," + d + "'/></svg>";
+  }("image/png", PNG);
+
+  // Font chain mirrors the realism corpus so the text cases render on any CI
+  // runner (Arial on Windows print boxes, Liberation/DejaVu on Linux).
+  const std::string F =
+      "Arial, \"Liberation Sans\", \"DejaVu Sans\", sans-serif";
+
+  struct Case { std::string name; std::string svg; };
+  std::vector<Case> corpus = {
+    {"arc path (rounded rect / cylinder bodies)",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<path d='M20 60 A40 40 0 1 1 100 60 L100 100 L20 100 Z' fill='#8cf' "
+     "stroke='#039' stroke-width='2'/></svg>"},
+    {"quadratic + smooth bezier",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<path d='M10 80 Q 50 10 90 80 T 170 80' fill='none' stroke='#a30' "
+     "stroke-width='3'/></svg>"},
+    {"feGaussianBlur (glass/blur)",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><filter id='b'><feGaussianBlur stdDeviation='2'/></filter></defs>"
+     "<rect x='30' y='30' width='120' height='60' fill='#4a90e2' "
+     "filter='url(#b)'/></svg>"},
+    {"feDropShadow",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><filter id='d' x='-20%' y='-20%' width='140%' height='140%'>"
+     "<feDropShadow dx='3' dy='3' stdDeviation='2' flood-color='#000' "
+     "flood-opacity='0.4'/></filter></defs>"
+     "<rect x='40' y='30' width='110' height='55' fill='#fff' stroke='#222' "
+     "filter='url(#d)'/></svg>"},
+    {"mxgraph composite shadow filter chain",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><filter id='s'><feGaussianBlur in='SourceAlpha' stdDeviation='1.5'/>"
+     "<feOffset dx='2' dy='2' result='o'/><feFlood flood-color='#000' "
+     "flood-opacity='0.3'/><feComposite in2='o' operator='in'/>"
+     "<feMerge><feMergeNode/><feMergeNode in='SourceGraphic'/></feMerge>"
+     "</filter></defs>"
+     "<rect x='40' y='30' width='110' height='55' fill='#9c6' "
+     "filter='url(#s)'/></svg>"},
+    {"feColorMatrix",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><filter id='cm'><feColorMatrix type='saturate' values='0.3'/>"
+     "</filter></defs><rect x='30' y='30' width='120' height='60' "
+     "fill='#e24a90' filter='url(#cm)'/></svg>"},
+    {"linearGradient with gradientTransform",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><linearGradient id='g' gradientTransform='rotate(45 .5 .5)'>"
+     "<stop offset='0' stop-color='#fff'/><stop offset='1' stop-color='#27c'/>"
+     "</linearGradient></defs>"
+     "<rect x='20' y='20' width='160' height='80' fill='url(#g)'/></svg>"},
+    {"radialGradient fx/fy",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><radialGradient id='r' cx='0.5' cy='0.5' r='0.5' fx='0.3' fy='0.3'>"
+     "<stop offset='0' stop-color='#ffd'/><stop offset='1' stop-color='#a40'/>"
+     "</radialGradient></defs>"
+     "<ellipse cx='100' cy='60' rx='80' ry='45' fill='url(#r)'/></svg>"},
+    {"rotate + skew matrix nested transforms",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<g transform='translate(100 60)'><g transform='rotate(30)'>"
+     "<rect x='-50' y='-20' width='100' height='40' fill='#69c' "
+     "transform='matrix(1 0 0.3 1 0 0)'/></g></g></svg>"},
+    {"polygon + polyline",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<polygon points='100,10 140,40 125,90 75,90 60,40' fill='#fc6' "
+     "stroke='#960'/><polyline points='10,110 60,80 110,110 160,80' "
+     "fill='none' stroke='#06c' stroke-width='2'/></svg>"},
+    {"stroke linecap/linejoin/miterlimit",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<path d='M20 60 L80 20 L80 100' fill='none' stroke='#333' "
+     "stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/>"
+     "<path d='M110 60 L170 20 L170 100' fill='none' stroke='#a33' "
+     "stroke-width='10' stroke-linejoin='bevel' stroke-linecap='square'/></svg>"},
+    {"fill-rule evenodd",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<path d='M50 10 L90 110 L10 40 L100 40 L20 110 Z' fill='#39c' "
+     "fill-rule='evenodd'/></svg>"},
+    {"nested group opacity",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<g opacity='0.5'><rect x='30' y='30' width='80' height='60' fill='#f00'/>"
+     "<rect x='80' y='50' width='80' height='60' fill='#00f'/></g></svg>"},
+    {"pattern fill",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><pattern id='p' width='10' height='10' patternUnits='userSpaceOnUse'>"
+     "<rect width='10' height='10' fill='#eee'/>"
+     "<circle cx='5' cy='5' r='2' fill='#39c'/></pattern></defs>"
+     "<rect x='20' y='20' width='160' height='80' fill='url(#p)'/></svg>"},
+    {"use element (def reuse)",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><rect id='u' width='40' height='30' fill='#6a3'/></defs>"
+     "<use href='#u' x='30' y='40'/><use href='#u' x='120' y='60'/></svg>"},
+    {"text italic/underline/strike/letter-spacing",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<text x='100' y='60' text-anchor='middle' font-family='" + F + "' "
+     "font-size='16' font-style='italic' font-weight='bold' "
+     "text-decoration='underline line-through' letter-spacing='1.5' "
+     "fill='#225'>Styled</text></svg>"},
+    {"tspan multiline + xml:space preserve",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<text x='10' y='30' font-family='" + F + "' font-size='12' "
+     "xml:space='preserve'><tspan x='10' dy='0'>a   b   c</tspan>"
+     "<tspan x='10' dy='16'>line two</tspan></text></svg>"},
+    {"dasharray multi-value + dashoffset",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<path d='M10 60 L190 60' fill='none' stroke='#a00' stroke-width='3' "
+     "stroke-dasharray='8 3 2 3' stroke-dashoffset='2'/></svg>"},
+    {"clipPath (path) + mask",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<defs><clipPath id='c'><path d='M20 20 L180 20 L100 100 Z'/></clipPath>"
+     "<mask id='m'><rect width='200' height='120' fill='#fff'/>"
+     "<circle cx='100' cy='60' r='25' fill='#000'/></mask></defs>"
+     "<g clip-path='url(#c)'><rect width='200' height='120' fill='#39c' "
+     "mask='url(#m)'/></g></svg>"},
+    {"nested inner <svg>",
+     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='120'>"
+     "<svg x='40' y='30' width='120' height='60' viewBox='0 0 10 10'>"
+     "<rect width='10' height='10' fill='#c63'/></svg></svg>"},
+    {"embedded PNG <image>", img},
+    {"embedded JPEG <image>",
+     "<svg xmlns='http://www.w3.org/2000/svg' "
+     "xmlns:xlink='http://www.w3.org/1999/xlink' width='200' height='120'>"
+     "<image x='0' y='0' width='200' height='120' preserveAspectRatio='none' "
+     "xlink:href='data:image/jpeg;base64," + JPG + "'/></svg>"},
+    {"embedded GIF <image>",
+     "<svg xmlns='http://www.w3.org/2000/svg' "
+     "xmlns:xlink='http://www.w3.org/1999/xlink' width='200' height='120'>"
+     "<image x='0' y='0' width='200' height='120' preserveAspectRatio='none' "
+     "xlink:href='data:image/gif;base64," + GIF + "'/></svg>"},
+    {"embedded nested-SVG <image>",
+     "<svg xmlns='http://www.w3.org/2000/svg' "
+     "xmlns:xlink='http://www.w3.org/1999/xlink' width='200' height='120'>"
+     "<image x='0' y='0' width='200' height='120' preserveAspectRatio='none' "
+     "xlink:href='data:image/svg+xml;base64," + SVGB64 + "'/></svg>"},
+  };
+
+  for (const auto& c : corpus) {
+    constexpr std::uint32_t kW = 200;
+    constexpr std::uint32_t kH = 120;
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(kW) * kH * 4u);
+    char err[256] = {0};
+    const std::int32_t st = fn_render(
+        reinterpret_cast<const std::uint8_t*>(c.svg.data()), c.svg.size(),
+        kW, kH, 96.0, px.data(), px.size(), err, sizeof(err));
+    INFO("feature: " << c.name);
+    INFO("err: " << err);
+    REQUIRE(st == 0);                       // resvg rendered it (no failure)
+    std::size_t opaque = 0;
+    for (std::size_t i = 3; i < px.size(); i += 4) {
+      if (px[i] != 0u) ++opaque;
+    }
+    INFO("opaque pixels: " << opaque);
+    CHECK(opaque > 0u);                      // not a silent blank
+  }
+}
+
 TEST_CASE("SVG rasterizer cdylib: caller-allocates with too-small buffer is"
           " a typed failure, never a buffer overrun",
           "[svg][cdylib][pixel_golden]") {

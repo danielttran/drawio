@@ -194,8 +194,27 @@ changes in `exporter.js`, all pinned in `exporter.test.mjs`:
 Irreducible residual notices (genuine divergences, must stay loud per C1; NOT
 "built-in objects rendered normally"): external-URL images, CSS
 `background-image` url()/gradient on labels, SMIL animation (`AnimatedSvgFrozen`
-— paper can't move), 3D bevel borders, unknown non-Latin list numbering, and a
-host-side `StubbedSvgArtwork` if resvg ever fails to render a cell's SVG.
+— paper can't move), 3D bevel borders, unknown non-Latin list numbering.
+
+**`StubbedSvgArtwork` (resvg render failure) — closed by conformance corpus.**
+The remaining worry was "what if resvg fails on some built-in stencil's SVG →
+host crosshatch + StubbedSvgArtwork". Closed by construction in
+`tests/svg_pixel_determinism_tests.cpp` → "FULL mxSvgCanvas feature vocabulary"
+case (`[conformance]`): a stencil is just a COMPOSITION of the finite SVG
+grammar drawio's vector renderer (`mxSvgCanvas2D`) emits, so proving resvg
+renders every feature proves it renders every stencil. The corpus (24 cases)
+covers arc/quad/smooth paths, feGaussianBlur / feDropShadow / mxgraph composite
+shadow chain / feColorMatrix filters, linear+radial gradients with
+gradientTransform & fx/fy, rotate+skew+matrix transforms, polygon/polyline,
+linecap/join/miterlimit, fill-rule, group opacity, pattern, `<use>`, styled
+text (italic/underline/strike/letter-spacing), tspan multiline + xml:space,
+multi-value dasharray+offset, clipPath+mask, nested `<svg>`, and embedded
+**PNG/JPEG/GIF/nested-SVG `<image>`** (which also proves the image-embedding
+fidelity change actually rasterizes). Each must return status 0 with >0 opaque
+pixels (no failure, no silent blank). Built + run against the real resvg-0.47
+cdylib on this box (ctest 152/152); CI runs it on ubuntu via
+`ctest -R "SVG rasterizer cdylib"` with `SVG_RASTERIZER_LIB` set, so a future
+resvg regression fails CI here instead of crosshatching a user's print.
 
 ---
 
