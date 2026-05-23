@@ -1082,6 +1082,35 @@
     return { kind: kind, detail: { detail: detail, cellId: String(cellId || '') } };
   }
 
+  // Notice severity taxonomy — the single, tested source of truth for how the
+  // Native Print dialog gates the Print button. Keyed by the same `kind` string
+  // the UI receives from BOTH sources: the exporter's own bake notices and the
+  // host/engine wire notices (proto.cpp NoticeKind). Two severities:
+  //   'info'        — shown for traceability, NEVER blocks Print.
+  //   'degradation' — shown with an acknowledge checkbox; blocks Print until ticked.
+  // The goal is WYSIWYG full-fidelity output without friction: a faithful
+  // render (or an outcome the owner has accepted by design) must not nag the
+  // operator for an acknowledgment on every print. Anything representing a real
+  // fidelity loss the operator should consciously approve stays a degradation.
+  var NOTICE_INFO = {
+    // Host SUCCESS notice: the SVG rasterized faithfully via the external
+    // backend (carries backend identity, e.g. "resvg 0.47"). A successful,
+    // full-fidelity render is informational, not an approval gate.
+    SvgArtworkRasterized: true,
+    // Engine/host clip notice. Per owner ruling the print keeps TRUE 1:1 size
+    // and the sheet shows exactly what it can hold (never a silent scale); a
+    // diagram larger than the paper is expected to be edge-clipped, so this is
+    // an informational note, not a per-print approval gate.
+    HardwareMarginClip: true,
+    // Additive forward-compatible version skew (peer/schema minor ahead).
+    SchemaMinorAhead: true,
+    ProtoMinorAhead: true
+  };
+
+  function noticeSeverity(kind) {
+    return NOTICE_INFO[kind] === true ? 'info' : 'degradation';
+  }
+
   // ---------------------------------------------------------------------------
   // TRUE-WYSIWYG path: emit drawio's ACTUAL rendered SVG for the cell as a
   // frozen-contract `svg` node ({kind:'svg',box,source:<base64>,aspect}). The
@@ -1985,7 +2014,8 @@
     return buildResult(graph).contract;
   }
 
-  var api = { buildContract: buildContract, buildResult: buildResult };
+  var api = { buildContract: buildContract, buildResult: buildResult,
+    noticeSeverity: noticeSeverity };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
 })(typeof window !== 'undefined' ? window : globalThis);
