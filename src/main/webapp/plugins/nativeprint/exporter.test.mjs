@@ -2599,6 +2599,63 @@ test('HTML-label inline <img>: JPEG/GIF/SVG data URIs embed faithfully, no notic
   });
 });
 
+// ---- GOAL: built-in objects rendered normally emit NO notice -------------
+// A realistic built-in object — a rectangle whose HTML label is a bulleted
+// list inside a uniformly-bordered div — must bake with zero notices, because
+// every feature now transcribes faithfully (no flatten/approx left).
+test('GOAL: built-in shape with bulleted, bordered HTML label -> zero notices', () => {
+  const t1 = { nodeType: 3, nodeValue: 'First item' };
+  const li1 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t1],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  t1.parentNode = li1;
+  const t2 = { nodeType: 3, nodeValue: 'Second item' };
+  const li2 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t2],
+    previousElementSibling: li1,
+    getBoundingClientRect: () => ({ left: 80, top: 78, width: 120, height: 16 }) };
+  t2.parentNode = li2;
+  const ul = { nodeType: 1, tagName: 'ul', _styleKey: 'ul', childNodes: [li1, li2],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 34 }) };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bordered',
+    childNodes: [ul], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'First item Second item',
+    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }),
+    ownerDocument: { createRange: mkRange } };
+  const noBorder = { borderStyle: 'none', borderTopStyle: 'none',
+    borderRightStyle: 'none', borderBottomStyle: 'none', borderLeftStyle: 'none' };
+  const bordered = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'solid', borderTopStyle: 'solid', borderRightStyle: 'solid',
+    borderBottomStyle: 'solid', borderLeftStyle: 'solid',
+    borderWidth: '1px', borderTopWidth: '1px', borderRightWidth: '1px',
+    borderBottomWidth: '1px', borderLeftWidth: '1px',
+    borderColor: 'rgb(0,0,0)', borderTopColor: 'rgb(0,0,0)',
+    borderRightColor: 'rgb(0,0,0)', borderBottomColor: 'rgb(0,0,0)',
+    borderLeftColor: 'rgb(0,0,0)' };
+  globalThis.getComputedStyle = (el) => {
+    const k = el && el._styleKey;
+    if (k === 'bordered') return bordered;
+    if (k === 'li') return Object.assign({}, bordered, noBorder, { display: 'list-item' });
+    return Object.assign({}, bordered, noBorder);   // ul / fo / text parents
+  };
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    assert.deepEqual(r.notices, [],
+      'every feature transcribes faithfully -> no bake notice for a built-in object');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(/<rect\b[^>]*fill="none"/.test(svg), 'uniform border -> one stroked rect');
+    assert.ok(/•/.test(svg), 'list bullets rendered');
+    assert.ok(!/<foreignObject/i.test(svg), 'never ships foreignObject');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
 // ---- Notice severity taxonomy (Print-gate contract) ----------------------
 // The Native Print dialog blocks the Print button on *degradations* but not on
 // *informational* notices. This classification is the single source of truth
