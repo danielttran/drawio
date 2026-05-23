@@ -2498,18 +2498,15 @@ test('HTML-label border: uniform double -> two stroked rects, no notice', () => 
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('HTML-label background-image: loud RichUnsupported (deduped across nested elements)', () => {
+test('HTML-label background-image: CSS gradient transcribes faithfully, no notice', () => {
+  // Computed-style form (browsers normalise colours to rgb()).
   const styWithBgi = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
     fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
     backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
     letterSpacing: 'normal',
-    backgroundImage: 'linear-gradient(to right, red, blue)' };
-  // Nested: root + 3 inner spans, each with same background-image.
-  const mkSpan = () => ({ nodeType: 1, tagName: 'span', _styleKey: 'span',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 30, height: 14 }) });
+    backgroundImage: 'linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255))' };
   const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [mkSpan(), mkSpan(), mkSpan()], previousElementSibling: null,
+    childNodes: [], previousElementSibling: null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
   const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
     textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
@@ -2519,10 +2516,64 @@ test('HTML-label background-image: loud RichUnsupported (deduped across nested e
     const shape = domEl('g', {}, [domEl('rect', {})]);
     const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
     const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const bgi = r.notices.filter((n) => n.kind === 'RichUnsupported' &&
-      /background-image/.test(n.detail.detail));
-    assert.equal(bgi.length, 1,
-      '4 elements with same bg-image -> ONE notice (per-cell dedup)');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
+      'a CSS gradient background is faithfully transcribed -> no notice');
+    assert.match(svg, /<linearGradient[^>]*>.*<stop[^>]*stop-color="#ff0000".*<stop[^>]*stop-color="#0000ff".*<\/linearGradient>/,
+      'gradient -> SVG linearGradient with both stops');
+    assert.match(svg, /<rect[^>]*fill="url\(#lblbg\d+\)"/, 'rect filled with the gradient');
+    // to right -> horizontal line (x1=0 .. x2=1, y constant)
+    assert.match(svg, /<linearGradient[^>]*x1="0"[^>]*x2="1"/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: external url() stays loud (cannot embed)', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    backgroundImage: 'url("https://example.com/bg.png")' };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => sty;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const n = r.notices.find((x) => x.kind === 'RichUnsupported' &&
+      /background-image/.test(x.detail.detail));
+    assert.ok(n, 'external-URL background cannot be embedded -> loud notice');
+    assert.match(n.detail.detail, /external URL/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: data-URI url() embeds as <image>, no notice', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    backgroundImage: 'url("data:image/png;base64,' + PNG + '")' };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => sty;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
+      'data-URI background embeds -> no notice');
+    assert.ok(/<image [^>]*xlink:href="data:image\/png;base64,/.test(svg),
+      'data-URI background painted as <image>');
   } finally { delete globalThis.getComputedStyle; }
 });
 

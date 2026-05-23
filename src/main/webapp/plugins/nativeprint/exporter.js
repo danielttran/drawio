@@ -1306,6 +1306,134 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
+  // --- CSS background-image -> faithful flat SVG ---------------------------
+  // A CSS gradient transcribes losslessly to an SVG <linearGradient>/
+  // <radialGradient> (resvg renders both, incl. inline <defs> — verified), and
+  // a data-URI url() embeds as <image> (PNG/JPEG/GIF/SVG). Only genuinely
+  // non-embeddable content (external http URL, or exotic forms like conic /
+  // image-set / paint()) stays loudly noticed. This removes the blanket
+  // "background-image not transcribed" warning for the faithfully-reproducible
+  // cases.
+  function splitTopLevel(str, sep) {
+    var out = [], depth = 0, cur = '';
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === sep && depth === 0) { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map(function (s) { return s.trim(); })
+      .filter(function (s) { return s !== ''; });
+  }
+
+  // CSS gradient angle (deg, clockwise from "to top") -> objectBoundingBox
+  // gradient-line endpoints. 0=to top, 90=to right, 180=to bottom.
+  function gradientLineFromAngle(deg) {
+    var t = ((deg % 360) + 360) % 360 * Math.PI / 180;
+    var s = Math.sin(t), c = Math.cos(t);
+    return { x1: fmt(0.5 - 0.5 * s), y1: fmt(0.5 + 0.5 * c),
+      x2: fmt(0.5 + 0.5 * s), y2: fmt(0.5 - 0.5 * c) };
+  }
+
+  var SIDE_ANGLE = { 'top': 0, 'right': 90, 'bottom': 180, 'left': 270,
+    'top right': 45, 'right top': 45, 'bottom right': 135, 'right bottom': 135,
+    'bottom left': 225, 'left bottom': 225, 'top left': 315, 'left top': 315 };
+  var bgGradSeq = 0;
+
+  function cssGradientDefAndFill(bgi) {
+    var m = /^(?:repeating-)?(linear|radial)-gradient\(([\s\S]*)\)$/i.exec(bgi.trim());
+    if (!m) return null;
+    var kind = m[1].toLowerCase();
+    var args = splitTopLevel(m[2], ',');
+    if (args.length < 2) return null;
+    var angle = 180;   // CSS default direction = to bottom
+    // A leading non-color token is a direction (linear) or shape/size/position
+    // descriptor (radial, approximated as centered).
+    var firstColorish = colorParts(args[0].replace(/\s+-?[\d.]+%\s*$/, ''));
+    if (!firstColorish || firstColorish.none) {
+      var dm = /^(-?[\d.]+)deg$/i.exec(args[0]);
+      if (dm) angle = parseFloat(dm[1]);
+      else if (/^to\s+/i.test(args[0])) {
+        var side = args[0].replace(/^to\s+/i, '').trim().toLowerCase()
+          .replace(/\s+/g, ' ');
+        if (SIDE_ANGLE[side] != null) angle = SIDE_ANGLE[side];
+      }
+      args = args.slice(1);
+    }
+    if (args.length < 2) return null;
+    var stops = [];
+    for (var i = 0; i < args.length; i++) {
+      var pm = /^([\s\S]+?)\s+(-?[\d.]+)%$/.exec(args[i].trim());
+      var color = pm ? pm[1] : args[i].trim();
+      var pos = pm ? clamp01(parseFloat(pm[2]) / 100) : null;
+      var cp = colorParts(color);
+      if (!cp || cp.none) return null;   // a stop we can't represent -> bail
+      stops.push({ cp: cp, pos: pos });
+    }
+    if (stops.length < 2) return null;
+    for (var k = 0; k < stops.length; k++) {
+      if (stops[k].pos == null) stops[k].pos = k / (stops.length - 1);
+    }
+    var stopSvg = stops.map(function (s) {
+      return '<stop offset="' + fmt(s.pos) + '" stop-color="' + s.cp.hex + '"' +
+        (s.cp.alpha < 1 ? ' stop-opacity="' + fmt(s.cp.alpha) + '"' : '') + '/>';
+    }).join('');
+    var id = 'lblbg' + (++bgGradSeq);
+    if (kind === 'linear') {
+      var L = gradientLineFromAngle(angle);
+      return { id: id, def: '<linearGradient id="' + id + '" x1="' + L.x1 +
+        '" y1="' + L.y1 + '" x2="' + L.x2 + '" y2="' + L.y2 + '">' +
+        stopSvg + '</linearGradient>' };
+    }
+    return { id: id, def: '<radialGradient id="' + id +
+      '" cx="0.5" cy="0.5" r="0.5">' + stopSvg + '</radialGradient>' };
+  }
+
+  function backgroundImageSvg(cs, rect, noticeOnce) {
+    if (!cs || !rect || (!rect.width && !rect.height)) return '';
+    var bgi = cs.backgroundImage;
+    if (!bgi || bgi === 'none' || bgi === '') return '';
+    var box = 'x="' + fmt(rect.left) + '" y="' + fmt(rect.top) + '" width="' +
+      fmt(rect.width) + '" height="' + fmt(rect.height) + '"';
+    if (/gradient\(/i.test(bgi)) {
+      var g = cssGradientDefAndFill(bgi);
+      if (g) {
+        return '<defs>' + g.def + '</defs><rect ' + box +
+          ' fill="url(#' + g.id + ')"/>';
+      }
+      if (typeof noticeOnce === 'function') {
+        noticeOnce('RichUnsupported',
+          'HTML-label CSS background gradient uses a form the bake cannot ' +
+          'transcribe (e.g. conic / multi-position); printed without it');
+      }
+      return '';
+    }
+    var um = /url\(\s*["']?([^"')]+)["']?\s*\)/i.exec(bgi);
+    if (um) {
+      var parsed = parseImage(um[1]);
+      var mime = embeddableImageMime(parsed);
+      if (mime) {
+        return '<image ' + box + ' preserveAspectRatio="none" xlink:href="data:' +
+          mime + ';base64,' + parsed.data + '"/>';
+      }
+      if (typeof noticeOnce === 'function') {
+        noticeOnce('RichUnsupported',
+          'HTML-label CSS background-image references ' +
+          (parsed && parsed.externalUrl ? 'an external URL' :
+            'unembeddable content') + '; printed without it');
+      }
+      return '';
+    }
+    if (typeof noticeOnce === 'function') {
+      noticeOnce('RichUnsupported',
+        'HTML-label CSS background-image form is not transcribable; ' +
+        'printed without it');
+    }
+    return '';
+  }
+
   // --- CSS borders on HTML-label elements -> faithful flat SVG -------------
   // resvg renders <rect>/<line> with stroke + dasharray exactly, so a CSS
   // border transcribes losslessly (no flatten-to-one-side approximation):
@@ -1415,21 +1543,6 @@
     return out;
   }
 
-  // CSS background-image (gradient, url(), pattern) cannot be transcribed
-  // without a browser-style rasterizer; the bake captures only solid
-  // background-color via bgRect(). Detect and loudly notice so the
-  // operator knows a textured label background will print blank-but-text.
-  function checkBackgroundImage(cs, noticeOnce) {
-    if (typeof noticeOnce !== 'function') return;
-    var bgi = cs && cs.backgroundImage;
-    if (bgi && bgi !== 'none' && bgi !== '') {
-      noticeOnce('RichUnsupported',
-        'HTML-label CSS background-image is not transcribed (only solid ' +
-        'background-color is); the printed label will show its background ' +
-        'color but not the image / gradient / pattern');
-    }
-  }
-
   function pushListMarkerApprox(notices, detail, cellId) {
     if (!Array.isArray(notices)) return;
     notices.push(degradation('SvgListMarkerApprox', detail, cellId));
@@ -1536,9 +1649,9 @@
       if (rootEl) {
         var rcs = root.getComputedStyle(rootEl);
         var rr = rootEl.getBoundingClientRect();
-        bg.push(bgRect(rcs, rr));
-        bg.push(borderRect(rcs, rr, noticeOnce));
-        checkBackgroundImage(rcs, noticeOnce);
+        bg.push(bgRect(rcs, rr));               // CSS paint order: color,
+        bg.push(backgroundImageSvg(rcs, rr, noticeOnce));  // then image,
+        bg.push(borderRect(rcs, rr, noticeOnce));          // then border.
       }
       var walk = function (n) {
         if (!n) return;
@@ -1547,8 +1660,8 @@
           if (n !== rootEl) {
             var er = n.getBoundingClientRect();
             bg.push(bgRect(ecs, er));
+            bg.push(backgroundImageSvg(ecs, er, noticeOnce));
             bg.push(borderRect(ecs, er, noticeOnce));
-            checkBackgroundImage(ecs, noticeOnce);
           }
           if ((ecs.display || '').indexOf('list-item') >= 0 &&
             (ecs.listStyleType || 'disc') !== 'none') {
