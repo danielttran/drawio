@@ -141,6 +141,31 @@ SKIPs cleanly when `SVG_RASTERIZER_LIB` isn't configured.
 
 `jobLog.svgRasterizer` records backend name+version or `"none"`.
 
+### Notice severity / Print-gate (2026-05-23)
+
+The Native Print dialog gates the **Print** button on notice *severity*, not
+on notice *count*. Single source of truth: `exporter.js` →
+`noticeSeverity(kind)` (exported on `NativePrintExporter`), keyed by the same
+`kind` string the UI gets from BOTH the exporter and the host/engine wire
+(`proto.cpp` `NoticeKind`). Pinned by `exporter.test.mjs`.
+
+- **`info`** (shown for traceability, NEVER blocks Print):
+  `SvgArtworkRasterized` (faithful external render — success), `HardwareMarginClip`
+  (owner ruling: keep true 1:1 size, the sheet shows what it can hold — a
+  larger-than-paper diagram is *expected* to edge-clip, never silently scaled),
+  `SchemaMinorAhead`, `ProtoMinorAhead` (additive version skew).
+- **`degradation`** (acknowledge checkbox required to enable Print): every other
+  kind — `StubbedBarcode`, `StubbedSvgArtwork`, `FontSubstituted`, `MergeClip`,
+  `ExporterUnsupportedShape/Image`, `RichApproximate/Unsupported`,
+  `GradientDirectionApprox`, `AnimatedSvgFrozen`, `SvgListMarkerApprox`, and any
+  **unknown** kind (fail-safe).
+
+Rationale: a full-fidelity WYSIWYG print must not nag the operator for an ack on
+every run. `nativeprint.js` `showNotices` splits notices into a "Notes (no action
+needed)" block and an "Output degradations — acknowledge each" block; the gate
+counts only degradation acks. No engine/host/contract change — rendering already
+keeps true size + clips to paper, which is the desired behaviour.
+
 ---
 
 ## Audit fixes (rounds 1–6, 2026-05-21)

@@ -2513,3 +2513,41 @@ test('HTML-label inline <img>: PNG data URI transcribed to <image>; non-PNG loud
     assert.match(imgNotice.detail.detail, /external URL/);
   } finally { delete globalThis.getComputedStyle; }
 });
+
+// ---- Notice severity taxonomy (Print-gate contract) ----------------------
+// The Native Print dialog blocks the Print button on *degradations* but not on
+// *informational* notices. This classification is the single source of truth
+// shared by the dialog (nativeprint.js) and keyed by the same `kind` string the
+// UI receives from BOTH the exporter and the host/engine wire (proto.cpp).
+// Pins WYSIWYG-without-friction: a faithful render / owner-accepted edge-clip
+// must NOT require a per-print acknowledgment.
+test('noticeSeverity: success + owner-accepted notices are informational', () => {
+  assert.equal(typeof exporter.noticeSeverity, 'function');
+  // SvgArtworkRasterized = host success notice ("rendered via resvg 0.47").
+  assert.equal(exporter.noticeSeverity('SvgArtworkRasterized'), 'info');
+  // HardwareMarginClip = keep true size, the sheet shows what it can hold.
+  assert.equal(exporter.noticeSeverity('HardwareMarginClip'), 'info');
+  // Additive forward-compatible version skew.
+  assert.equal(exporter.noticeSeverity('SchemaMinorAhead'), 'info');
+  assert.equal(exporter.noticeSeverity('ProtoMinorAhead'), 'info');
+});
+
+test('noticeSeverity: real fidelity losses stay blocking degradations', () => {
+  [
+    // host/engine wire kinds (proto.cpp NoticeKind)
+    'StubbedBarcode', 'StubbedSvgArtwork', 'FontSubstituted', 'MergeClip',
+    // exporter bake kinds
+    'ExporterUnsupportedShape', 'ExporterUnsupportedImage',
+    'RichApproximate', 'RichUnsupported', 'GradientDirectionApprox',
+    'AnimatedSvgFrozen', 'SvgListMarkerApprox'
+  ].forEach((kind) => {
+    assert.equal(exporter.noticeSeverity(kind), 'degradation',
+      kind + ' must block Print until acknowledged');
+  });
+});
+
+test('noticeSeverity: unknown kind fails safe to degradation', () => {
+  assert.equal(exporter.noticeSeverity('SomethingNewAndUnknown'), 'degradation');
+  assert.equal(exporter.noticeSeverity(''), 'degradation');
+  assert.equal(exporter.noticeSeverity(undefined), 'degradation');
+});

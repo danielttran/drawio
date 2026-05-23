@@ -231,31 +231,72 @@
       printBtn.disabled = !allAck || !previewImg.getAttribute('src');
     }
 
+    // Severity is owned by the exporter (single tested source of truth) so the
+    // dialog and the bake never disagree on what blocks Print. Unknown kinds
+    // (or a missing exporter) fail safe to 'degradation' — better to ask for
+    // an ack than to silently let an unrecognised notice through.
+    function severityOf(kind) {
+      var ex = window.NativePrintExporter;
+      return (ex && typeof ex.noticeSeverity === 'function')
+        ? ex.noticeSeverity(kind) : 'degradation';
+    }
+
+    function noticeText(n) {
+      return n.kind + (n.detail && n.detail.detail ? ' — ' + n.detail.detail : '');
+    }
+
+    // The Print gate blocks ONLY on degradations (real fidelity loss the
+    // operator must consciously approve). Informational / success notices
+    // (faithful external SVG render, expected edge-clip to the chosen paper)
+    // are shown for traceability but never require an acknowledgment — a
+    // full-fidelity WYSIWYG print should not nag on every run.
     function showNotices(notices) {
       acks = [];
       noticeBox.innerHTML = '';
       var combined = (exporterNotices || []).concat(notices || []);
+      var degradations = [], infos = [];
+      combined.forEach(function (n) {
+        (severityOf(n.kind) === 'info' ? infos : degradations).push(n);
+      });
       if (combined.length === 0) {
         noticeBox.style.display = 'none';
         refreshGate();
         return;
       }
       noticeBox.style.display = 'block';
-      noticeBox.appendChild(el('div', { style: 'font-weight:bold' },
-        'Output degradations — acknowledge each to enable Print:'));
-      combined.forEach(function (n, i) {
-        acks.push(false);
-        var line = el('div', { style: 'margin:4px 0' });
-        var cb = el('input', { type: 'checkbox' });
-        cb.addEventListener('change', function () {
-          acks[i] = cb.checked; refreshGate();
+      // Amber "needs approval" accent only when there is something to ack;
+      // an info-only run (e.g. a faithful render) gets a calm neutral accent.
+      noticeBox.style.borderColor = degradations.length ? '#e0a800' : '#bcd6e6';
+      noticeBox.style.background = degradations.length ? '#fff8e1' : '#eef5fb';
+
+      if (degradations.length) {
+        noticeBox.appendChild(el('div', { style: 'font-weight:bold' },
+          'Output degradations — acknowledge each to enable Print:'));
+        degradations.forEach(function (n) {
+          var idx = acks.length;       // index BEFORE push == this ack's slot
+          acks.push(false);
+          var line = el('div', { style: 'margin:4px 0' });
+          var cb = el('input', { type: 'checkbox' });
+          cb.addEventListener('change', function () {
+            acks[idx] = cb.checked; refreshGate();
+          });
+          line.appendChild(cb);
+          line.appendChild(el('span', { style: 'margin-left:6px' }, noticeText(n)));
+          noticeBox.appendChild(line);
         });
-        var txt = n.kind + (n.detail && n.detail.detail ?
-          ' — ' + n.detail.detail : '');
-        line.appendChild(cb);
-        line.appendChild(el('span', { style: 'margin-left:6px' }, txt));
-        noticeBox.appendChild(line);
-      });
+      }
+
+      if (infos.length) {
+        noticeBox.appendChild(el('div', { style: 'font-weight:bold' +
+          (degradations.length ? ';margin-top:8px' : '') },
+          'Notes (no action needed):'));
+        infos.forEach(function (n) {
+          var line = el('div', { style: 'margin:4px 0;color:#456' });
+          line.appendChild(el('span', null, noticeText(n)));
+          noticeBox.appendChild(line);
+        });
+      }
+
       refreshGate();
     }
 
