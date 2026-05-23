@@ -190,11 +190,27 @@ changes in `exporter.js`, all pinned in `exporter.test.mjs`:
   base64 image data URIs; `embeddableImageMime()` gates the set. No notice for
   embeddable formats; external URLs / non-base64 / webp/bmp stay loud
   (genuinely unembeddable browser-free).
+- **CSS `background-image` on labels** (`backgroundImageSvg`): CSS linear/radial
+  gradients transcribe to real SVG `<linearGradient>`/`<radialGradient>` (inline
+  `<defs>`; verified rendering through resvg with correct stops), and data-URI
+  `url()` backgrounds embed as `<image>`. Only external-URL / exotic (conic,
+  image-set) forms stay loud.
+- **3D bevel borders** (groove/ridge/inset/outset): render two-tone via
+  `bevelSideColor` (lit edge = border colour, shadowed edge darkened ~50%),
+  matching the bevel direction — no RichApproximate.
 
-Irreducible residual notices (genuine divergences, must stay loud per C1; NOT
-"built-in objects rendered normally"): external-URL images, CSS
-`background-image` url()/gradient on labels, SMIL animation (`AnimatedSvgFrozen`
-— paper can't move), 3D bevel borders, unknown non-Latin list numbering.
+Irreducible residual (genuine divergences that MUST stay loud per C1, and NOT
+producible by drawio's built-in editors / objects rendered normally):
+- **External (http) URL images & `url()` backgrounds** — embedding needs a
+  network fetch (CORS-blocked) or a canvas pixel-read (C2-forbidden). This is a
+  direct conflict between "no warnings" and the no-network/no-pixel-oracle rule;
+  only the owner can relax one. Today: loud `ExporterUnsupportedImage` /
+  `RichUnsupported` + placeholder.
+- **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
+  user-embedded animated SVG, never a built-in shape.
+- **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list
+  editor only offers disc/circle/square/decimal/lower|upper-alpha/lower|upper-
+  roman, all covered by `listMarker()`; only hand-authored HTML hits the rest.
 
 **`StubbedSvgArtwork` (resvg render failure) — closed by conformance corpus.**
 The remaining worry was "what if resvg fails on some built-in stencil's SVG →

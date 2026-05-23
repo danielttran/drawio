@@ -2498,6 +2498,43 @@ test('HTML-label border: uniform double -> two stroked rects, no notice', () => 
   } finally { delete globalThis.getComputedStyle; }
 });
 
+test('HTML-label border: 3D bevel (outset) renders two-tone, no notice', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'outset', borderTopStyle: 'outset', borderRightStyle: 'outset',
+    borderBottomStyle: 'outset', borderLeftStyle: 'outset',
+    borderWidth: '4px', borderTopWidth: '4px', borderRightWidth: '4px',
+    borderBottomWidth: '4px', borderLeftWidth: '4px',
+    borderColor: 'rgb(200,200,200)', borderTopColor: 'rgb(200,200,200)',
+    borderRightColor: 'rgb(200,200,200)', borderBottomColor: 'rgb(200,200,200)',
+    borderLeftColor: 'rgb(200,200,200)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bevel',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'bevel') ? sty : noBorder;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
+      'bevel border renders two-tone faithfully -> no RichApproximate notice');
+    const lines = svg.match(/<line\b[^>]*>/g) || [];
+    assert.equal(lines.length, 4, 'one shaded line per side');
+    // outset: top/left LIT (#c8c8c8), right/bottom SHADOWED (darkened ~#646464)
+    assert.ok(lines.some((l) => /stroke="#c8c8c8"/.test(l)), 'lit edge keeps border colour');
+    assert.ok(lines.some((l) => /stroke="#646464"/.test(l)), 'shadowed edge darkened');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
 test('HTML-label background-image: CSS gradient transcribes faithfully, no notice', () => {
   // Computed-style form (browsers normalise colours to rgb()).
   const styWithBgi = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',

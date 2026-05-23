@@ -1467,22 +1467,45 @@
       (dash ? ' stroke-dasharray="' + dash + '"' : '');
   }
 
+  // Scale an #rrggbb toward black (factor<1) — the shade browsers use for the
+  // dark edges of a 3D bevel border.
+  function shadeHex(hex, factor) {
+    var h = String(hex).replace('#', '');
+    if (h.length !== 6) return hex;
+    var ch = function (i) {
+      var v = Math.max(0, Math.min(255,
+        Math.round(parseInt(h.substr(i, 2), 16) * factor)));
+      return v.toString(16).padStart(2, '0');
+    };
+    return '#' + ch(0) + ch(2) + ch(4);
+  }
+
+  // 3D bevel (groove/ridge/inset/outset): the visible look is two-tone — the
+  // border colour on the "lit" edges and a darkened shade on the "shadowed"
+  // edges. inset/groove: top+left shadowed; outset/ridge: top+left lit. This
+  // is the faithful flat-SVG rendering of the bevel direction.
+  function bevelSideColor(nx, ny, e) {
+    var topLeft = (nx > 0 || ny > 0);                 // inward normal R/Down
+    var raised = (e.style === 'outset' || e.style === 'ridge');
+    var lit = (topLeft === raised);                   // lit edge keeps colour
+    return lit ? e.cp : { hex: shadeHex(e.cp.hex, 0.5), alpha: e.cp.alpha };
+  }
+
   // One side as a stroked <line>, offset inward (nx,ny = inward unit normal)
-  // to the centre of its border band. `double` -> two thin parallel strokes.
-  function borderSide(ax, ay, bx, by, nx, ny, e, noticeOnce) {
-    var line = function (off, width, dash) {
+  // to the centre of its border band. `double` -> two thin parallel strokes;
+  // 3D bevels -> a per-side shaded solid edge.
+  function borderSide(ax, ay, bx, by, nx, ny, e) {
+    var line = function (off, width, dash, cp) {
       return '<line x1="' + fmt(ax + nx * off) + '" y1="' + fmt(ay + ny * off) +
         '" x2="' + fmt(bx + nx * off) + '" y2="' + fmt(by + ny * off) + '"' +
-        borderStrokeAttrs(e.cp, width, dash) + '/>';
+        borderStrokeAttrs(cp || e.cp, width, dash) + '/>';
     };
     if (e.style === 'double') {
       var t = e.w / 3;
       return line(t / 2, t, null) + line(e.w - t / 2, t, null);
     }
-    if (BEVEL_STYLES[e.style] && typeof noticeOnce === 'function') {
-      noticeOnce('RichApproximate',
-        'border-style "' + e.style + '" rendered as a solid edge (the 3D ' +
-        'groove/ridge/inset/outset bevel has no flat-SVG equivalent)');
+    if (BEVEL_STYLES[e.style]) {
+      return line(e.w / 2, e.w, null, bevelSideColor(nx, ny, e));
     }
     return line(e.w / 2, e.w, borderDash(e.style, e.w));
   }
@@ -1504,7 +1527,10 @@
     if (!spec.some(function (e) { return e.visible; })) return '';
 
     var s0 = spec[0];
-    var uniform = spec.every(function (e) { return e.visible; }) &&
+    // Bevel styles are intrinsically two-tone, so they always take the
+    // per-side path (a single <rect> can't carry the light/dark split).
+    var uniform = !spec.some(function (e) { return BEVEL_STYLES[e.style]; }) &&
+      spec.every(function (e) { return e.visible; }) &&
       spec.every(function (e) {
         return e.style === s0.style && e.w === s0.w &&
           e.cp.hex === s0.cp.hex && e.cp.alpha === s0.cp.alpha;
@@ -1524,22 +1550,17 @@
         var td = s0.w / 3;
         return rectStroke(td / 2, td, null) + rectStroke(s0.w - td / 2, td, null);
       }
-      if (BEVEL_STYLES[s0.style] && typeof noticeOnce === 'function') {
-        noticeOnce('RichApproximate',
-          'border-style "' + s0.style + '" rendered as a solid border (the ' +
-          '3D groove/ridge/inset/outset bevel has no flat-SVG equivalent)');
-      }
       return rectStroke(s0.w / 2, s0.w, borderDash(s0.style, s0.w));
     }
 
     // Per-side: one stroked line per visible side (butt caps; for typical thin
     // borders the <=w corner gap is sub-visual and the per-side colours print
-    // exactly).
+    // exactly). Bevel styles render two-tone via bevelSideColor.
     var out = '';
-    if (spec[0].visible) out += borderSide(L, T, Rt, T, 0, 1, spec[0], noticeOnce);
-    if (spec[1].visible) out += borderSide(Rt, T, Rt, Bt, -1, 0, spec[1], noticeOnce);
-    if (spec[2].visible) out += borderSide(L, Bt, Rt, Bt, 0, -1, spec[2], noticeOnce);
-    if (spec[3].visible) out += borderSide(L, T, L, Bt, 1, 0, spec[3], noticeOnce);
+    if (spec[0].visible) out += borderSide(L, T, Rt, T, 0, 1, spec[0]);
+    if (spec[1].visible) out += borderSide(Rt, T, Rt, Bt, -1, 0, spec[1]);
+    if (spec[2].visible) out += borderSide(L, Bt, Rt, Bt, 0, -1, spec[2]);
+    if (spec[3].visible) out += borderSide(L, T, L, Bt, 1, 0, spec[3]);
     return out;
   }
 
