@@ -166,6 +166,37 @@ needed)" block and an "Output degradations — acknowledge each" block; the gate
 counts only degradation acks. No engine/host/contract change — rendering already
 keeps true size + clips to paper, which is the desired behaviour.
 
+### Built-in-object fidelity pass — eliminate avoidable notices (2026-05-23)
+
+Goal: a diagram built only from drawio's built-in objects should print/preview
+with NO notice at all. Approach is C1-correct — *remove the divergence so the
+notice is unnecessary*, never silence a real divergence. Live (browser) path
+changes in `exporter.js`, all pinned in `exporter.test.mjs`:
+
+- **CSS borders on HTML labels** (`borderRect`): now faithful flat SVG instead
+  of "flatten to top side + RichApproximate". Uniform → one stroked `<rect>`;
+  per-side differences → one stroked `<line>` per visible side (own colour/
+  width/style); `double` → two 1/3 strokes; dashed/dotted via dasharray. No
+  notice. Only the 3D bevels (groove/ridge/inset/outset) stay loud (no flat-SVG
+  equivalent).
+- **List markers** (`transcribeForeignObjects`): standard CSS list types are all
+  covered by `listMarker()` and placed by measured first-content position; the
+  routine `SvgListMarkerApprox` is dropped (CSS itself defines outside-marker
+  position as UA-approximated, so this IS faithful). Stays loud only for a
+  genuinely-unknown list-style-type (georgian/armenian/CJK → bullet substitute).
+- **Inline `<img>` in labels** + **image cells**: any rasterizer-embeddable data
+  URI (PNG/JPEG/GIF/SVG) now embeds as `<image>` (cells route through
+  `svgCellNode` so resvg draws it). `parseImage` returns `format`+`data` for all
+  base64 image data URIs; `embeddableImageMime()` gates the set. No notice for
+  embeddable formats; external URLs / non-base64 / webp/bmp stay loud
+  (genuinely unembeddable browser-free).
+
+Irreducible residual notices (genuine divergences, must stay loud per C1; NOT
+"built-in objects rendered normally"): external-URL images, CSS
+`background-image` url()/gradient on labels, SMIL animation (`AnimatedSvgFrozen`
+— paper can't move), 3D bevel borders, unknown non-Latin list numbering, and a
+host-side `StubbedSvgArtwork` if resvg ever fails to render a cell's SVG.
+
 ---
 
 ## Audit fixes (rounds 1–6, 2026-05-21)

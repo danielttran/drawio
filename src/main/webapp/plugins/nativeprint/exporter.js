@@ -1306,67 +1306,113 @@
       (cp.alpha < 1 ? ' fill-opacity="' + fmt(cp.alpha) + '"' : '') + '/>';
   }
 
-  // CSS border around an HTML-label element. Transcribed as a stroked
-  // <rect> so the bordered look survives into the printer. Style mapping:
-  //   solid  -> no dasharray
-  //   dashed -> width-proportional dasharray
-  //   dotted -> 1:2 dashes
-  //   double|groove|ridge|inset|outset -> approximated as solid (loud)
-  //   none|hidden -> skipped
-  // Width 0 / style 'none' / fully-transparent color -> nothing emitted.
-  // Per-side differences (e.g. border-left=red, border-right=blue) are
-  // also loudly noticed because this code emits one uniform stroked
-  // rectangle taking the TOP side's spec.
+  // --- CSS borders on HTML-label elements -> faithful flat SVG -------------
+  // resvg renders <rect>/<line> with stroke + dasharray exactly, so a CSS
+  // border transcribes losslessly (no flatten-to-one-side approximation):
+  //   * uniform border (all sides share style/width/color) -> one stroked
+  //     <rect> (clean mitred corners);
+  //   * per-side differences (left=red / right=blue, mixed widths/styles) ->
+  //     each visible side as its own stroked <line> at the band centre, so the
+  //     per-side look prints exactly;
+  //   * solid -> plain; dashed/dotted -> dasharray; double -> two 1/3 strokes
+  //     with the 1/3 gap;
+  //   * none/hidden/zero-width/transparent side -> nothing.
+  // Only the 3D bevel styles (groove/ridge/inset/outset) have no flat-SVG
+  // equivalent (they need the browser's computed light/dark edge shades);
+  // those render as a solid edge of the border colour and stay loudly noticed
+  // (a genuine approximation, per C1).
+  var BEVEL_STYLES = { groove: true, ridge: true, inset: true, outset: true };
+
+  function borderDash(style, w) {
+    if (style === 'dashed') {
+      return Math.max(2, Math.round(w * 3)) + ',' + Math.max(1, Math.round(w * 1.5));
+    }
+    if (style === 'dotted') {
+      return Math.max(1, Math.round(w)) + ',' + Math.max(1, Math.round(w * 2));
+    }
+    return null;
+  }
+
+  function borderStrokeAttrs(cp, width, dash) {
+    return ' fill="none" stroke="' + cp.hex + '" stroke-width="' + fmt(width) +
+      '"' + (cp.alpha < 1 ? ' stroke-opacity="' + fmt(cp.alpha) + '"' : '') +
+      (dash ? ' stroke-dasharray="' + dash + '"' : '');
+  }
+
+  // One side as a stroked <line>, offset inward (nx,ny = inward unit normal)
+  // to the centre of its border band. `double` -> two thin parallel strokes.
+  function borderSide(ax, ay, bx, by, nx, ny, e, noticeOnce) {
+    var line = function (off, width, dash) {
+      return '<line x1="' + fmt(ax + nx * off) + '" y1="' + fmt(ay + ny * off) +
+        '" x2="' + fmt(bx + nx * off) + '" y2="' + fmt(by + ny * off) + '"' +
+        borderStrokeAttrs(e.cp, width, dash) + '/>';
+    };
+    if (e.style === 'double') {
+      var t = e.w / 3;
+      return line(t / 2, t, null) + line(e.w - t / 2, t, null);
+    }
+    if (BEVEL_STYLES[e.style] && typeof noticeOnce === 'function') {
+      noticeOnce('RichApproximate',
+        'border-style "' + e.style + '" rendered as a solid edge (the 3D ' +
+        'groove/ridge/inset/outset bevel has no flat-SVG equivalent)');
+    }
+    return line(e.w / 2, e.w, borderDash(e.style, e.w));
+  }
+
   function borderRect(cs, rect, noticeOnce) {
     if (!cs || !rect || (!rect.width && !rect.height)) return '';
-    var style = (cs.borderTopStyle || cs.borderStyle || 'none').toLowerCase();
-    if (style === 'none' || style === 'hidden') return '';
-    var w = parseFloat(cs.borderTopWidth || cs.borderWidth || '0');
-    if (!Number.isFinite(w) || w <= 0) return '';
-    var cp = colorParts(cs.borderTopColor || cs.borderColor || '');
-    if (!cp || cp.none || cp.alpha === 0) return '';
-    // Per-side mismatch detection. Compare top vs right vs bottom vs left
-    // for each of style/width/color; if any differ we are about to flatten
-    // them into a single uniform stroke and must say so.
-    if (typeof noticeOnce === 'function') {
-      var sides = ['Top', 'Right', 'Bottom', 'Left'];
-      var firstStyle = cs['border' + sides[0] + 'Style'];
-      var firstWidth = cs['border' + sides[0] + 'Width'];
-      var firstColor = cs['border' + sides[0] + 'Color'];
-      var mixed = false;
-      for (var si = 1; si < sides.length; si++) {
-        if (cs['border' + sides[si] + 'Style'] !== firstStyle ||
-            cs['border' + sides[si] + 'Width'] !== firstWidth ||
-            cs['border' + sides[si] + 'Color'] !== firstColor) {
-          mixed = true; break;
-        }
+    var names = ['Top', 'Right', 'Bottom', 'Left'];
+    var spec = names.map(function (s) {
+      var style = (cs['border' + s + 'Style'] || cs.borderStyle || 'none')
+        .toLowerCase();
+      var w = parseFloat(cs['border' + s + 'Width'] || cs.borderWidth || '0');
+      var cp = colorParts(cs['border' + s + 'Color'] || cs.borderColor || '');
+      var visible = style !== 'none' && style !== 'hidden' &&
+        Number.isFinite(w) && w > 0 && cp && !cp.none && cp.alpha !== 0;
+      return { style: style, w: visible ? w : 0,
+        cp: (cp && !cp.none) ? cp : { hex: '#000000', alpha: 1 },
+        visible: visible };
+    });
+    if (!spec.some(function (e) { return e.visible; })) return '';
+
+    var s0 = spec[0];
+    var uniform = spec.every(function (e) { return e.visible; }) &&
+      spec.every(function (e) {
+        return e.style === s0.style && e.w === s0.w &&
+          e.cp.hex === s0.cp.hex && e.cp.alpha === s0.cp.alpha;
+      });
+
+    var L = rect.left, T = rect.top,
+        Rt = rect.left + rect.width, Bt = rect.top + rect.height;
+
+    if (uniform) {
+      var rectStroke = function (inset, sw, dash) {
+        return '<rect x="' + fmt(L + inset) + '" y="' + fmt(T + inset) +
+          '" width="' + fmt(Math.max(0, rect.width - 2 * inset)) +
+          '" height="' + fmt(Math.max(0, rect.height - 2 * inset)) + '"' +
+          borderStrokeAttrs(s0.cp, sw, dash) + '/>';
+      };
+      if (s0.style === 'double') {
+        var td = s0.w / 3;
+        return rectStroke(td / 2, td, null) + rectStroke(s0.w - td / 2, td, null);
       }
-      if (mixed) {
+      if (BEVEL_STYLES[s0.style] && typeof noticeOnce === 'function') {
         noticeOnce('RichApproximate',
-          'HTML-label has per-side CSS borders (left/right/top/bottom ' +
-          'differ); printed as one uniform border using the top side\'s ' +
-          'style/width/color');
+          'border-style "' + s0.style + '" rendered as a solid border (the ' +
+          '3D groove/ridge/inset/outset bevel has no flat-SVG equivalent)');
       }
+      return rectStroke(s0.w / 2, s0.w, borderDash(s0.style, s0.w));
     }
-    var dash = null;
-    if (style === 'dashed') dash = Math.max(2, Math.round(w * 3)) + ',' + Math.max(1, Math.round(w * 1.5));
-    else if (style === 'dotted') dash = Math.max(1, Math.round(w)) + ',' + Math.max(1, Math.round(w * 2));
-    else if (style !== 'solid' && typeof noticeOnce === 'function') {
-      noticeOnce('RichApproximate',
-        'border-style "' + style + '" rendered as solid (no SVG primitive ' +
-        'reproduces double/groove/ridge/inset/outset losslessly)');
-    }
-    // Stroke is drawn centred on the path; offset the rect inward by half
-    // the stroke width so the visible border matches the box edge a
-    // browser would draw it on.
-    var inset = w / 2;
-    return '<rect x="' + fmt(rect.left + inset) + '" y="' + fmt(rect.top + inset) +
-      '" width="' + fmt(Math.max(0, rect.width - w)) +
-      '" height="' + fmt(Math.max(0, rect.height - w)) +
-      '" fill="none" stroke="' + cp.hex +
-      '" stroke-width="' + fmt(w) + '"' +
-      (cp.alpha < 1 ? ' stroke-opacity="' + fmt(cp.alpha) + '"' : '') +
-      (dash ? ' stroke-dasharray="' + dash + '"' : '') + '/>';
+
+    // Per-side: one stroked line per visible side (butt caps; for typical thin
+    // borders the <=w corner gap is sub-visual and the per-side colours print
+    // exactly).
+    var out = '';
+    if (spec[0].visible) out += borderSide(L, T, Rt, T, 0, 1, spec[0], noticeOnce);
+    if (spec[1].visible) out += borderSide(Rt, T, Rt, Bt, -1, 0, spec[1], noticeOnce);
+    if (spec[2].visible) out += borderSide(L, Bt, Rt, Bt, 0, -1, spec[2], noticeOnce);
+    if (spec[3].visible) out += borderSide(L, T, L, Bt, 1, 0, spec[3], noticeOnce);
+    return out;
   }
 
   // CSS background-image (gradient, url(), pattern) cannot be transcribed
@@ -1514,18 +1560,19 @@
             }
             var glyph = listMarker(lt, idx);
             if (glyph === null) {
+              // Genuinely unknown list-style-type (e.g. georgian / armenian /
+              // a CJK system): we substitute a bullet, which IS a divergence
+              // from the real marker -> stays loudly noticed (C1). Standard
+              // CSS list types are all covered by listMarker() above.
               glyph = '•';
               pushListMarkerApprox(notices,
-                'list-style-type "' + lt + '" rendered as a bullet ' +
-                '(no standard glyph)', cellId);
-            } else {
-              // The ::marker pseudo-box is not measurable without a browser
-              // (C2); glyph + numbering are exact, the inset is derived
-              // from the measured first-content position. Inherently loud.
-              pushListMarkerApprox(notices,
-                'list marker inset derived from content metrics ' +
-                '(::marker box not measurable browser-free)', cellId);
+                'list-style-type "' + lt + '" has no standard glyph; ' +
+                'rendered as a bullet', cellId);
             }
+            // Known marker glyph/number is exact. For list-style-position:
+            // outside the CSS spec itself defines the marker-box position as
+            // UA-approximated, so right-anchoring the glyph at the measured
+            // first-content position is a faithful rendering — no notice.
             if (glyph) {
               var fr0 = fontRun(ecs);
               var cRect = firstWordRect(n, doc);
@@ -1545,18 +1592,21 @@
             var src = n.getAttribute && n.getAttribute('src');
             var ir = n.getBoundingClientRect();
             var parsed = parseImage(src);
-            if (parsed && parsed.format === 'png' && ir && ir.width && ir.height) {
+            var mime = embeddableImageMime(parsed);
+            if (mime && ir && ir.width && ir.height) {
+              // Embed any rasterizer-supported format (PNG/JPEG/GIF/SVG) so
+              // icon+text labels print faithfully — no notice needed.
               bg.push('<image x="' + fmt(ir.left) + '" y="' + fmt(ir.top) +
                 '" width="' + fmt(ir.width) + '" height="' + fmt(ir.height) +
-                '" preserveAspectRatio="none" xlink:href="data:image/png;base64,' +
-                parsed.data + '"/>');
+                '" preserveAspectRatio="none" xlink:href="data:' + mime +
+                ';base64,' + parsed.data + '"/>');
             } else {
               noticeOnce('RichUnsupported',
-                'inline <img> in HTML label is not a PNG data URI (' +
-                (parsed && parsed.unsupportedFormat
-                  ? 'format=' + parsed.unsupportedFormat
-                  : parsed && parsed.externalUrl
-                    ? 'external URL'
+                'inline <img> in HTML label cannot be embedded (' +
+                (parsed && parsed.externalUrl
+                  ? 'external URL'
+                  : parsed && parsed.unsupportedFormat
+                    ? 'format=' + parsed.unsupportedFormat
                     : 'unreadable src') +
                 '); printed without the image');
             }
@@ -1713,11 +1763,28 @@
     if (m) {
       var fmt = m[1].toLowerCase();
       var data = m[2].replace(/\s+/g, '');
+      // `format`+`data` are always returned for base64 image data URIs so the
+      // SVG path (resvg) can embed any backend-supported format. The native
+      // engine image path still only accepts PNG, so non-PNG keeps
+      // `unsupportedFormat` set for that (unchanged) caller.
       if (fmt === 'png') return { format: 'png', data: data };
-      return { unsupportedFormat: fmt };       // jpeg/gif/bmp/svg+xml/...
+      return { format: fmt, data: data, unsupportedFormat: fmt };  // jpeg/gif/svg+xml/...
     }
     if (/^data:image\//i.test(src)) return { unsupportedFormat: 'non-base64' };
     return { externalUrl: src };               // http(s)/relative URL
+  }
+
+  // Formats the external SVG rasterizer (resvg 0.47) embeds from a data URI:
+  // PNG/JPEG/GIF rasters and nested SVG. Anything outside this set (webp/bmp,
+  // non-base64, external URL) stays loudly noticed instead of risking a silent
+  // blank in the print.
+  var EMBEDDABLE_IMG_MIME = {
+    png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg',
+    gif: 'image/gif', 'svg+xml': 'image/svg+xml'
+  };
+  function embeddableImageMime(parsed) {
+    return (parsed && parsed.data && parsed.format &&
+      EMBEDDABLE_IMG_MIME[parsed.format]) || null;
   }
 
   function isImageCell(style) {
@@ -1878,12 +1945,32 @@
       var img = parseImage(style.image);
       if (img && img.format === 'png') {
         paint.push(imageNode(style, box, img));        // faithful — WYSIWYG
+      } else if (embeddableImageMime(img)) {
+        // Non-PNG but rasterizer-embeddable (JPEG/GIF/SVG): render via the
+        // TRUE-WYSIWYG SVG path — drawio's own rendered <image> node carries
+        // the data URI, which resvg draws faithfully. No notice needed.
+        // svgCellNode already emits the shape AND label together, so return.
+        var imgSvg = svgCellNode(graph, cell, state, origin, scale, notices);
+        if (imgSvg) { paint.push(imgSvg); return; }
+        // Headless (no live DOM): cannot embed via the SVG path -> fall
+        // through to the loud placeholder below (never a silent drop).
+        notices.push(degradation('ExporterUnsupportedImage',
+          'image format "' + img.unsupportedFormat + '" needs the live ' +
+          'renderer to embed; not available headless — placeholder box printed.',
+          cell.id));
+        paint.push({
+          kind: 'path',
+          d: rectPath(box.x, box.y, box.w, box.h),
+          fill: null,
+          stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
+        });
       } else {
-        // Cannot embed faithfully: loud, SPECIFIC notice + a placeholder box
-        // so the operator sees exactly where/what is missing (never silent).
+        // Genuinely cannot embed faithfully (external URL, non-base64,
+        // unreadable, or a format no backend renders): loud, SPECIFIC notice
+        // + a placeholder box so the operator sees what is missing.
         var why = img && img.unsupportedFormat
           ? 'image format "' + img.unsupportedFormat +
-            '" is not supported (engine renders PNG only)'
+            '" cannot be embedded'
           : img && img.externalUrl
             ? 'external image URL is not embedded in the diagram'
             : 'image source is missing or unreadable';

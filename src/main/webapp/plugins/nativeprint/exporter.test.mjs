@@ -566,7 +566,7 @@ test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs ori
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('list marker: glyph + numbering exact, inset measured from content, loud', () => {
+test('list marker: glyph + numbering exact, placed by measured content, no notice', () => {
   const shape = domEl('g', {}, [domEl('rect', {})]);
   const t = { nodeType: 3, nodeValue: 'Item one' };
   const li = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t],
@@ -590,8 +590,10 @@ test('list marker: glyph + numbering exact, inset measured from content, loud', 
     assert.match(svg, /<text x="94" y="51"[^>]*text-anchor="end"[^>]*>•<\/text>/,
       'bullet glyph placed by measured content inset');
     assert.match(svg, /<text x="100" [^>]*text-anchor="start"[^>]*>Item<\/text>/);
-    assert.ok(r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
-      '::marker box not measurable browser-free -> inherently loud');
+    // A standard `disc` bullet is a known glyph placed faithfully -> the bake
+    // must NOT raise a marker approximation notice for it (built-in WYSIWYG).
+    assert.ok(!r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
+      'known list marker renders faithfully -> no SvgListMarkerApprox notice');
     assert.ok(!/<foreignObject/i.test(svg));
   } finally { delete globalThis.getComputedStyle; }
 });
@@ -2422,7 +2424,7 @@ test('HTML-label border: solid root border transcribes to stroked rect', () => {
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('HTML-label border: per-side mismatch fires RichApproximate (deduped)', () => {
+test('HTML-label border: per-side differences render faithfully, no notice', () => {
   const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
     fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
     backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
@@ -2431,23 +2433,68 @@ test('HTML-label border: per-side mismatch fires RichApproximate (deduped)', () 
     borderBottomStyle: 'solid', borderLeftStyle: 'solid',
     borderTopWidth: '2px', borderRightWidth: '2px',
     borderBottomWidth: '2px', borderLeftWidth: '2px',
-    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
+    borderTopColor: 'rgb(255,0,0)', borderRightColor: 'rgb(0,0,255)',
     borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
   const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
     childNodes: [], previousElementSibling: null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
   const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
     textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
     ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => sty;
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
   try {
     const shape = domEl('g', {}, [domEl('rect', {})]);
     const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
     const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const mixed = r.notices.filter((n) => n.kind === 'RichApproximate' &&
-      /per-side/.test(n.detail.detail));
-    assert.equal(mixed.length, 1,
-      'mixed per-side borders -> exactly one RichApproximate notice');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // Per-side borders now transcribe to one stroked <line> per visible side,
+    // each with its own colour/style -> no flatten-to-one-side approximation.
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate' &&
+      /per-side/.test(n.detail.detail)),
+      'per-side borders render faithfully -> no RichApproximate notice');
+    const lines = svg.match(/<line\b[^>]*>/g) || [];
+    assert.equal(lines.length, 4, 'one stroked line per visible side');
+    assert.ok(lines.some((l) => /stroke="#ff0000"/.test(l)), 'top side keeps red');
+    assert.ok(lines.some((l) => /stroke="#0000ff"/.test(l)), 'right side keeps blue');
+    assert.equal(lines.filter((l) => /stroke-dasharray/.test(l)).length, 1,
+      'only the dashed (right) side carries a dasharray');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label border: uniform double -> two stroked rects, no notice', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'double',
+    borderTopStyle: 'double', borderRightStyle: 'double',
+    borderBottomStyle: 'double', borderLeftStyle: 'double',
+    borderTopWidth: '6px', borderRightWidth: '6px',
+    borderBottomWidth: '6px', borderLeftWidth: '6px',
+    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
+    borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    const rects = svg.match(/<rect\b[^>]*fill="none"[^>]*>/g) || [];
+    assert.equal(rects.length, 2, 'double border -> two concentric stroked rects');
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
+      'double border renders faithfully -> no RichApproximate notice');
   } finally { delete globalThis.getComputedStyle; }
 });
 
@@ -2512,6 +2559,44 @@ test('HTML-label inline <img>: PNG data URI transcribed to <image>; non-PNG loud
     assert.ok(imgNotice, 'external-URL <img> loudly noticed');
     assert.match(imgNotice.detail.detail, /external URL/);
   } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label inline <img>: JPEG/GIF/SVG data URIs embed faithfully, no notice', () => {
+  const baseStyle = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal' };
+  const mkImg = (src) => ({ nodeType: 1, tagName: 'img', _styleKey: 'img',
+    childNodes: [], previousElementSibling: null,
+    getAttribute: (k) => (k === 'src' ? src : null),
+    getBoundingClientRect: () => ({ left: 10, top: 10, width: 16, height: 16 }) });
+  // resvg renders PNG/JPEG/GIF rasters and nested SVG from data URIs, so each
+  // of these embeds as <image> with NO RichUnsupported notice.
+  const cases = [
+    ['data:image/jpeg;base64,/9j/AAAA', 'data:image/jpeg;base64,'],
+    ['data:image/gif;base64,R0lGODlhAQABAAAAACw=', 'data:image/gif;base64,'],
+    ['data:image/svg+xml;base64,PHN2Zy8+', 'data:image/svg+xml;base64,']
+  ];
+  cases.forEach(([src, mimePrefix]) => {
+    const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+      childNodes: [mkImg(src)], previousElementSibling: null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }) };
+    const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+      textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }),
+      ownerDocument: { createRange: mkRange } };
+    globalThis.getComputedStyle = () => baseStyle;
+    try {
+      const shape = domEl('g', {}, [domEl('rect', {})]);
+      const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+      const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+      const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+      assert.ok(svg.includes('xlink:href="' + mimePrefix),
+        mimePrefix + ' inline <img> embedded as SVG <image>');
+      assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported' &&
+        /inline.*img/i.test(n.detail.detail)),
+        'embeddable inline <img> -> no RichUnsupported notice');
+    } finally { delete globalThis.getComputedStyle; }
+  });
 });
 
 // ---- Notice severity taxonomy (Print-gate contract) ----------------------
