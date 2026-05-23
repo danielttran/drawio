@@ -9,6 +9,6 @@
     "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs"
   },
   "devDependencies": {
-    "vite": "^5.2.11"
+    "vite": "^8.0.14"
   }
 }
