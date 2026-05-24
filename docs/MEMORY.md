@@ -244,12 +244,18 @@ Residual — only TWO cases, neither a drawio built-in object:
    anywhere reachable — even drawio's own canvas shows it broken. Stays loud +
    placeholder (never a silent wrong). This is a missing-resource/deployment
    condition, not a property of any object.
-2. **Embedded animated SVG** (`AnimatedSvgFrozen`): paper can't animate, so a
-   print is necessarily one frame; the notice is KEPT on purpose because some
-   animations have a transparent frame-0 (e.g. fade-in) that would otherwise
-   print SILENTLY BLANK — suppressing it would violate the owner's own WYSIWYG
-   mandate (goal #2). Only arises from a user-embedded animated SVG, never a
-   built-in stencil.
+2. **User-embedded animated SVG file** (`AnimatedSvgFrozen`): VERIFIED not a
+   built-in object. drawio's only built-in animation is edge "Flow Animation",
+   which it renders as CSS `@keyframes` animating `stroke-dashoffset` on an
+   already-drawn dashed stroke (`Graph.js createFlowAnimationCss`) — NOT SMIL.
+   resvg ignores the CSS and draws the static dashed edge (a faithful still),
+   and the `AnimatedSvgFrozen` regex only matches SMIL tags (`<animate>` etc.),
+   so a flow-animated edge raises NO notice (proven: exporter.test.mjs
+   "built-in flow animation (CSS) prints static with NO AnimatedSvgFrozen").
+   grep confirms drawio/mxGraph emit no SMIL anywhere. The notice fires ONLY
+   when a user embeds an external SVG file that itself contains SMIL — kept on
+   purpose, because such a clip can have a transparent frame-0 (opacity 0->1)
+   that would otherwise print SILENTLY BLANK, violating WYSIWYG (goal #2).
 
 For every object drawio's editors actually create, printing/preview is now
 warning-free (proven by exporter tests + the real-resvg conformance corpus).

@@ -2920,3 +2920,41 @@ test('noticeSeverity: unknown kind fails safe to degradation', () => {
   assert.equal(exporter.noticeSeverity(''), 'degradation');
   assert.equal(exporter.noticeSeverity(undefined), 'degradation');
 });
+
+// --- Animation: built-in (CSS flow) prints clean; embedded SMIL stays guarded.
+// drawio's ONLY built-in animation is edge "Flow Animation", which it renders
+// as CSS @keyframes animating stroke-dashoffset on an already-drawn dashed
+// stroke (Graph.js createFlowAnimationCss) — NOT SMIL <animate>. resvg ignores
+// the CSS and draws the static dashed edge, which is a faithful still. So a
+// built-in flow-animated edge must NOT raise AnimatedSvgFrozen.
+test('built-in flow animation (CSS) prints static with NO AnimatedSvgFrozen notice', () => {
+  const cells = { e: { id: 'e', edge: true } };
+  const flowSvg =
+    '<g><path d="M0 0 L80 0" fill="none" stroke="#000000" stroke-width="2" ' +
+    'stroke-dasharray="8 8" style="animation: ge-flow-x 0.5s linear infinite"/>' +
+    '<style>@keyframes ge-flow-x { to { stroke-dashoffset: 0; } }</style></g>';
+  const states = { e: { x: 10, y: 20, width: 80, height: 2,
+    shape: { node: { outerHTML: flowSvg } } } };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
+  assert.ok(!r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
+    'CSS flow animation (drawio built-in) must not warn');
+  const svgs = r.contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  const carried = svgs.some((n) =>
+    Buffer.from(n.source, 'base64').toString().includes('stroke-dasharray'));
+  assert.ok(carried, 'the frozen dashed edge stroke is carried into the print (WYSIWYG)');
+});
+
+// The guard must remain for a USER-EMBEDDED SVG file that contains real SMIL —
+// not a built-in object — because such a clip can have a transparent frame-0
+// (e.g. opacity 0 -> 1) that would otherwise print SILENTLY BLANK.
+test('embedded SMIL animation still raises AnimatedSvgFrozen (silent-blank guard)', () => {
+  const cells = { v: { id: 'v', vertex: true } };
+  const smil =
+    '<g><rect width="40" height="30" opacity="0">' +
+    '<animate attributeName="opacity" from="0" to="1" dur="1s"/></rect></g>';
+  const states = { v: { x: 10, y: 20, width: 40, height: 30,
+    shape: { node: { outerHTML: smil } } } };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
+  assert.ok(r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
+    'embedded SMIL (possibly blank frame-0) must stay loud');
+});
