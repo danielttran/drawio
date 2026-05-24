@@ -3093,3 +3093,35 @@ test('embedded SMIL animation still raises AnimatedSvgFrozen (silent-blank guard
   assert.ok(r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
     'embedded SMIL (possibly blank frame-0) must stay loud');
 });
+
+// Regression: routing an image/icon cell through the literal-SVG path requires
+// embedding its external <image> href (resvg can't fetch a relative URL) — but
+// the rewrite must NOT touch gradient/pattern internal "#id" refs or already-
+// inline "data:" hrefs. (The icon's gear was missing / a stray white label box
+// cropped a neighbour because the icon was composed manually instead.)
+test('embedImageHrefs: external <image> href -> resolved data URI; #refs & data: untouched', () => {
+  const resolved = { 'img/clipart/Gear_128x128.png': 'data:image/png;base64,GEAR' };
+  const svg =
+    '<g><image x="0" y="0" width="60" height="60" ' +
+    'xlink:href="img/clipart/Gear_128x128.png"/>' +
+    '<rect fill="url(#grad1)"/>' +
+    '<linearGradient id="grad1" xlink:href="#base"/>' +
+    '<image href="data:image/png;base64,INLINE"/></g>';
+  const out = exporter._embedImageHrefs(svg, resolved, { image: 'img/clipart/Gear_128x128.png' });
+  assert.ok(out.includes('xlink:href="data:image/png;base64,GEAR"'),
+    'the external gear href is replaced with the embedded data URI');
+  assert.ok(out.includes('xlink:href="#base"'),
+    'gradient internal #ref must be left intact');
+  assert.ok(out.includes('href="data:image/png;base64,INLINE"'),
+    'an already-inline data: href is left intact');
+});
+
+// Falls back to resolved[style.image] when drawio rendered the href absolute so
+// the literal string is not itself a map key.
+test('embedImageHrefs: absolute-rendered href falls back to style.image mapping', () => {
+  const resolved = { 'img/clipart/Gear_128x128.png': 'data:image/png;base64,GEAR' };
+  const svg = '<image xlink:href="http://localhost:3000/img/clipart/Gear_128x128.png"/>';
+  const out = exporter._embedImageHrefs(svg, resolved, { image: 'img/clipart/Gear_128x128.png' });
+  assert.ok(out.includes('data:image/png;base64,GEAR'),
+    'unknown literal href resolves via style.image');
+});

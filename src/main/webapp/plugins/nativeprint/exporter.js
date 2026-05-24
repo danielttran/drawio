@@ -811,6 +811,34 @@
       el.getAttribute('xlink:href');
   }
 
+  // Replace external <image> hrefs in a serialized SVG string with the
+  // pre-resolved data URI (embedExternalImages), so resvg paints real pixels
+  // instead of failing on a relative/cross-origin URL. Scoped to <image> tags
+  // only (never gradient/pattern internal "#id" refs) and skips already-inline
+  // "data:" hrefs. Falls back to resolved[style.image] when drawio rendered the
+  // href absolute and the literal string isn't a map key.
+  function embedImageHrefs(s, resolved, style) {
+    if (typeof s !== 'string') return s;
+    return s.replace(/<image\b[^>]*>/gi, function (tag) {
+      return tag.replace(/(xlink:href|href)="([^"]+)"/g, function (m, attr, url) {
+        if (/^(data:|#)/i.test(url)) return m;
+        var d = (resolved && (resolved[url] ||
+          (style && style.image && resolved[style.image]))) || null;
+        return d ? attr + '="' + d + '"' : m;
+      });
+    });
+  }
+
+  // base64 (UTF-8) -> string. Browser-only (atob/TextDecoder); only reached on
+  // the live path where svgCellNode produced a node, so the globals exist.
+  function decodeUtf8B64(b64) {
+    var bin = root.atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return (typeof root.TextDecoder === 'function')
+      ? new root.TextDecoder().decode(bytes) : bin;
+  }
+
   // Transcribe drawio's already-rendered SVG for this cell. Returns an array
   // of contract paint nodes, or null to signal "fall back to the named-shape
   // path" (no live SVG, or it couldn't be placed reliably).
@@ -1634,11 +1662,24 @@
   function textRunSvg(run) {
     var R = run, f = R.f;
     if (f.fill == null) return '';
-    // Client rects are line-box tall; the browser centres glyphs in the
-    // line box (half-leading). Anchor the em-box top there so vertical
-    // placement matches the screen exactly, not just the line-box top.
-    var yy = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
-    var t = '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
+    var cx = R.rect.left + R.rect.width / 2, cy = R.rect.top + R.rect.height / 2;
+    // Default (horizontal) placement: client rects are line-box tall; the
+    // browser centres glyphs in the line box (half-leading). Anchor the em-box
+    // top there so vertical placement matches the screen exactly.
+    var tx = R.rect.left;
+    var ty = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
+    var anchor = R.anchor || 'start';
+    // Vertical label (mxText horizontal=false renders rotated): drawio lays the
+    // word boxes in a column but the transcribed glyphs are horizontal → they
+    // overflow. Each word's client rect is the ALREADY-rotated box (narrow ×
+    // word-length). Centre the horizontal glyph run on that box centre, then
+    // rotate -90 about the same centre, so the word fills its box symmetrically.
+    // (Anchoring at rect.left and rotating about the centre offset each word by
+    // ~half its length, so neighbouring words collided — the overlap bug.)
+    if (R.rotate) {
+      tx = cx; anchor = 'middle'; ty = cy - f.size / 2;
+    }
+    var t = '<text x="' + fmt(tx) + '" y="' + fmt(ty) +
       '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
       '" font-weight="' + f.weight + '"' +
       (f.italic ? ' font-style="italic"' : '') +
@@ -1647,15 +1688,10 @@
         ? ' letter-spacing="' + fmt(f.letterSpacing) + '"' : '') +
       ' fill="' + f.fill + '"' +
       (f.fillOpacity < 1 ? ' fill-opacity="' + fmt(f.fillOpacity) + '"' : '') +
-      ' text-anchor="' + (R.anchor || 'start') +
+      ' text-anchor="' + anchor +
       '" dominant-baseline="text-before-edge"' +
       ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
-    // Vertical label (mxText horizontal=false renders rotated): drawio lays the
-    // word boxes in a column but the transcribed glyphs are horizontal → they
-    // overflow. Rotate EACH word about its own box center so it sits vertically
-    // in place (a whole-label rotate would scatter the stacked words).
     if (R.rotate) {
-      var cx = R.rect.left + R.rect.width / 2, cy = R.rect.top + R.rect.height / 2;
       return '<g transform="rotate(' + fmt(R.rotate) + ' ' + fmt(cx) + ' ' +
         fmt(cy) + ')">' + t + '</g>';
     }
@@ -2058,8 +2094,21 @@
 
     // Resolve theme CSS (light-dark()/var()) so resvg renders real colors, not
     // black. Active-theme side per isDark() (STRICT WYSIWYG — never forced).
+    // Also give bare font-families a generic fallback: drawio's default is
+    // "Helvetica", which isn't installed on Windows, so resvg falls back to its
+    // SERIF default (text printed serif). Appending a sans-serif generic makes
+    // resvg pick a sans face (Arial), matching the editor's Helvetica/Arial.
     return { kind: 'svg', box: box,
-      source: base64(resolveCssColorFns(svg, isDark())), aspect: 'preserve' };
+      source: base64(addFontFallback(resolveCssColorFns(svg, isDark()))),
+      aspect: 'preserve' };
+  }
+
+  // Append a sans-serif generic to drawio's default font so resvg doesn't fall
+  // back to serif for the (uninstalled-on-Windows) "Helvetica" family.
+  function addFontFallback(s) {
+    if (typeof s !== 'string') return s;
+    return s.replace(/font-family="Helvetica"/g,
+      'font-family="Helvetica, Arial, sans-serif"');
   }
 
   // drawio image cells carry the picture in the `image=` style value, almost
@@ -2357,10 +2406,22 @@
     var resolved = (opts && opts.resolvedImages) || null;
     var scale = (view && view.scale) ? view.scale : 1;
     var bounds = graph.getGraphBounds();
-    var origin = {
-      x: bounds && bounds.width > 0 ? bounds.x : 0,
-      y: bounds && bounds.height > 0 ? bounds.y : 0
-    };
+    // Origin = the PAGE origin (model 0,0) in scaled-view coords, i.e.
+    // view.translate*scale — NOT the content bounding box. Using bounds.x/y
+    // normalised the diagram flush to the paper's top-left corner, dropping the
+    // margin the author left between the page edge and the first shape (the
+    // "output shifted up-and-left one block" report). Anchoring to the page
+    // origin makes every cell keep its on-page position, so the margin prints
+    // exactly as drawn. Headless fixtures with no live view fall back to bounds.
+    var origin;
+    if (view && view.translate && (view.translate.x || view.translate.y)) {
+      origin = { x: view.translate.x * scale, y: view.translate.y * scale };
+    } else {
+      origin = {
+        x: bounds && bounds.width > 0 ? bounds.x : 0,
+        y: bounds && bounds.height > 0 ? bounds.y : 0
+      };
+    }
     var page = (paper && paper.wPx > 0 && paper.hPx > 0)
       ? { w: Math.max(1, Math.round(paper.wPx)),
           h: Math.max(1, Math.round(paper.hPx)) }
@@ -2449,6 +2510,23 @@
     var label = plainLabel(graph, cell);
 
     if (isImageCell(style)) {
+      // PRIMARY (live path): transcribe drawio's literal rendered SVG so the
+      // image rect, label position and (tight) label background come out exactly
+      // as drawn — the manual composition below sized the image to the whole
+      // cell (icon too large), placed an oversized label-bg box (it overran a
+      // neighbour shape) and mis-placed the label. Embed the external <image>
+      // href first (resvg can't fetch relative/cross-origin URLs). Falls through
+      // to the manual path headless / if transcription fails.
+      var isvg = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
+      if (isvg && isvg.kind === 'svg') {
+        try {
+          var dec = decodeUtf8B64(isvg.source);
+          var emb = embedImageHrefs(dec, resolved, style);
+          if (emb !== dec) isvg.source = base64(emb);
+        } catch (e) { /* keep transcribed source as-is */ }
+        paint.push(isvg);
+        return;
+      }
       // An external URL pre-resolved to a data URI (embedExternalImages) prints
       // its real pixels instead of a placeholder.
       var imgSrc = (resolved && typeof style.image === 'string' &&
@@ -2613,7 +2691,8 @@
   }
 
   var api = { buildContract: buildContract, buildResult: buildResult,
-    noticeSeverity: noticeSeverity, embedExternalImages: embedExternalImages };
+    noticeSeverity: noticeSeverity, embedExternalImages: embedExternalImages,
+    _embedImageHrefs: embedImageHrefs };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
 })(typeof window !== 'undefined' ? window : globalThis);
