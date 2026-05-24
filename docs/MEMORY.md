@@ -208,13 +208,21 @@ changes in `exporter.js`, all pinned in `exporter.test.mjs`:
   `nativeprint.js rebake()` (now async). Pinned by `exporter.test.mjs` with a
   mocked fetch (success embeds, failure stays loud).
 
-Irreducible residual (genuine divergences that MUST stay loud per C1, and NOT
-producible by drawio's built-in editors / objects rendered normally):
-- **Cross-origin external images WITHOUT CORS headers** (and external
-  inline-`<img>` / `url()` backgrounds in hand-authored label HTML): a browser
-  cannot read their bytes at all — `fetch` is CORS-blocked and a canvas read
-  taints + throws. This is a **browser-security wall**, not a project choice;
-  the only "fix" is the C2-forbidden pixel oracle. Stays loud + placeholder.
+**External images — canvas embedding (owner carve-out, 2026-05-24).** The owner
+relaxed C2 to permit canvas use *for embedding image artwork* (not for a pixel
+oracle). So external images now resolve via fetch → **canvas re-encode**
+fallback: `embedExternalImages(graph, fetchImpl, canvasImpl)` tries `fetch`,
+then `urlToPngViaCanvas` (load + `drawImage` + `toDataURL`); inline `<img>` in
+labels re-encode the already-loaded element via `imgElementToPngDataUri`. Both
+are browser-only (no-op in Node; unit-tested via injected stubs). Doc carve-out
+recorded in `docs/CLAUDE.md` §2 + plugin `CLAUDE.md`.
+
+Irreducible residual (now only a true browser-security wall):
+- **Cross-origin images served WITHOUT CORS headers**: even canvas can't read
+  them — `drawImage` taints the canvas and `toDataURL` throws (the image was
+  loaded without usable CORS). Nothing in-browser can extract those bytes. Stays
+  loud + placeholder (never a silent wrong). Everything else — same-origin and
+  CORS-enabled external images — now embeds with no notice.
 - **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
   user-embedded animated SVG, never a built-in shape.
 - **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list

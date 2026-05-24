@@ -1731,18 +1731,21 @@
             var ir = n.getBoundingClientRect();
             var parsed = parseImage(src);
             var mime = embeddableImageMime(parsed);
-            if (mime && ir && ir.width && ir.height) {
-              // Embed any rasterizer-supported format (PNG/JPEG/GIF/SVG) so
-              // icon+text labels print faithfully — no notice needed.
+            var imgHref = (mime && parsed)
+              ? 'data:' + mime + ';base64,' + parsed.data
+              : (ir && ir.width && ir.height ? imgElementToPngDataUri(n) : null);
+            if (imgHref && ir && ir.width && ir.height) {
+              // Embeddable data URI (PNG/JPEG/GIF/SVG) OR an external/loaded
+              // <img> re-encoded via canvas (owner-authorised) -> faithful,
+              // no notice.
               bg.push('<image x="' + fmt(ir.left) + '" y="' + fmt(ir.top) +
                 '" width="' + fmt(ir.width) + '" height="' + fmt(ir.height) +
-                '" preserveAspectRatio="none" xlink:href="data:' + mime +
-                ';base64,' + parsed.data + '"/>');
+                '" preserveAspectRatio="none" xlink:href="' + imgHref + '"/>');
             } else {
               noticeOnce('RichUnsupported',
                 'inline <img> in HTML label cannot be embedded (' +
                 (parsed && parsed.externalUrl
-                  ? 'external URL'
+                  ? 'external URL, and its pixels are not readable (cross-origin, no CORS)'
                   : parsed && parsed.unsupportedFormat
                     ? 'format=' + parsed.unsupportedFormat
                     : 'unreadable src') +
@@ -1959,17 +1962,70 @@
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
+  // Re-encode an ALREADY-LOADED <img> element's pixels to a PNG data URI via an
+  // offscreen canvas. Owner-authorised canvas use (2026-05-24) for embedding
+  // external label images so the print is WYSIWYG. Synchronous — the element is
+  // already displayed. Returns null if tainted (cross-origin, no CORS) or no
+  // canvas (Node), and the caller stays loud.
+  function imgElementToPngDataUri(el) {
+    try {
+      var d = root.document;
+      if (!d || !d.createElement || !el) return null;
+      var w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+      if (!w || !h) return null;
+      var c = d.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(el, 0, 0, w, h);
+      return c.toDataURL('image/png');     // throws if the canvas is tainted
+    } catch (e) { return null; }
+  }
+
+  // Load an external image URL and re-encode its rendered pixels to a PNG data
+  // URI via an offscreen canvas. Per the owner's explicit decision (2026-05-24)
+  // this canvas read is AUTHORISED — for embedding external image artwork only,
+  // so the print is WYSIWYG — and is the fallback when fetch() is CORS-blocked.
+  // (A truly cross-origin image with no CORS headers still taints the canvas,
+  // so toDataURL throws -> resolves null -> the caller stays loud. Browser-only;
+  // returns null where Image/canvas are absent, e.g. the Node tests.)
+  function urlToPngViaCanvas(url) {
+    return new Promise(function (resolve) {
+      try {
+        var d = root.document;
+        if (typeof root.Image !== 'function' || !d || !d.createElement) {
+          return resolve(null);
+        }
+        var im = new root.Image();
+        im.crossOrigin = 'anonymous';   // request CORS so the canvas isn't tainted
+        im.onload = function () {
+          try {
+            var w = im.naturalWidth || im.width, h = im.naturalHeight || im.height;
+            if (!w || !h) return resolve(null);
+            var c = d.createElement('canvas');
+            c.width = w; c.height = h;
+            c.getContext('2d').drawImage(im, 0, 0, w, h);
+            resolve(c.toDataURL('image/png'));   // throws if canvas is tainted
+          } catch (e) { resolve(null); }
+        };
+        im.onerror = function () { resolve(null); };
+        im.src = url;
+      } catch (e) { resolve(null); }
+    });
+  }
+
   // Resolve external (http/https) image URLs referenced by image cells into
-  // embedded data URIs via a bake-time fetch (the resource the diagram points
-  // to — NOT a canvas pixel read, so no C2 pixel-oracle). Returns a map
-  // url -> "data:<mime>;base64,<...>" for the URLs that fetched successfully;
-  // cross-origin-without-CORS / 404 / timeout are left out (caller stays loud
-  // for those — a browser-security wall, not a silent drop). Async + additive:
-  // the synchronous buildResult path is unchanged when no map is supplied.
-  function embedExternalImages(graph, fetchImpl) {
+  // embedded data URIs so the print shows their real pixels. Strategy per URL:
+  //   1. fetch() the resource and embed the exact bytes (preserves format);
+  //   2. on CORS/404/offline, fall back to loading + canvas re-encode (owner-
+  //      authorised; see urlToPngViaCanvas).
+  // Returns a map url -> "data:<mime>;base64,...". URLs that neither path can
+  // read (cross-origin, no CORS, canvas tainted) are left out -> the caller
+  // stays loud + placeholder (never a silent wrong). Async + additive: the
+  // synchronous buildResult path is unchanged when no map is supplied.
+  function embedExternalImages(graph, fetchImpl, canvasImpl) {
     var f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    var canvas = canvasImpl || urlToPngViaCanvas;
     var out = {};
-    if (!graph || !f || typeof graph.getModel !== 'function') {
+    if (!graph || typeof graph.getModel !== 'function') {
       return Promise.resolve(out);
     }
     var model = graph.getModel();
@@ -1986,13 +2042,18 @@
         return 'data:' + type + ';base64,' + base64FromBytes(new Uint8Array(ab));
       });
     };
-    return Promise.all(Object.keys(urls).map(function (url) {
-      return Promise.resolve()
-        .then(function () { return f(url); })
+    var viaFetch = function (url) {
+      if (!f) return Promise.resolve(null);
+      return Promise.resolve().then(function () { return f(url); })
         .then(function (r) { return (r && r.ok) ? r.blob() : null; })
         .then(function (blob) { return blob ? toDataUri(blob) : null; })
+        .catch(function () { return null; });
+    };
+    return Promise.all(Object.keys(urls).map(function (url) {
+      return viaFetch(url)
+        .then(function (du) { return du || canvas(url); })   // canvas fallback
         .then(function (du) { if (du) out[url] = du; })
-        .catch(function () { /* unfetchable -> stays a loud notice */ });
+        .catch(function () { /* unreadable -> stays a loud notice */ });
     })).then(function () { return out; });
   }
 

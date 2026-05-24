@@ -15,6 +15,10 @@ and do not ask to revisit them. Full text + rationale:
    comparison oracle is possible under this rule — do not add one. A
    browser-based self-check was already built and **reverted**; do not
    recreate it.
+   - **Owner carve-out (2026-05-24):** canvas (`drawImage` + `toDataURL`)
+     MAY be used to **embed external image artwork** so it prints WYSIWYG
+     (`embedExternalImages` / `imgElementToPngDataUri`) — NOT to build a
+     verification/pixel oracle. See `docs/CLAUDE.md` §2.
 
 3. **Guarantee by construction, verified browser-free.** Transcribe
    drawio's actual rendered SVG (`harvestShape`); remove re-derived /

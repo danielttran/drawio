@@ -1857,7 +1857,27 @@ test('embedExternalImages: fetched external image embeds, no notice', async () =
     .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
 });
 
-test('embedExternalImages: unfetchable external image stays loud', async () => {
+test('embedExternalImages: canvas fallback embeds when fetch is CORS-blocked', async () => {
+  // Owner-authorised: when fetch() fails (CORS), re-encode the image via canvas.
+  // Here the canvas step is injected (browser-only in production) to verify the
+  // fetch->canvas fallback wiring deterministically.
+  const URL_ = 'https://cdn.example/cors-blocked.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const failFetch = async () => { throw new Error('CORS'); };
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const fakeCanvas = async (u) => (u === URL_ ? 'data:image/png;base64,' + PNG : null);
+  const resolved = await exporter.embedExternalImages(graph, failFetch, fakeCanvas);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/png;base64,'),
+    'canvas fallback produced a data URI when fetch failed');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'canvas-embedded external image -> no notice');
+});
+
+test('embedExternalImages: unfetchable + unreadable external image stays loud', async () => {
   const URL_ = 'https://cross-origin.example/no-cors.png';
   const cells = { v: { id: 'v', vertex: true } };
   const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
