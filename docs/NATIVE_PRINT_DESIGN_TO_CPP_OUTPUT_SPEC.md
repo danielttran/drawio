@@ -2,7 +2,7 @@
 
 **Status:** Current working-tree specification  
 **Date:** 2026-05-24  
-**Repository:** `E:\Dev\drawio`  
+**Repository:** `danielttran/drawio`  
 **Audience:** engineering leadership, maintainers, and reviewers who need to understand how a draw.io design becomes native C++ print output.
 
 ## 1. Executive Summary
@@ -174,7 +174,7 @@ The browser-to-broker protocol is JSON over same-origin HTTP. The broker-to-engi
 
 The broker writes the contract to a temporary file and passes `{ contractRef: { path } }` to the engine. After the operation, it sends `ReleaseContract` and deletes the temp file/directory. The file is written with a restrictive mode request; the engine still validates the contract and does not trust the transport.
 
-The broker is development-oriented. It binds to localhost and checks the request `Origin`. The current working tree also contains temporary debug endpoints and an auto-bake harness in `nativeprint.js` and `vite.config.mjs`; those are useful diagnostics, not production behavior and should not be treated as part of the stable product surface.
+The broker is development-oriented. It binds to localhost and checks the request `Origin`. The only diagnostic affordance in the current working tree is a `window.nativePrintUi` console handle exposed by `nativeprint.js` so the baked contract can be inspected from the browser console; it changes no behavior. The broker itself (Vite middleware that launches the host from the local `build/Debug` path) is dev-only and is not part of the stable production surface.
 
 ### 6.4 C++ Engine Core
 
@@ -611,11 +611,10 @@ Current protections:
 
 Current development-only surfaces:
 
-- `/native-print/debug`;
-- `/native-print/testfile`;
-- `nativeprint.js` auto-bake diagnostic harness.
+- the local Vite broker (`vite.config.mjs`), which launches `print_engine_host.exe` from the local `build/Debug` path;
+- the `window.nativePrintUi` console handle exposed by `nativeprint.js` for inspecting the baked contract.
 
-Those should be removed or explicitly feature-gated before production packaging.
+The broker is a development bridge and must be replaced by an equivalent trusted local transport before production packaging. The console handle is harmless but is not part of the stable product surface.
 
 ## 16. Current Limitations
 
@@ -627,7 +626,7 @@ Those should be removed or explicitly feature-gated before production packaging.
 | SVG rasterizer DLL must be present beside `print_engine_host.exe` | Missing DLL causes loud crosshatch stubs for SVG artwork. |
 | Some external images can still be unreachable | If direct fetch, proxy, and canvas all fail, output is a noticed placeholder. |
 | Some user-embedded animated SVG content prints as still frame | Exporter emits `AnimatedSvgFrozen`. |
-| Debug harness is present in working tree | Useful for validation, but not production behavior. |
+| Dev-only diagnostics in working tree | `nativeprint.js` exposes a `window.nativePrintUi` console handle for inspecting the baked contract; harmless, but not part of the production surface. |
 | Schema minor-ahead notice is only partially surfaced | The loader tracks minor-ahead and `GetContractFields` emits `SchemaMinorAhead`; preview/print currently return `schemaVersion` without adding that notice. |
 
 ## 17. Verification Strategy
@@ -665,9 +664,9 @@ Verification run while producing this document:
 
 | Command | Result |
 |---|---|
-| `npm run test:nativeprint-exporter` | Passed, 157/157 tests. |
+| `npm run test:nativeprint-exporter` | Passed: 158 passed, 1 skipped (159 total). |
 | `npm run test:nativeprint-validate` | Passed, 16/16 tests. |
-| `ctest --test-dir src/main/native-print-engine/build --output-on-failure` | Passed, 112/112 tests in the existing native build. |
+| `ctest --test-dir src/main/native-print-engine/build --output-on-failure` | Passed, 0 failures out of 152 registered tests. The 7 SVG-rasterizer cdylib tests (102–108) are skipped unless the resvg DLL is built alongside the host. |
 
 ## 18. Implementation Model
 
