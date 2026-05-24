@@ -1368,13 +1368,23 @@ class Win32Services final : public EngineServices {
           break;
         }
         {
-          Gdiplus::Graphics g(hdc);
-          // device_box coords are real device pixels (px * dpi/96). On a
-          // printer HDC GDI+ defaults PageUnit to UnitDisplay (1/100"), which
-          // would misread them by printerDPI/100 and break true 1:1. Force
-          // pixel units so print matches the preview bitmap exactly (INV-5).
-          g.SetPageUnit(Gdiplus::UnitPixel);
-          auto drawn = draw_trace(g, tile.trace, svg_rasterizer_.get());
+          // Render the page to an OPAQUE memory bitmap (white background) at the
+          // printer's device resolution, then blit that bitmap to the printer
+          // DC. draw_trace DrawImage()s the shapes' anti-aliased rasters with
+          // premultiplied alpha; compositing premul alpha straight onto a
+          // PRINTER DC renders the AA edges dark/ragged (printer drivers handle
+          // alpha poorly — "all text dark/ragged, lines darker"). Compositing
+          // onto a memory bitmap (exactly like the preview) is correct, and the
+          // resulting bitmap is opaque, so the printer receives NO alpha.
+          // device_box coords are real device pixels; UnitPixel keeps true 1:1
+          // (printer HDC GDI+ otherwise defaults to UnitDisplay=1/100").
+          const int pw = std::max(1, GetDeviceCaps(hdc, HORZRES));
+          const int ph = std::max(1, GetDeviceCaps(hdc, VERTRES));
+          Gdiplus::Bitmap page_bmp(pw, ph, PixelFormat24bppRGB);
+          Gdiplus::Graphics gb(&page_bmp);
+          gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white sheet
+          gb.SetPageUnit(Gdiplus::UnitPixel);
+          auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get());
           if (!drawn) {
             aborted = true;
             fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
@@ -1386,6 +1396,9 @@ class Win32Services final : public EngineServices {
           for (const auto& notice : drawn.value().notices) {
             push_notice_unique(device_notices, notice);
           }
+          Gdiplus::Graphics gp(hdc);
+          gp.SetPageUnit(Gdiplus::UnitPixel);
+          gp.DrawImage(&page_bmp, 0, 0, pw, ph);          // opaque -> crisp print
         }
         if (EndPage(hdc) <= 0) {
           aborted = true;

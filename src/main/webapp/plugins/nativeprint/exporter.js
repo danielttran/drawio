@@ -1638,7 +1638,7 @@
     // line box (half-leading). Anchor the em-box top there so vertical
     // placement matches the screen exactly, not just the line-box top.
     var yy = R.rect.top + Math.max(0, (R.rect.height - f.size) / 2);
-    return '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
+    var t = '<text x="' + fmt(R.rect.left) + '" y="' + fmt(yy) +
       '" font-family="' + xmlEsc(f.fam) + '" font-size="' + fmt(f.size) +
       '" font-weight="' + f.weight + '"' +
       (f.italic ? ' font-style="italic"' : '') +
@@ -1650,6 +1650,16 @@
       ' text-anchor="' + (R.anchor || 'start') +
       '" dominant-baseline="text-before-edge"' +
       ' xml:space="preserve">' + xmlEsc(R.text) + '</text>';
+    // Vertical label (mxText horizontal=false renders rotated): drawio lays the
+    // word boxes in a column but the transcribed glyphs are horizontal → they
+    // overflow. Rotate EACH word about its own box center so it sits vertically
+    // in place (a whole-label rotate would scatter the stacked words).
+    if (R.rotate) {
+      var cx = R.rect.left + R.rect.width / 2, cy = R.rect.top + R.rect.height / 2;
+      return '<g transform="rotate(' + fmt(R.rotate) + ' ' + fmt(cx) + ' ' +
+        fmt(cy) + ')">' + t + '</g>';
+    }
+    return t;
   }
 
   // First rendered word's client rect inside `el` (document order), or null.
@@ -1692,7 +1702,7 @@
   // foreignObject cannot be measured this raises a loud FATAL (no silent
   // drop/approx — owner ruling). Returns '' when there is genuinely no
   // text (empty label) — not an error.
-  function transcribeForeignObjects(fos, M, cellId, notices, resolved) {
+  function transcribeForeignObjects(fos, M, cellId, notices, resolved, runRotation) {
     var bg = [], runs = [];
     // Accumulate the TEXT runs' measured SCREEN bbox so the caller can grow the
     // node box to fit an external label (verticalLabelPosition=bottom/top) that
@@ -1863,6 +1873,7 @@
       return { html: '', bbox: null };
     }
     var body = bg.join('');
+    if (runRotation) { for (var ri2 = 0; ri2 < runs.length; ri2++) runs[ri2].rotate = runRotation; }
     for (var j = 0; j < runs.length; j++) body += textRunSvg(runs[j]);
     return {
       html: '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +
@@ -1924,6 +1935,22 @@
           h: Math.max(1, maxy - miny) + 2 * ep };
       }
     }
+    // Grow vb to the shape's ACTUAL rendered bounds (same scaled-view coords as
+    // state). getBBox() includes child transforms — so rotated shapes (e.g.
+    // associativeEntity rotation=-45) and wide arrow heads (flexArrow, wedge
+    // arrows with large startWidth/endWidth) and stroke/marker overflow are no
+    // longer cropped by a box sized to the unrotated geometry / bare endpoints.
+    try {
+      if (shapeNode && typeof shapeNode.getBBox === 'function') {
+        var gb = shapeNode.getBBox();
+        if (gb && gb.width > 0 && gb.height > 0 && isFinite(gb.x) && isFinite(gb.y)) {
+          var gx = Math.min(vb.x, gb.x), gy = Math.min(vb.y, gb.y);
+          vb = { x: gx, y: gy,
+            w: Math.max(vb.x + vb.w, gb.x + gb.width) - gx,
+            h: Math.max(vb.y + vb.h, gb.y + gb.height) - gy };
+        }
+      }
+    } catch (e) { /* getBBox unavailable (headless harness) — keep geometry vb */ }
     if (!(vb.w > 0) || !(vb.h > 0)) return null;
     var box = {
       x: (vb.x - origin.x) / scale - SVG_PAD,
@@ -1965,7 +1992,12 @@
       var Mtr = { a: 1 / scale, b: 0, c: 0, d: 1 / scale,
         e: SVG_PAD - vb.x / scale, f: SVG_PAD - vb.y / scale };
       var M = mMul(Mtr, Sinv);
-      var fo = transcribeForeignObjects(fos, M, cell && cell.id, notices, resolved);
+      // Vertical label (mxText horizontal=false → drawio renders it rotated,
+      // e.g. a horizontal=0 swimlane's title): rotate each glyph-run -90° in
+      // place so the column of words reads vertically instead of overflowing.
+      var runRot = (state.style && String(state.style.horizontal) === '0' &&
+        !number(state.style.rotation, 0)) ? -90 : 0;
+      var fo = transcribeForeignObjects(fos, M, cell && cell.id, notices, resolved, runRot);
       foLabel = fo.html;
       inlineLabel = '';                 // the HTML label replaces any svg text
       if (fo.bbox) {                    // map screen bbox corners -> svg-local
@@ -1995,6 +2027,19 @@
         box = { x: box.x - shiftX, y: box.y - shiftY,
           w: maxX - minX, h: maxY - minY };
       }
+    }
+
+    // Rotated cell (style.rotation): the harvested SHAPE carries its rotation
+    // inline, but the transcribed label is laid out axis-aligned (getClientRects
+    // loses glyph rotation) → it printed horizontal over a rotated shape. Rotate
+    // the label group by the cell's rotation around the cell-geometry center so
+    // it follows the shape (EXPERIMENTAL — approximate for centered labels).
+    var rot = number(state.style && state.style.rotation, 0);
+    if (rot && foLabel) {                 // rotated cell: rotate label about the
+      var rcx = SVG_PAD + (state.x + state.width / 2 - vb.x) / scale;  // cell center
+      var rcy = SVG_PAD + (state.y + state.height / 2 - vb.y) / scale;
+      foLabel = '<g transform="rotate(' + fmt(rot) + ' ' + fmt(rcx) + ' ' +
+        fmt(rcy) + ')">' + foLabel + '</g>';
     }
 
     // view coords -> svg-local: translate(pad) scale(1/s) translate(-vb)
@@ -2436,9 +2481,23 @@
         });
       }
       if (label !== '') {
-        var ilb = labelBoxNode(style, box);
+        // Place the label at its ACTUAL bounds (mxText.bounds honors
+        // verticalLabelPosition), NOT the full cell box. Otherwise an icon's
+        // label (verticalLabelPosition=bottom) — and especially its resolved
+        // labelBackgroundColor box — is painted OVER the image, hiding it (the
+        // "gear icon not present" bug). Falls back to the cell box if unknown.
+        var lb = box;
+        var tb = state.text && state.text.bounds;
+        if (tb && tb.width > 0 && tb.height > 0 &&
+            isFinite(tb.x) && isFinite(tb.y)) {
+          lb = { x: (tb.x - origin.x) / scale - SVG_PAD,
+                 y: (tb.y - origin.y) / scale - SVG_PAD,
+                 w: tb.width / scale + 2 * SVG_PAD,
+                 h: tb.height / scale + 2 * SVG_PAD };
+        }
+        var ilb = labelBoxNode(style, lb);
         if (ilb) paint.push(ilb);
-        paint.push(textNode(graph, cell, state, style, box, label, notices));
+        paint.push(textNode(graph, cell, state, style, lb, label, notices));
       }
       return;
     }

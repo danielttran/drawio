@@ -439,6 +439,7 @@ function svgFixture(shapeNode, textNode, style, opt = {}) {
     ? { x: 0, y: 0, width: 0, height: 0, absolutePoints: opt.pts || null,
         shape: { node: shapeNode } }
     : { x: 10, y: 20, width: 80, height: 40, shape: { node: shapeNode } };
+  st.style = style;          // mxCellState.style (read by svgCellNode: rotation, strokeWidth)
   if (textNode) st.text = { node: textNode };
   const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge,
     html: !!opt.html } };
@@ -567,6 +568,49 @@ test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio po
       'transcribed faithfully -> no foreignObject notice');
     assertSchemaValid(r.contract, 'fo->svg');
   } finally { delete globalThis.getComputedStyle; }
+});
+
+test('vertical label (horizontal=0) rotates each glyph-run -90 in place (swimlane title)', () => {
+  // Regression (test.drawio horizontal=0 swimlane title): drawio renders the
+  // title rotated, but the transcription laid the word boxes in a column with
+  // HORIZONTAL glyphs that overflow the strip. Each run is now rotated -90°
+  // about its own center so the column reads vertically.
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect', horizontal: '0' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.match(svg, /<g transform="rotate\(-90 [^)]*\)"><text /,
+      'each glyph-run rotated -90 in place');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('rotated cell (style.rotation) rotates the transcribed label so it follows the shape', () => {
+  // Regression (test.drawio associativeEntity rotation=-45): the shape rotates
+  // but the transcribed label printed horizontal (getClientRects loses glyph
+  // rotation). The label group is now wrapped in the cell rotation.
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect', rotation: '-45' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.match(svg, /<g transform="rotate\(-45 /,
+      'transcribed label wrapped in the cell rotation');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('node box grows to shapeNode.getBBox() so rotated/overflowing shapes are not cropped', () => {
+  // Regression (test.drawio: associativeEntity rotation=-45 cropped; wide wedge
+  // arrow cropped). The box was sized to the unrotated geometry / bare edge
+  // endpoints; getBBox() gives the ACTUAL rendered AABB (rotation, wide arrow
+  // heads, stroke/marker overflow) so the shape is no longer clipped.
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  // rendered bbox is larger than the 80x40 geometry (e.g. a rotated shape).
+  shape.getBBox = () => ({ x: -20, y: -10, width: 140, height: 100 });
+  const r = svgFixture(shape, null, { shape: 'x' });
+  const box = r.contract.document.pages[0].paint[0].box;
+  assert.ok(box.w >= 140 && box.h >= 100,
+    'box grew to the rendered bbox, got ' + box.w + 'x' + box.h);
 });
 
 test('node box grows to fit an external/overflowing HTML label so it is not clipped', () => {
