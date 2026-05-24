@@ -257,19 +257,22 @@
     }
 
     // The Print gate blocks ONLY on degradations (real fidelity loss the
-    // operator must consciously approve). Informational / success notices
-    // (faithful external SVG render, expected edge-clip to the chosen paper)
-    // are shown for traceability but never require an acknowledgment — a
-    // full-fidelity WYSIWYG print should not nag on every run.
+    // operator must consciously approve). Informational notices (expected
+    // edge-clip to the chosen paper) are shown for traceability but never
+    // require an acknowledgment. 'silent' notices (a faithful external SVG
+    // render) are not shown at all — a full-fidelity WYSIWYG print produces
+    // no warning. The engine may still emit them on the wire for audit.
     function showNotices(notices) {
       acks = [];
       noticeBox.innerHTML = '';
       var combined = (exporterNotices || []).concat(notices || []);
       var degradations = [], infos = [];
       combined.forEach(function (n) {
-        (severityOf(n.kind) === 'info' ? infos : degradations).push(n);
+        var sev = severityOf(n.kind);
+        if (sev === 'silent') return;     // faithful render: nothing to surface
+        (sev === 'info' ? infos : degradations).push(n);
       });
-      if (combined.length === 0) {
+      if (degradations.length === 0 && infos.length === 0) {
         noticeBox.style.display = 'none';
         refreshGate();
         return;

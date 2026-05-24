@@ -62,6 +62,52 @@
     return c || fallback;
   }
 
+  // STRICT WYSIWYG on the HARVEST path: drawio's rendered SVG carries theme
+  // colors as CSS `light-dark(L, D)` / `var(--x, fb)` in inline `style`
+  // attributes (which OVERRIDE the hex presentation attrs). resvg (0.47) cannot
+  // parse those → it drops the fill and the shape prints SOLID BLACK. Resolve
+  // them to concrete colors for the ACTIVE theme right in the serialized SVG
+  // string. Paren-aware (the inline form uses rgb(r, g, b) whose commas defeat
+  // themeColor's simple regex); processes leftmost call each pass, looping so a
+  // chosen light-dark side that is itself a var() resolves too.
+  function resolveCssColorFns(s, dark) {
+    if (typeof s !== 'string') return s;
+    if (s.indexOf('light-dark(') < 0 && s.indexOf('var(') < 0) return s;
+    var matchEnd = function (str, openIdx) {        // index of matching ')'
+      var depth = 0;
+      for (var i = openIdx; i < str.length; i++) {
+        var ch = str.charAt(i);
+        if (ch === '(') depth++;
+        else if (ch === ')' && --depth === 0) return i;
+      }
+      return -1;
+    };
+    var splitTop = function (a) {                    // split on top-level commas
+      var parts = [], depth = 0, cur = '';
+      for (var i = 0; i < a.length; i++) {
+        var ch = a.charAt(i);
+        if (ch === '(') depth++; else if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      parts.push(cur);
+      return parts;
+    };
+    for (var guard = 0; guard < 500; guard++) {
+      var m = /light-dark\(|var\(/i.exec(s);
+      if (!m) break;
+      var open = s.indexOf('(', m.index);
+      var close = matchEnd(s, open);
+      if (close < 0) break;                          // malformed — leave as-is
+      var parts = splitTop(s.slice(open + 1, close)).map(function (p) { return p.trim(); });
+      var repl = /^light-dark/i.test(m[0])
+        ? (dark ? (parts[1] || parts[0]) : parts[0])  // active side
+        : parts.slice(1).join(',').trim();            // var() -> its fallback
+      s = s.slice(0, m.index) + (repl || '') + s.slice(close + 1);
+    }
+    return s;
+  }
+
   function resolveThemeDefaults(style, graph) {
     if (!style) return style;
     var bg = themeColor(graph && graph.shapeBackgroundColor,
@@ -1085,18 +1131,26 @@
   // Notice severity taxonomy — the single, tested source of truth for how the
   // Native Print dialog gates the Print button. Keyed by the same `kind` string
   // the UI receives from BOTH sources: the exporter's own bake notices and the
-  // host/engine wire notices (proto.cpp NoticeKind). Two severities:
+  // host/engine wire notices (proto.cpp NoticeKind). Three severities:
+  //   'silent'      — a faithful render with nothing to review: NOT shown,
+  //                   never blocks Print. The engine may still emit it on the
+  //                   wire for audit; the dialog simply does not surface it.
   //   'info'        — shown for traceability, NEVER blocks Print.
   //   'degradation' — shown with an acknowledge checkbox; blocks Print until ticked.
   // The goal is WYSIWYG full-fidelity output without friction: a faithful
   // render (or an outcome the owner has accepted by design) must not nag the
   // operator for an acknowledgment on every print. Anything representing a real
   // fidelity loss the operator should consciously approve stays a degradation.
-  var NOTICE_INFO = {
+  var NOTICE_SILENT = {
     // Host SUCCESS notice: the SVG rasterized faithfully via the external
-    // backend (carries backend identity, e.g. "resvg 0.47"). A successful,
-    // full-fidelity render is informational, not an approval gate.
-    SvgArtworkRasterized: true,
+    // backend (carries backend identity, e.g. "resvg 0.47"). On the Win32 host
+    // the design fonts are guaranteed (see the rasterizer's reverted font-guard
+    // note), so a successful resvg render is trusted WYSIWYG. Per owner
+    // directive a faithful print shows NO warning — this notice is not
+    // surfaced. The FAILURE path (StubbedSvgArtwork) stays a loud degradation.
+    SvgArtworkRasterized: true
+  };
+  var NOTICE_INFO = {
     // Engine/host clip notice. Per owner ruling the print keeps TRUE 1:1 size
     // and the sheet shows exactly what it can hold (never a silent scale); a
     // diagram larger than the paper is expected to be edge-clipped, so this is
@@ -1108,6 +1162,7 @@
   };
 
   function noticeSeverity(kind) {
+    if (NOTICE_SILENT[kind] === true) return 'silent';
     return NOTICE_INFO[kind] === true ? 'info' : 'degradation';
   }
 
@@ -1639,6 +1694,19 @@
   // text (empty label) — not an error.
   function transcribeForeignObjects(fos, M, cellId, notices, resolved) {
     var bg = [], runs = [];
+    // Accumulate the TEXT runs' measured SCREEN bbox so the caller can grow the
+    // node box to fit an external label (verticalLabelPosition=bottom/top) that
+    // would otherwise be clipped by the svg viewBox. Only the actual glyph runs
+    // are measured — NOT raw element rects, since drawio's transparent label
+    // wrapper reports a container-sized rect that would explode the box.
+    var sxMin = Infinity, syMin = Infinity, sxMax = -Infinity, syMax = -Infinity;
+    var acc = function (rc) {
+      if (!rc) return;
+      if (rc.left < sxMin) sxMin = rc.left;
+      if (rc.top < syMin) syMin = rc.top;
+      if (rc.left + rc.width > sxMax) sxMax = rc.left + rc.width;
+      if (rc.top + rc.height > syMax) syMax = rc.top + rc.height;
+    };
     var measurable = root && typeof root.getComputedStyle === 'function';
     // Per-cell notice dedup. A label with N nested divs all carrying the
     // same unsupported CSS feature would otherwise emit N identical
@@ -1783,6 +1851,7 @@
               throw nativePrintFatal('HTML label fragment is unmeasurable ' +
                 '(zero-rect); refusing to drop a visible label', cellId);
             }
+            acc(rc);
             runs.push({ rect: { left: rc.left, top: rc.top,
               width: rc.width, height: rc.height }, text: m[0], f: f });
           }
@@ -1790,12 +1859,18 @@
       };
       walk(fo);
     }
-    if (!runs.length && !bg.some(function (x) { return x !== ''; })) return '';
+    if (!runs.length && !bg.some(function (x) { return x !== ''; })) {
+      return { html: '', bbox: null };
+    }
     var body = bg.join('');
     for (var j = 0; j < runs.length; j++) body += textRunSvg(runs[j]);
-    return '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +
-      fmt(M.c) + ' ' + fmt(M.d) + ' ' + fmt(M.e) + ' ' + fmt(M.f) + ')">' +
-      body + '</g>';
+    return {
+      html: '<g transform="matrix(' + fmt(M.a) + ' ' + fmt(M.b) + ' ' +
+        fmt(M.c) + ' ' + fmt(M.d) + ' ' + fmt(M.e) + ' ' + fmt(M.f) + ')">' +
+        body + '</g>',
+      bbox: (sxMax > sxMin && syMax > syMin)
+        ? { minX: sxMin, minY: syMin, maxX: sxMax, maxY: syMax } : null
+    };
   }
 
   // Build the contract `svg` node carrying the cell's literal rendered SVG.
@@ -1867,7 +1942,16 @@
     // HTML label present -> transcribe (never serialize foreignObject into
     // the contract). M maps screen px -> this svg's local space, carrying
     // drawio's rotation/zoom/flip exactly.
-    var labelStr = textStr || '';
+    // SVG-native text serializes in VIEW coords → it belongs INSIDE the
+    // view→local group. Transcribed HTML labels are measured in SCREEN coords
+    // and M maps screen→svg-local directly → they belong at the SVG ROOT. A
+    // cell has one or the other; keep them separate so the screen-space label
+    // is NOT also put through the view→local group (that double-applies the
+    // mapping and the text lands outside the box → clipped/invisible: the
+    // "labels missing in print" bug).
+    var inlineLabel = textStr || '';
+    var foLabel = '';
+    var foLocal = null;                  // label bounds in svg-local units
     if (fos.length) {
       var cellGroup = shapeNode.parentNode;
       var sctm = (cellGroup && typeof cellGroup.getScreenCTM === 'function')
@@ -1880,21 +1964,57 @@
       }
       var Mtr = { a: 1 / scale, b: 0, c: 0, d: 1 / scale,
         e: SVG_PAD - vb.x / scale, f: SVG_PAD - vb.y / scale };
-      labelStr = transcribeForeignObjects(
-        fos, mMul(Mtr, Sinv), cell && cell.id, notices, resolved);
+      var M = mMul(Mtr, Sinv);
+      var fo = transcribeForeignObjects(fos, M, cell && cell.id, notices, resolved);
+      foLabel = fo.html;
+      inlineLabel = '';                 // the HTML label replaces any svg text
+      if (fo.bbox) {                    // map screen bbox corners -> svg-local
+        var cs = [[fo.bbox.minX, fo.bbox.minY], [fo.bbox.maxX, fo.bbox.minY],
+          [fo.bbox.minX, fo.bbox.maxY], [fo.bbox.maxX, fo.bbox.maxY]];
+        var lx = Infinity, ly = Infinity, lX = -Infinity, lY = -Infinity;
+        for (var ci = 0; ci < 4; ci++) {
+          var qx = M.a * cs[ci][0] + M.c * cs[ci][1] + M.e;
+          var qy = M.b * cs[ci][0] + M.d * cs[ci][1] + M.f;
+          if (qx < lx) lx = qx; if (qy < ly) ly = qy;
+          if (qx > lX) lX = qx; if (qy > lY) lY = qy;
+        }
+        foLocal = { x: lx, y: ly, w: lX - lx, h: lY - ly };
+      }
+    }
+
+    // Grow the node box so an EXTERNAL label (verticalLabelPosition=bottom/top,
+    // or any overflow) is not clipped by the svg viewBox. Shift content + box
+    // origin when the label extends above/left of the shape.
+    var shiftX = 0, shiftY = 0;
+    if (foLocal) {
+      var minX = Math.min(0, foLocal.x), minY = Math.min(0, foLocal.y);
+      var maxX = Math.max(box.w, foLocal.x + foLocal.w);
+      var maxY = Math.max(box.h, foLocal.y + foLocal.h);
+      if (minX < -0.01 || minY < -0.01 || maxX > box.w + 0.01 || maxY > box.h + 0.01) {
+        shiftX = -minX; shiftY = -minY;
+        box = { x: box.x - shiftX, y: box.y - shiftY,
+          w: maxX - minX, h: maxY - minY };
+      }
     }
 
     // view coords -> svg-local: translate(pad) scale(1/s) translate(-vb)
     var tr = 'translate(' + fmt(SVG_PAD) + ' ' + fmt(SVG_PAD) + ') scale(' +
       fmt(1 / scale) + ') translate(' + fmt(-vb.x) + ' ' + fmt(-vb.y) + ')';
+    var inner = '<g transform="' + tr + '">' + shapeStr + inlineLabel + '</g>' + foLabel;
+    if (shiftX || shiftY) {
+      inner = '<g transform="translate(' + fmt(shiftX) + ' ' + fmt(shiftY) + ')">' +
+        inner + '</g>';
+    }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
       'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
       '" height="' + fmt(box.h) + '">' +
       (defs.length ? '<defs>' + defs.join('') + '</defs>' : '') +
-      '<g transform="' + tr + '">' + shapeStr +
-      labelStr + '</g></svg>';
+      inner + '</svg>';
 
-    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+    // Resolve theme CSS (light-dark()/var()) so resvg renders real colors, not
+    // black. Active-theme side per isDark() (STRICT WYSIWYG — never forced).
+    return { kind: 'svg', box: box,
+      source: base64(resolveCssColorFns(svg, isDark())), aspect: 'preserve' };
   }
 
   // drawio image cells carry the picture in the `image=` style value, almost
@@ -2016,8 +2136,18 @@
     });
   }
 
+  // A URL whose bytes must be FETCHED to embed (as opposed to an inline data:
+  // URI, handled by the transcode path). Covers http(s), protocol-relative
+  // (//host/x), root-relative (/x) AND document-relative (img/clipart/x.png —
+  // e.g. drawio's BUNDLED clipart); the browser's fetch() resolves them against
+  // the page origin. NB previously only http(s) matched, so relative/bundled
+  // images were never collected for embedding → they printed as a placeholder
+  // box + a spurious ExporterUnsupportedImage degradation (a real warning AND a
+  // fidelity loss). Now they embed their real pixels like any other image.
   function externalUrl(s) {
-    return (typeof s === 'string' && /^https?:\/\//i.test(s)) ? s : null;
+    if (typeof s !== 'string' || s === '') return null;
+    if (/^data:/i.test(s)) return null;          // inline data URI — not fetched
+    return s;                                     // http(s)/relative/root-relative
   }
 
   // Is this image source already in a form the engine/resvg embeds directly?

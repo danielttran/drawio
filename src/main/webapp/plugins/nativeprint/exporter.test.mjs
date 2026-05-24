@@ -468,6 +468,25 @@ test('vertex emits ONE faithful svg node (shape+label), no re-derivation', () =>
   assertSchemaValid(r.contract, 'svg vertex');
 });
 
+test('harvested SVG resolves light-dark()/var() so resvg renders real color, not black', () => {
+  // Regression (test.drawio): drawio's rendered SVG carries theme colors as CSS
+  // light-dark(L, D) / var(--x, fb) in inline `style` attrs (which OVERRIDE the
+  // hex presentation attrs). resvg (0.47) can't parse them → it drops the fill
+  // and the shape prints SOLID BLACK. The bake must resolve them to a concrete
+  // color for the active theme (light here — no Editor.isDarkMode in node).
+  const shape = domEl('g', {}, [domEl('rect', {
+    x: 0, y: 0, width: 80, height: 40, fill: '#ffe6cc',
+    style: 'fill: light-dark(rgb(255, 230, 204), rgb(54, 33, 10)); ' +
+      'stroke: light-dark(#d79b00, var(--ge-dark-color, #993d00));'
+  })]);
+  const r = svgFixture(shape, null, { shape: 'x' });
+  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+  assert.ok(!/light-dark\(/i.test(svg), 'no light-dark() left for resvg to choke on');
+  assert.ok(!/var\(/i.test(svg), 'no var() left for resvg to choke on');
+  assert.ok(/rgb\(255, 230, 204\)/.test(svg), 'fill resolved to the light side');
+  assert.ok(/#d79b00/i.test(svg), 'stroke resolved to the light side');
+});
+
 test('svg node inlines referenced defs (gradients/filters/markers)', () => {
   const grad = domEl('linearGradient', { id: 'g1' }, [domEl('stop', { offset: '0' })]);
   const shape = domEl('g', {}, [domEl('rect', { fill: 'url(#g1)' })]);
@@ -547,6 +566,47 @@ test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio po
     assert.ok(!r.notices.some((x) => x.kind === 'SvgForeignObject'),
       'transcribed faithfully -> no foreignObject notice');
     assertSchemaValid(r.contract, 'fo->svg');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('node box grows to fit an external/overflowing HTML label so it is not clipped', () => {
+  // Regression (test.drawio umlActor "Actor", verticalLabelPosition=bottom): the
+  // box was sized to the shape only, so a label painted outside the shape fell
+  // beyond the svg viewBox and was clipped. The box must grow to the label's
+  // MEASURED bounds (real DOM rects via transcribeForeignObjects), not a
+  // synthetic state.boundingBox (which the live graph does not populate).
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
+    const box = r.contract.document.pages[0].paint[0].box;
+    // shape-only box = 80/scale + 2*PAD = 84 wide. The label's measured glyph
+    // runs reach svg-local x≈169, so the box must grow past 84 to contain them.
+    assert.ok(box.w >= 168,
+      'box grew to fit the label width, got ' + box.w + 'x' + box.h);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('transcribed HTML label sits at the SVG ROOT, not nested in the view->local group (no double-transform / clipped-out-of-box)', () => {
+  // Regression (test.drawio: "most texts dont show in shapes"). Label runs are
+  // measured in SCREEN coords and M maps screen->svg-local. If the label <g
+  // matrix(M)> is nested INSIDE the shape's view->local group, that mapping is
+  // applied a SECOND time and the text lands far outside the node box -> the
+  // svg viewBox clips it -> the label is invisible in the print. The label
+  // group must therefore be a SIBLING of the shape group at the svg root.
+  const shape = domEl('g', {}, [domEl('rect', {})]);
+  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
+  try {
+    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    const labelIdx = svg.indexOf('<g transform="matrix(');
+    assert.ok(labelIdx > 0, 'transcribed label group present');
+    const before = svg.slice(0, labelIdx);
+    const opens = (before.match(/<g\b/g) || []).length;
+    const closes = (before.match(/<\/g>/g) || []).length;
+    assert.equal(opens - closes, 0,
+      'label group must be at svg root (all prior groups closed); ' +
+      (opens - closes) + ' group(s) still open would double-transform it');
   } finally { delete globalThis.getComputedStyle; }
 });
 
@@ -1857,6 +1917,30 @@ test('embedExternalImages: fetched external image embeds, no notice', async () =
     .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
 });
 
+test('embedExternalImages: RELATIVE/bundled image (drawio clipart) embeds, no warning', async () => {
+  // Regression (the test.drawio gear icon): externalUrl() once matched ONLY
+  // http(s), so a document-relative src like drawio's bundled clipart was never
+  // collected for embedding → it printed as a placeholder box + a spurious
+  // ExporterUnsupportedImage degradation (a real warning AND a fidelity loss).
+  // It must now fetch+embed the real pixels like any other image.
+  const REL = 'img/clipart/Gear_128x128.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 60, height: 60 } };
+  const styles = { v: { shape: 'image', image: REL } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const fakeFetch = async (u) => ({ ok: u === REL,
+    blob: async () => new Blob([Buffer.from(PNG, 'base64')], { type: 'image/png' }) });
+  const resolved = await exporter.embedExternalImages(graph, fakeFetch);
+  assert.ok(resolved[REL] && resolved[REL].startsWith('data:image/png;base64,'),
+    'relative URL fetched into a data URI (was previously skipped entirely)');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'resolved relative image embeds -> NO warning');
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'image',
+    'faithful PNG image node, not a placeholder path');
+});
+
 test('embedExternalImages: non-resvg format (webp) is canvas-transcoded to PNG', async () => {
   // resvg can't draw webp/bmp, but the BROWSER decodes them — so canvas
   // re-encodes to PNG and the print stays WYSIWYG with no notice. Here the
@@ -2890,10 +2974,17 @@ test('GOAL: built-in shape with bulleted, bordered HTML label -> zero notices', 
 // UI receives from BOTH the exporter and the host/engine wire (proto.cpp).
 // Pins WYSIWYG-without-friction: a faithful render / owner-accepted edge-clip
 // must NOT require a per-print acknowledgment.
-test('noticeSeverity: success + owner-accepted notices are informational', () => {
+test('noticeSeverity: faithful-render success notice is silent (no warning)', () => {
   assert.equal(typeof exporter.noticeSeverity, 'function');
-  // SvgArtworkRasterized = host success notice ("rendered via resvg 0.47").
-  assert.equal(exporter.noticeSeverity('SvgArtworkRasterized'), 'info');
+  // SvgArtworkRasterized = host SUCCESS notice ("rendered via resvg 0.47"). On
+  // the Win32 host the design fonts are guaranteed so a successful resvg render
+  // is trusted WYSIWYG; per owner directive a faithful print shows NO warning.
+  // The dialog skips 'silent'; the engine may still emit it on the wire for
+  // audit. The FAILURE path (StubbedSvgArtwork) stays a degradation below.
+  assert.equal(exporter.noticeSeverity('SvgArtworkRasterized'), 'silent');
+});
+
+test('noticeSeverity: owner-accepted notices are informational', () => {
   // HardwareMarginClip = keep true size, the sheet shows what it can hold.
   assert.equal(exporter.noticeSeverity('HardwareMarginClip'), 'info');
   // Additive forward-compatible version skew.
