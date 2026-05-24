@@ -1203,14 +1203,11 @@ test('image style without shape=image is still detected as an image', () => {
 });
 
 for (const [label, src, why] of [
-  ['JPEG', 'data:image/jpeg;base64,/9j/4AAQ', /format "jpeg"/],
-  ['GIF', 'data:image/gif;base64,R0lGODlh', /format "gif"/],
-  ['SVG data URI', 'data:image/svg+xml;base64,PHN2Zz4=', /format "svg\+xml"/],
   ['non-base64 data URI', 'data:image/svg+xml;utf8,<svg/>', /non-base64/],
   ['external http URL', 'https://example.com/pic.png', /external image URL/],
   ['relative URL', '/images/logo.png', /external image URL/]
 ]) {
-  test(`non-PNG image loud-flagged specifically, not silent/generic: ${label}`, () => {
+  test(`unembeddable image loud-flagged specifically, not silent/generic: ${label}`, () => {
     const r = oneVertex({ shape: 'image', image: src });
     const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
     assert.ok(n, `${label} must emit ExporterUnsupportedImage`);
@@ -1810,25 +1807,81 @@ test('PNG data URI with internal whitespace is parsed (newlines stripped)', () =
   assert.equal(r.notices.length, 0);
 });
 
-// --- Image: non-PNG data URI is loudly named, not silent -----------------
+// --- Image: rasterizer-embeddable non-PNG data URIs embed (no notice) -----
+// resvg decodes JPEG/GIF and renders nested SVG, so these print faithfully as
+// a kind:"svg" <image> node built from the bytes (works headless — no live DOM
+// needed). Only formats no backend renders stay loud.
 for (const [tag, dataUri] of [
   ['jpeg', 'data:image/jpeg;base64,/9j/'],
   ['gif',  'data:image/gif;base64,R0lGOD'],
   ['svg',  'data:image/svg+xml;base64,PHN2'],
-  ['bmp',  'data:image/bmp;base64,Qk0='],
 ]) {
-  test(`unsupported image format ${tag} → loud notice + placeholder box`, () => {
+  test(`embeddable image format ${tag} → kind:svg <image>, no notice`, () => {
     const r = oneVertex({ shape: 'image', image: dataUri });
-    const note = r.notices.find((n) => n.kind === 'ExporterUnsupportedImage');
-    assert.ok(note, `ExporterUnsupportedImage notice fires for ${tag}`);
-    assert.match(note.detail.detail, new RegExp(tag, 'i'),
-      `notice names the actual format (${tag})`);
-    // There's a placeholder shape (path with stroke), never silent.
-    const placeholder = r.contract.document.pages[0].paint
-      .find((n) => n.kind === 'path');
-    assert.ok(placeholder, 'placeholder path emitted to mark where image would be');
+    assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+      `${tag} embeds faithfully -> no ExporterUnsupportedImage`);
+    const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    assert.ok(node, `${tag} emitted as a kind:svg image node`);
+    const svg = Buffer.from(node.source, 'base64').toString('utf8');
+    assert.ok(svg.includes('xlink:href="' + dataUri.replace(/;base64,.*/, ';base64,')),
+      `${tag} <image> carries its data URI`);
   });
 }
+
+// --- Image: external URL embedded via bake-time fetch (no notice) ---------
+// embedExternalImages fetches http(s) image cells and returns url->dataURI;
+// buildResult(graph, paper, {resolvedImages}) then prints the real pixels.
+// This eliminates the external-image warning for fetchable (same-origin /
+// CORS) images. Cross-origin-without-CORS / 404 stay loud (browser-security
+// wall) — proven by the failure case below.
+test('embedExternalImages: fetched external image embeds, no notice', async () => {
+  const URL_ = 'https://example.com/logo.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  // Mock fetch -> a 4-byte JPEG-ish blob (content irrelevant; the bake only
+  // base64-encodes the bytes; resvg decodes at print time).
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const fakeFetch = async (u) => ({ ok: u === URL_,
+    blob: async () => new Blob([bytes], { type: 'image/jpeg' }) });
+  const resolved = await exporter.embedExternalImages(graph, fakeFetch);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/jpeg;base64,'),
+    'external URL fetched into a data URI');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'resolved external image embeds -> no notice');
+  const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(node, 'resolved external image emitted as kind:svg <image>');
+  assert.ok(Buffer.from(node.source, 'base64').toString('utf8')
+    .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
+});
+
+test('embedExternalImages: unfetchable external image stays loud', async () => {
+  const URL_ = 'https://cross-origin.example/no-cors.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const failFetch = async () => { throw new Error('CORS'); };   // browser wall
+  const resolved = await exporter.embedExternalImages(graph, failFetch);
+  assert.deepEqual(resolved, {}, 'unfetchable URL is left unresolved');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
+  assert.ok(n, 'still loud + placeholder when the image cannot be fetched');
+  assert.match(n.detail.detail, /could not be fetched/);
+});
+
+// --- Image: a format NO backend renders stays loud -----------------------
+test('unsupported image format bmp → loud notice + placeholder box', () => {
+  const r = oneVertex({ shape: 'image', image: 'data:image/bmp;base64,Qk0=' });
+  const note = r.notices.find((n) => n.kind === 'ExporterUnsupportedImage');
+  assert.ok(note, 'ExporterUnsupportedImage notice fires for bmp');
+  assert.match(note.detail.detail, /bmp/i, 'notice names the format');
+  const placeholder = r.contract.document.pages[0].paint
+    .find((n) => n.kind === 'path');
+  assert.ok(placeholder, 'placeholder path emitted to mark where image would be');
+});
 
 // --- Image: external URL is loudly named (would not embed) ---------------
 test('external image URL is loudly noticed, never silently shipped', () => {
@@ -2009,7 +2062,7 @@ test('notices: identical degradations dedupe; distinct cellIds keep distinct ent
     const id = 'i' + i;
     cells[id] = { id, vertex: true };
     states[id] = { x: i * 100, y: 0, width: 60, height: 40 };
-    styles[id] = { shape: 'image', image: 'data:image/jpeg;base64,/9j/abc' };
+    styles[id] = { shape: 'image', image: 'data:image/bmp;base64,Qk0abc' };
   }
   const r = exporter.buildResult(graphFixture(cells, states, {}, styles,
     { x: 0, y: 0, width: 400, height: 200 }, 1));

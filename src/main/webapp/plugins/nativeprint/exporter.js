@@ -1161,8 +1161,8 @@
     return out;
   }
 
-  function base64(str) {
-    var b = utf8Bytes(str), s = '';
+  function base64FromBytes(b) {
+    var s = '';
     for (var i = 0; i < b.length; i += 3) {
       var n = (b[i] << 16) | ((i + 1 < b.length ? b[i + 1] : 0) << 8) |
         (i + 2 < b.length ? b[i + 2] : 0);
@@ -1171,6 +1171,10 @@
         (i + 2 < b.length ? B64[n & 63] : '=');
     }
     return s;
+  }
+
+  function base64(str) {
+    return base64FromBytes(utf8Bytes(str));
   }
 
   function serializeEl(node) {
@@ -1938,6 +1942,60 @@
     };
   }
 
+  // A non-PNG but rasterizer-embeddable image (JPEG/GIF/SVG, embedded or a
+  // fetched external one) -> a `kind:"svg"` node whose source is a tiny SVG
+  // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
+  // so it works headless and never carries an unresolved external href. resvg
+  // decodes the format (verified). aspect mirrors drawio's imageAspect.
+  function dataUriImageSvgNode(mime, data, box, style) {
+    var fit = String(style && style.imageAspect) === '0'
+      ? 'none' : 'xMidYMid meet';
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
+      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
+      '" height="' + fmt(box.h) + '">' +
+      '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+      '" preserveAspectRatio="' + fit + '" xlink:href="data:' + mime +
+      ';base64,' + data + '"/></svg>';
+    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+  }
+
+  // Resolve external (http/https) image URLs referenced by image cells into
+  // embedded data URIs via a bake-time fetch (the resource the diagram points
+  // to — NOT a canvas pixel read, so no C2 pixel-oracle). Returns a map
+  // url -> "data:<mime>;base64,<...>" for the URLs that fetched successfully;
+  // cross-origin-without-CORS / 404 / timeout are left out (caller stays loud
+  // for those — a browser-security wall, not a silent drop). Async + additive:
+  // the synchronous buildResult path is unchanged when no map is supplied.
+  function embedExternalImages(graph, fetchImpl) {
+    var f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    var out = {};
+    if (!graph || !f || typeof graph.getModel !== 'function') {
+      return Promise.resolve(out);
+    }
+    var model = graph.getModel();
+    var urls = {};
+    collectCellsInZOrder(model).forEach(function (cell) {
+      if (!cell || typeof graph.getCellStyle !== 'function') return;
+      var style = graph.getCellStyle(cell) || {};
+      var img = style.image;
+      if (typeof img === 'string' && /^https?:\/\//i.test(img)) urls[img] = true;
+    });
+    var toDataUri = function (blob) {
+      var type = (blob && blob.type) || 'image/png';
+      return blob.arrayBuffer().then(function (ab) {
+        return 'data:' + type + ';base64,' + base64FromBytes(new Uint8Array(ab));
+      });
+    };
+    return Promise.all(Object.keys(urls).map(function (url) {
+      return Promise.resolve()
+        .then(function () { return f(url); })
+        .then(function (r) { return (r && r.ok) ? r.blob() : null; })
+        .then(function (blob) { return blob ? toDataUri(blob) : null; })
+        .then(function (du) { if (du) out[url] = du; })
+        .catch(function () { /* unfetchable -> stays a loud notice */ });
+    })).then(function () { return out; });
+  }
+
   // `paper`, when supplied, is the SELECTED stock's size in px at 96/in
   // ({ wPx, hPx }). The contract page then equals the chosen paper so the
   // diagram prints 1:1 with the extra paper as whitespace (larger paper does
@@ -1977,11 +2035,14 @@
     return out;
   }
 
-  function buildResult(graph, paper) {
+  function buildResult(graph, paper, opts) {
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
     var notices = [];
+    // Optional url -> dataURI map from embedExternalImages() so external image
+    // cells print their actual pixels instead of a placeholder notice.
+    var resolved = (opts && opts.resolvedImages) || null;
     var scale = (view && view.scale) ? view.scale : 1;
     var bounds = graph.getGraphBounds();
     var origin = {
@@ -2014,7 +2075,7 @@
         emitEdge(graph, cell, state, style, origin, scale, paint, notices);
         return;
       }
-      emitVertex(graph, cell, state, style, origin, scale, paint, notices);
+      emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved);
     });
 
     // LOUD-OR-FAITHFUL: the v1 contract carries gradient stops + type but
@@ -2071,42 +2132,32 @@
     }
   }
 
-  function emitVertex(graph, cell, state, style, origin, scale, paint, notices) {
+  function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved) {
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
 
     if (isImageCell(style)) {
-      var img = parseImage(style.image);
+      // An external URL pre-resolved to a data URI (embedExternalImages) prints
+      // its real pixels instead of a placeholder.
+      var imgSrc = (resolved && typeof style.image === 'string' &&
+        resolved[style.image]) || style.image;
+      var img = parseImage(imgSrc);
+      var mime = embeddableImageMime(img);
       if (img && img.format === 'png') {
         paint.push(imageNode(style, box, img));        // faithful — WYSIWYG
-      } else if (embeddableImageMime(img)) {
-        // Non-PNG but rasterizer-embeddable (JPEG/GIF/SVG): render via the
-        // TRUE-WYSIWYG SVG path — drawio's own rendered <image> node carries
-        // the data URI, which resvg draws faithfully. No notice needed.
-        // svgCellNode already emits the shape AND label together, so return.
-        var imgSvg = svgCellNode(graph, cell, state, origin, scale, notices);
-        if (imgSvg) { paint.push(imgSvg); return; }
-        // Headless (no live DOM): cannot embed via the SVG path -> fall
-        // through to the loud placeholder below (never a silent drop).
-        notices.push(degradation('ExporterUnsupportedImage',
-          'image format "' + img.unsupportedFormat + '" needs the live ' +
-          'renderer to embed; not available headless — placeholder box printed.',
-          cell.id));
-        paint.push({
-          kind: 'path',
-          d: rectPath(box.x, box.y, box.w, box.h),
-          fill: null,
-          stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
-        });
+      } else if (mime) {
+        // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
+        // -> build the SVG <image> from the bytes (no live-DOM dependency, so
+        // it's faithful headless AND in-browser). No notice.
+        paint.push(dataUriImageSvgNode(mime, img.data, box, style));
       } else {
-        // Genuinely cannot embed faithfully (external URL, non-base64,
-        // unreadable, or a format no backend renders): loud, SPECIFIC notice
-        // + a placeholder box so the operator sees what is missing.
+        // Genuinely cannot embed faithfully (external URL that could not be
+        // fetched — cross-origin without CORS, 404, offline; non-base64; or a
+        // format no backend renders): loud, SPECIFIC notice + placeholder.
         var why = img && img.unsupportedFormat
-          ? 'image format "' + img.unsupportedFormat +
-            '" cannot be embedded'
+          ? 'image format "' + img.unsupportedFormat + '" cannot be embedded'
           : img && img.externalUrl
-            ? 'external image URL is not embedded in the diagram'
+            ? 'external image URL could not be fetched for embedding'
             : 'image source is missing or unreadable';
         notices.push(degradation('ExporterUnsupportedImage',
           why + ' — placeholder box printed.', cell.id));
@@ -2236,7 +2287,7 @@
   }
 
   var api = { buildContract: buildContract, buildResult: buildResult,
-    noticeSeverity: noticeSeverity };
+    noticeSeverity: noticeSeverity, embedExternalImages: embedExternalImages };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
 })(typeof window !== 'undefined' ? window : globalThis);

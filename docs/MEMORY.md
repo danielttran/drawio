@@ -199,13 +199,22 @@ changes in `exporter.js`, all pinned in `exporter.test.mjs`:
   `bevelSideColor` (lit edge = border colour, shadowed edge darkened ~50%),
   matching the bevel direction — no RichApproximate.
 
+- **External (http/https) image cells** (Insert > Image by URL): now embedded
+  by a bake-time `fetch` — `embedExternalImages(graph)` resolves each URL to a
+  data URI before `buildResult(graph, paper, {resolvedImages})`, so the print
+  shows real pixels with no notice. Uses `fetch` (network), NOT a canvas pixel
+  read, so the C2 no-pixel-oracle rule holds. `dataUriImageSvgNode` builds the
+  `<image>` from bytes (works headless too — no live-DOM dependency). Wired into
+  `nativeprint.js rebake()` (now async). Pinned by `exporter.test.mjs` with a
+  mocked fetch (success embeds, failure stays loud).
+
 Irreducible residual (genuine divergences that MUST stay loud per C1, and NOT
 producible by drawio's built-in editors / objects rendered normally):
-- **External (http) URL images & `url()` backgrounds** — embedding needs a
-  network fetch (CORS-blocked) or a canvas pixel-read (C2-forbidden). This is a
-  direct conflict between "no warnings" and the no-network/no-pixel-oracle rule;
-  only the owner can relax one. Today: loud `ExporterUnsupportedImage` /
-  `RichUnsupported` + placeholder.
+- **Cross-origin external images WITHOUT CORS headers** (and external
+  inline-`<img>` / `url()` backgrounds in hand-authored label HTML): a browser
+  cannot read their bytes at all — `fetch` is CORS-blocked and a canvas read
+  taints + throws. This is a **browser-security wall**, not a project choice;
+  the only "fix" is the C2-forbidden pixel oracle. Stays loud + placeholder.
 - **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
   user-embedded animated SVG, never a built-in shape.
 - **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list
