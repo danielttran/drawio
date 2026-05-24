@@ -1395,7 +1395,7 @@
       '" cx="0.5" cy="0.5" r="0.5">' + stopSvg + '</radialGradient>' };
   }
 
-  function backgroundImageSvg(cs, rect, noticeOnce) {
+  function backgroundImageSvg(cs, rect, noticeOnce, resolved) {
     if (!cs || !rect || (!rect.width && !rect.height)) return '';
     var bgi = cs.backgroundImage;
     if (!bgi || bgi === 'none' || bgi === '') return '';
@@ -1418,14 +1418,17 @@
     if (um) {
       var parsed = parseImage(um[1]);
       var mime = embeddableImageMime(parsed);
-      if (mime) {
-        return '<image ' + box + ' preserveAspectRatio="none" xlink:href="data:' +
-          mime + ';base64,' + parsed.data + '"/>';
+      // Direct data URI, or an external URL pre-fetched/proxied into one.
+      var href = mime ? ('data:' + mime + ';base64,' + parsed.data)
+        : (resolved && resolved[um[1]]) || null;
+      if (href) {
+        return '<image ' + box + ' preserveAspectRatio="none" xlink:href="' +
+          href + '"/>';
       }
       if (typeof noticeOnce === 'function') {
         noticeOnce('RichUnsupported',
           'HTML-label CSS background-image references ' +
-          (parsed && parsed.externalUrl ? 'an external URL' :
+          (parsed && parsed.externalUrl ? 'an external URL that could not be fetched' :
             'unembeddable content') + '; printed without it');
       }
       return '';
@@ -1634,7 +1637,7 @@
   // foreignObject cannot be measured this raises a loud FATAL (no silent
   // drop/approx — owner ruling). Returns '' when there is genuinely no
   // text (empty label) — not an error.
-  function transcribeForeignObjects(fos, M, cellId, notices) {
+  function transcribeForeignObjects(fos, M, cellId, notices, resolved) {
     var bg = [], runs = [];
     var measurable = root && typeof root.getComputedStyle === 'function';
     // Per-cell notice dedup. A label with N nested divs all carrying the
@@ -1675,7 +1678,7 @@
         var rcs = root.getComputedStyle(rootEl);
         var rr = rootEl.getBoundingClientRect();
         bg.push(bgRect(rcs, rr));               // CSS paint order: color,
-        bg.push(backgroundImageSvg(rcs, rr, noticeOnce));  // then image,
+        bg.push(backgroundImageSvg(rcs, rr, noticeOnce, resolved));  // then image,
         bg.push(borderRect(rcs, rr, noticeOnce));          // then border.
       }
       var walk = function (n) {
@@ -1685,7 +1688,7 @@
           if (n !== rootEl) {
             var er = n.getBoundingClientRect();
             bg.push(bgRect(ecs, er));
-            bg.push(backgroundImageSvg(ecs, er, noticeOnce));
+            bg.push(backgroundImageSvg(ecs, er, noticeOnce, resolved));
             bg.push(borderRect(ecs, er, noticeOnce));
           }
           if ((ecs.display || '').indexOf('list-item') >= 0 &&
@@ -1733,7 +1736,8 @@
             var mime = embeddableImageMime(parsed);
             var imgHref = (mime && parsed)
               ? 'data:' + mime + ';base64,' + parsed.data
-              : (ir && ir.width && ir.height ? imgElementToPngDataUri(n) : null);
+              : (resolved && src && resolved[src])          // pre-fetched/proxied
+                || (ir && ir.width && ir.height ? imgElementToPngDataUri(n) : null);
             if (imgHref && ir && ir.width && ir.height) {
               // Embeddable data URI (PNG/JPEG/GIF/SVG) OR an external/loaded
               // <img> re-encoded via canvas (owner-authorised) -> faithful,
@@ -1797,7 +1801,7 @@
   // Build the contract `svg` node carrying the cell's literal rendered SVG.
   // Returns null (caller falls back) when there is no live DOM / serializer.
   var SVG_PAD = 2;   // contract px around the cell for stroke/marker overflow
-  function svgCellNode(graph, cell, state, origin, scale, notices) {
+  function svgCellNode(graph, cell, state, origin, scale, notices, resolved) {
     if (!state || !state.shape || !state.shape.node) return null;
     var shapeNode = state.shape.node;
     var doc = (shapeNode.ownerDocument) || root.document || null;
@@ -1877,7 +1881,7 @@
       var Mtr = { a: 1 / scale, b: 0, c: 0, d: 1 / scale,
         e: SVG_PAD - vb.x / scale, f: SVG_PAD - vb.y / scale };
       labelStr = transcribeForeignObjects(
-        fos, mMul(Mtr, Sinv), cell && cell.id, notices);
+        fos, mMul(Mtr, Sinv), cell && cell.id, notices, resolved);
     }
 
     // view coords -> svg-local: translate(pad) scale(1/s) translate(-vb)
@@ -2012,29 +2016,69 @@
     });
   }
 
-  // Resolve external (http/https) image URLs referenced by image cells into
-  // embedded data URIs so the print shows their real pixels. Strategy per URL:
-  //   1. fetch() the resource and embed the exact bytes (preserves format);
-  //   2. on CORS/404/offline, fall back to loading + canvas re-encode (owner-
-  //      authorised; see urlToPngViaCanvas).
-  // Returns a map url -> "data:<mime>;base64,...". URLs that neither path can
-  // read (cross-origin, no CORS, canvas tainted) are left out -> the caller
-  // stays loud + placeholder (never a silent wrong). Async + additive: the
-  // synchronous buildResult path is unchanged when no map is supplied.
-  function embedExternalImages(graph, fetchImpl, canvasImpl) {
+  function externalUrl(s) {
+    return (typeof s === 'string' && /^https?:\/\//i.test(s)) ? s : null;
+  }
+
+  // Collect external image URLs referenced inside a label's live DOM: inline
+  // <img src=...> and CSS background-image url(...). Browser-only (no-op when
+  // there is no live node / getComputedStyle).
+  function collectLabelImageUrls(node, urls) {
+    if (!node || node.nodeType !== 1) return;
+    if (String(node.tagName || '').toLowerCase() === 'img') {
+      var u = externalUrl(node.getAttribute && node.getAttribute('src'));
+      if (u) urls[u] = true;
+    }
+    try {
+      var cs = root.getComputedStyle ? root.getComputedStyle(node) : null;
+      var bgi = cs && cs.backgroundImage;
+      if (bgi && /url\(/i.test(bgi)) {
+        var m = /url\(\s*["']?([^"')]+)["']?\s*\)/i.exec(bgi);
+        var bu = m && externalUrl(m[1]);
+        if (bu) urls[bu] = true;
+      }
+    } catch (e) { /* computed style unavailable */ }
+    for (var i = 0; node.childNodes && i < node.childNodes.length; i++) {
+      collectLabelImageUrls(node.childNodes[i], urls);
+    }
+  }
+
+  // Resolve EVERY external (http/https) image the diagram references — image
+  // cells, inline label <img>, and CSS url() backgrounds — into embedded data
+  // URIs so the print shows their real pixels. All URLs resolve IN PARALLEL
+  // (Promise.all), each trying, in order of cost/reliability:
+  //   1. fetch() the bytes directly (cache hit; same-origin / CORS images);
+  //   2. fetch() via drawio's same-origin proxy (PROXY_URL) — defeats CORS
+  //      because the SERVER fetches it, then serves it from our origin;
+  //   3. canvas re-encode of a fresh load (owner-authorised; last resort).
+  // Returns a map url -> "data:<mime>;base64,...". A URL no path can read
+  // (offline / proxy unreachable / cross-origin + no CORS + canvas tainted) is
+  // left out -> the caller stays loud + placeholder (never a silent wrong).
+  // Async + additive: the synchronous buildResult path is unchanged without a
+  // map. The whole batch is awaited once, then the bake runs — no per-image
+  // sync stalls.
+  function embedExternalImages(graph, fetchImpl, canvasImpl, proxyBase) {
     var f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     var canvas = canvasImpl || urlToPngViaCanvas;
+    var proxy = (proxyBase !== undefined) ? proxyBase
+      : (root && typeof root.PROXY_URL === 'string' ? root.PROXY_URL : null);
     var out = {};
     if (!graph || typeof graph.getModel !== 'function') {
       return Promise.resolve(out);
     }
     var model = graph.getModel();
+    var view = graph.view;
     var urls = {};
     collectCellsInZOrder(model).forEach(function (cell) {
-      if (!cell || typeof graph.getCellStyle !== 'function') return;
-      var style = graph.getCellStyle(cell) || {};
-      var img = style.image;
-      if (typeof img === 'string' && /^https?:\/\//i.test(img)) urls[img] = true;
+      if (!cell) return;
+      var style = (typeof graph.getCellStyle === 'function' &&
+        graph.getCellStyle(cell)) || {};
+      var u = externalUrl(style.image);
+      if (u) urls[u] = true;
+      var state = (view && typeof view.getState === 'function')
+        ? view.getState(cell) : null;
+      var tnode = state && state.text && state.text.node;
+      if (tnode) collectLabelImageUrls(tnode, urls);
     });
     var toDataUri = function (blob) {
       var type = (blob && blob.type) || 'image/png';
@@ -2042,16 +2086,23 @@
         return 'data:' + type + ';base64,' + base64FromBytes(new Uint8Array(ab));
       });
     };
-    var viaFetch = function (url) {
+    var fetchToDataUri = function (target) {
       if (!f) return Promise.resolve(null);
-      return Promise.resolve().then(function () { return f(url); })
+      return Promise.resolve().then(function () { return f(target); })
         .then(function (r) { return (r && r.ok) ? r.blob() : null; })
         .then(function (blob) { return blob ? toDataUri(blob) : null; })
         .catch(function () { return null; });
     };
+    var viaProxy = function (url) {
+      if (!proxy) return Promise.resolve(null);
+      var pu = proxy + (proxy.indexOf('?') >= 0 ? '&' : '?') +
+        'url=' + encodeURIComponent(url);
+      return fetchToDataUri(pu);
+    };
     return Promise.all(Object.keys(urls).map(function (url) {
-      return viaFetch(url)
-        .then(function (du) { return du || canvas(url); })   // canvas fallback
+      return fetchToDataUri(url)                        // 1. direct
+        .then(function (du) { return du || viaProxy(url); })   // 2. proxy
+        .then(function (du) { return du || canvas(url); })     // 3. canvas
         .then(function (du) { if (du) out[url] = du; })
         .catch(function () { /* unreadable -> stays a loud notice */ });
     })).then(function () { return out; });
@@ -2133,7 +2184,7 @@
         graph.getCellStyle(cell) || state.style || {}, graph);
 
       if (model.isEdge(cell)) {
-        emitEdge(graph, cell, state, style, origin, scale, paint, notices);
+        emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);
         return;
       }
       emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved);
@@ -2241,7 +2292,7 @@
     // label together) so EVERY object type prints exactly as drawn, text
     // included. Falls through only with no live DOM (headless) or if
     // serialization fails.
-    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices);
+    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
     if (svgNode) { paint.push(svgNode); return; }
 
     // Vector fallback: transcribe drawio's own rendered SVG so EVERY shape —
@@ -2286,10 +2337,10 @@
     }
   }
 
-  function emitEdge(graph, cell, state, style, origin, scale, paint, notices) {
+  function emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved) {
     // TRUE-WYSIWYG primary: the edge's literal rendered SVG (connector +
     // markers + label exactly as drawn). Falls through only headless.
-    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices);
+    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
     if (svgNode) { paint.push(svgNode); return; }
 
     // Faithful vector fallback: transcribe drawio's own rendered connector +

@@ -208,21 +208,34 @@ changes in `exporter.js`, all pinned in `exporter.test.mjs`:
   `nativeprint.js rebake()` (now async). Pinned by `exporter.test.mjs` with a
   mocked fetch (success embeds, failure stays loud).
 
-**External images — canvas embedding (owner carve-out, 2026-05-24).** The owner
-relaxed C2 to permit canvas use *for embedding image artwork* (not for a pixel
-oracle). So external images now resolve via fetch → **canvas re-encode**
-fallback: `embedExternalImages(graph, fetchImpl, canvasImpl)` tries `fetch`,
-then `urlToPngViaCanvas` (load + `drawImage` + `toDataURL`); inline `<img>` in
-labels re-encode the already-loaded element via `imgElementToPngDataUri`. Both
-are browser-only (no-op in Node; unit-tested via injected stubs). Doc carve-out
-recorded in `docs/CLAUDE.md` §2 + plugin `CLAUDE.md`.
+**External images — fetch → proxy → canvas embedding (owner carve-out,
+2026-05-24).** The owner relaxed C2 to permit network + canvas use *for
+embedding image artwork* (not for a pixel oracle), and to route through a
+server-side proxy. `embedExternalImages(graph, fetchImpl, canvasImpl, proxyBase)`
+collects EVERY external image the diagram references — image cells
+(`style.image`), inline label `<img>`, and CSS `url()` backgrounds
+(`collectLabelImageUrls`) — and resolves them ALL IN PARALLEL (`Promise.all`),
+each trying in order:
+  1. `fetch(url)` direct (cache; same-origin / CORS images);
+  2. `fetch(PROXY_URL + "?url=" + enc(url))` — drawio's same-origin proxy; the
+     SERVER fetches it, defeating browser CORS entirely;
+  3. `urlToPngViaCanvas` (load + `drawImage` + `toDataURL`) as last resort.
+Inline `<img>` already loaded in the DOM also re-encode synchronously via
+`imgElementToPngDataUri`. The resolved url→dataURI map threads through
+`buildResult(graph, paper, {resolvedImages})` →
+`emitVertex`/`emitEdge`/`svgCellNode`/`transcribeForeignObjects` →
+inline-`<img>` + `backgroundImageSvg`. proxyBase defaults to `window.PROXY_URL`
+so the dialog's `rebake()` gets it for free. Browser-only paths no-op in Node;
+unit-tested via injected fetch/canvas/proxy stubs (incl. a parallelism assert).
+Carve-out recorded in `docs/CLAUDE.md` §2 + plugin `CLAUDE.md`.
 
-Irreducible residual (now only a true browser-security wall):
-- **Cross-origin images served WITHOUT CORS headers**: even canvas can't read
-  them — `drawImage` taints the canvas and `toDataURL` throws (the image was
-  loaded without usable CORS). Nothing in-browser can extract those bytes. Stays
-  loud + placeholder (never a silent wrong). Everything else — same-origin and
-  CORS-enabled external images — now embeds with no notice.
+Residual: with the proxy reachable, any fetchable image URL embeds. A warning
+remains only if the proxy ALSO cannot reach the URL (offline / private host /
+proxy disabled) AND it's cross-origin-without-CORS so canvas is tainted — then
+no component can obtain the bytes, so it stays loud + placeholder (never a
+silent wrong). SMIL animation (can't print motion) and webp/bmp (unverified
+backend support) also remain loud; none are produced by drawio's built-in
+editors.
 - **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
   user-embedded animated SVG, never a built-in shape.
 - **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list

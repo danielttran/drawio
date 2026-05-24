@@ -1857,6 +1857,53 @@ test('embedExternalImages: fetched external image embeds, no notice', async () =
     .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
 });
 
+test('embedExternalImages: proxy fallback embeds a CORS-blocked image', async () => {
+  // Direct fetch is CORS-blocked; the same-origin proxy (server-side fetch)
+  // returns the bytes readably -> embeds, no notice. All URLs resolve in
+  // parallel via Promise.all; here we assert the per-URL fetch->proxy chain.
+  const URL_ = 'https://cdn.example/cors-blocked.png';
+  const PROXY = '/proxy';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const fetchImpl = async (target) => {
+    if (target === URL_) throw new Error('CORS');           // direct blocked
+    if (target.startsWith(PROXY + '?url=')) {                // proxy succeeds
+      return { ok: true, blob: async () => new Blob([bytes], { type: 'image/png' }) };
+    }
+    return { ok: false };
+  };
+  // canvasImpl null so only fetch+proxy are exercised; proxyBase = PROXY.
+  const resolved = await exporter.embedExternalImages(graph, fetchImpl,
+    async () => null, PROXY);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/png;base64,'),
+    'proxy returned the bytes -> data URI');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'proxied external image embeds -> no notice');
+});
+
+test('embedExternalImages: multiple images resolve together (parallel)', async () => {
+  const A = 'https://a.example/1.png', B = 'https://b.example/2.png';
+  const cells = { a: { id: 'a', vertex: true }, b: { id: 'b', vertex: true } };
+  const states = { a: { x: 0, y: 0, width: 20, height: 20 },
+    b: { x: 30, y: 0, width: 20, height: 20 } };
+  const styles = { a: { shape: 'image', image: A }, b: { shape: 'image', image: B } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  let inFlight = 0, maxInFlight = 0;
+  const fetchImpl = async (u) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return { ok: true, blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) };
+  };
+  const resolved = await exporter.embedExternalImages(graph, fetchImpl, async () => null, null);
+  assert.ok(resolved[A] && resolved[B], 'both images resolved');
+  assert.ok(maxInFlight >= 2, 'images fetched in parallel, not sequentially');
+});
+
 test('embedExternalImages: canvas fallback embeds when fetch is CORS-blocked', async () => {
   // Owner-authorised: when fetch() fails (CORS), re-encode the image via canvas.
   // Here the canvas step is injected (browser-only in production) to verify the
