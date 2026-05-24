@@ -166,6 +166,125 @@ needed)" block and an "Output degradations — acknowledge each" block; the gate
 counts only degradation acks. No engine/host/contract change — rendering already
 keeps true size + clips to paper, which is the desired behaviour.
 
+### Built-in-object fidelity pass — eliminate avoidable notices (2026-05-23)
+
+Goal: a diagram built only from drawio's built-in objects should print/preview
+with NO notice at all. Approach is C1-correct — *remove the divergence so the
+notice is unnecessary*, never silence a real divergence. Live (browser) path
+changes in `exporter.js`, all pinned in `exporter.test.mjs`:
+
+- **CSS borders on HTML labels** (`borderRect`): now faithful flat SVG instead
+  of "flatten to top side + RichApproximate". Uniform → one stroked `<rect>`;
+  per-side differences → one stroked `<line>` per visible side (own colour/
+  width/style); `double` → two 1/3 strokes; dashed/dotted via dasharray. No
+  notice. Only the 3D bevels (groove/ridge/inset/outset) stay loud (no flat-SVG
+  equivalent).
+- **List markers** (`transcribeForeignObjects`): standard CSS list types are all
+  covered by `listMarker()` and placed by measured first-content position; the
+  routine `SvgListMarkerApprox` is dropped (CSS itself defines outside-marker
+  position as UA-approximated, so this IS faithful). Stays loud only for a
+  genuinely-unknown list-style-type (georgian/armenian/CJK → bullet substitute).
+- **Inline `<img>` in labels** + **image cells**: any rasterizer-embeddable data
+  URI (PNG/JPEG/GIF/SVG) now embeds as `<image>` (cells route through
+  `svgCellNode` so resvg draws it). `parseImage` returns `format`+`data` for all
+  base64 image data URIs; `embeddableImageMime()` gates the set. No notice for
+  embeddable formats; external URLs / non-base64 / webp/bmp stay loud
+  (genuinely unembeddable browser-free).
+- **CSS `background-image` on labels** (`backgroundImageSvg`): CSS linear/radial
+  gradients transcribe to real SVG `<linearGradient>`/`<radialGradient>` (inline
+  `<defs>`; verified rendering through resvg with correct stops), and data-URI
+  `url()` backgrounds embed as `<image>`. Only external-URL / exotic (conic,
+  image-set) forms stay loud.
+- **3D bevel borders** (groove/ridge/inset/outset): render two-tone via
+  `bevelSideColor` (lit edge = border colour, shadowed edge darkened ~50%),
+  matching the bevel direction — no RichApproximate.
+
+- **External (http/https) image cells** (Insert > Image by URL): now embedded
+  by a bake-time `fetch` — `embedExternalImages(graph)` resolves each URL to a
+  data URI before `buildResult(graph, paper, {resolvedImages})`, so the print
+  shows real pixels with no notice. Uses `fetch` (network), NOT a canvas pixel
+  read, so the C2 no-pixel-oracle rule holds. `dataUriImageSvgNode` builds the
+  `<image>` from bytes (works headless too — no live-DOM dependency). Wired into
+  `nativeprint.js rebake()` (now async). Pinned by `exporter.test.mjs` with a
+  mocked fetch (success embeds, failure stays loud).
+
+**External images — fetch → proxy → canvas embedding (owner carve-out,
+2026-05-24).** The owner relaxed C2 to permit network + canvas use *for
+embedding image artwork* (not for a pixel oracle), and to route through a
+server-side proxy. `embedExternalImages(graph, fetchImpl, canvasImpl, proxyBase)`
+collects EVERY external image the diagram references — image cells
+(`style.image`), inline label `<img>`, and CSS `url()` backgrounds
+(`collectLabelImageUrls`) — and resolves them ALL IN PARALLEL (`Promise.all`),
+each trying in order:
+  1. `fetch(url)` direct (cache; same-origin / CORS images);
+  2. `fetch(PROXY_URL + "?url=" + enc(url))` — drawio's same-origin proxy; the
+     SERVER fetches it, defeating browser CORS entirely;
+  3. `urlToPngViaCanvas` (load + `drawImage` + `toDataURL`) as last resort.
+Inline `<img>` already loaded in the DOM also re-encode synchronously via
+`imgElementToPngDataUri`. The resolved url→dataURI map threads through
+`buildResult(graph, paper, {resolvedImages})` →
+`emitVertex`/`emitEdge`/`svgCellNode`/`transcribeForeignObjects` →
+inline-`<img>` + `backgroundImageSvg`. proxyBase defaults to `window.PROXY_URL`
+so the dialog's `rebake()` gets it for free. Browser-only paths no-op in Node;
+unit-tested via injected fetch/canvas/proxy stubs (incl. a parallelism assert).
+Carve-out recorded in `docs/CLAUDE.md` §2 + plugin `CLAUDE.md`.
+
+**Any image FORMAT now embeds (canvas transcode).** resvg only draws
+PNG/JPEG/GIF/SVG, but the browser decodes webp/bmp/tiff/ico/… — so
+`embedExternalImages` also collects non-embeddable data URIs
+(`imageSrcNeedsResolve` → `'transcode'`) and, after obtaining any bytes,
+`ensureEmbeddable` canvas-re-encodes anything non-embeddable to PNG. So every
+browser-decodable image format prints with no notice. (Headless/Node: no canvas
+→ webp/bmp still notice, matching the bmp unit test; in-browser they transcode.)
+
+Residual — only TWO cases, neither a drawio built-in object:
+1. **A referenced external image no path can obtain**: direct fetch AND the
+   proxy both can't reach it (offline / private-network / proxy disabled) AND
+   it's cross-origin-without-CORS so canvas is tainted. The bytes don't exist
+   anywhere reachable — even drawio's own canvas shows it broken. Stays loud +
+   placeholder (never a silent wrong). This is a missing-resource/deployment
+   condition, not a property of any object.
+2. **User-embedded animated SVG file** (`AnimatedSvgFrozen`): VERIFIED not a
+   built-in object. drawio's only built-in animation is edge "Flow Animation",
+   which it renders as CSS `@keyframes` animating `stroke-dashoffset` on an
+   already-drawn dashed stroke (`Graph.js createFlowAnimationCss`) — NOT SMIL.
+   resvg ignores the CSS and draws the static dashed edge (a faithful still),
+   and the `AnimatedSvgFrozen` regex only matches SMIL tags (`<animate>` etc.),
+   so a flow-animated edge raises NO notice (proven: exporter.test.mjs
+   "built-in flow animation (CSS) prints static with NO AnimatedSvgFrozen").
+   grep confirms drawio/mxGraph emit no SMIL anywhere. The notice fires ONLY
+   when a user embeds an external SVG file that itself contains SMIL — kept on
+   purpose, because such a clip can have a transparent frame-0 (opacity 0->1)
+   that would otherwise print SILENTLY BLANK, violating WYSIWYG (goal #2).
+
+For every object drawio's editors actually create, printing/preview is now
+warning-free (proven by exporter tests + the real-resvg conformance corpus).
+- **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
+  user-embedded animated SVG, never a built-in shape.
+- **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list
+  editor only offers disc/circle/square/decimal/lower|upper-alpha/lower|upper-
+  roman, all covered by `listMarker()`; only hand-authored HTML hits the rest.
+
+**`StubbedSvgArtwork` (resvg render failure) — closed by conformance corpus.**
+The remaining worry was "what if resvg fails on some built-in stencil's SVG →
+host crosshatch + StubbedSvgArtwork". Closed by construction in
+`tests/svg_pixel_determinism_tests.cpp` → "FULL mxSvgCanvas feature vocabulary"
+case (`[conformance]`): a stencil is just a COMPOSITION of the finite SVG
+grammar drawio's vector renderer (`mxSvgCanvas2D`) emits, so proving resvg
+renders every feature proves it renders every stencil. The corpus (24 cases)
+covers arc/quad/smooth paths, feGaussianBlur / feDropShadow / mxgraph composite
+shadow chain / feColorMatrix filters, linear+radial gradients with
+gradientTransform & fx/fy, rotate+skew+matrix transforms, polygon/polyline,
+linecap/join/miterlimit, fill-rule, group opacity, pattern, `<use>`, styled
+text (italic/underline/strike/letter-spacing), tspan multiline + xml:space,
+multi-value dasharray+offset, clipPath+mask, nested `<svg>`, and embedded
+**PNG/JPEG/GIF/nested-SVG `<image>`** (which also proves the image-embedding
+fidelity change actually rasterizes). Each must return status 0 with >0 opaque
+pixels (no failure, no silent blank). Built + run against the real resvg-0.47
+cdylib on this box (ctest 152/152); CI runs it on ubuntu via
+`ctest -R "SVG rasterizer cdylib"` with `SVG_RASTERIZER_LIB` set, so a future
+resvg regression fails CI here instead of crosshatching a user's print.
+
 ---
 
 ## Audit fixes (rounds 1–6, 2026-05-21)

@@ -207,23 +207,34 @@
     // Returns false if the bake hard-failed (e.g. NativePrintFatal): the
     // contract is cleared, the operator is told loudly, and the caller must
     // NOT preview/print a stale or partial page (WYSIWYG-or-loud).
+    // Returns a Promise<bool>. First resolves external (http) image URLs into
+    // embedded data URIs via a bake-time fetch (so URL-referenced images print
+    // their real pixels instead of a placeholder notice), then bakes. The
+    // resolve step is best-effort: any failure yields an empty map and the bake
+    // proceeds (unfetchable images stay loudly noticed — never silently wrong).
     function rebake() {
-      if (!window.NativePrintExporter.buildResult) return true;
-      try {
-        var r = window.NativePrintExporter.buildResult(
-          ui.editor.graph, paperPx());
-        contract = r.contract;
-        exporterNotices = r.notices || [];
-        return true;
-      } catch (e) {
-        contract = null;
-        exporterNotices = [];
-        rearm();
-        status.textContent = 'Bake failed: ' + e.message;
-        ui.showError('Native Print',
-          'Bake failed — nothing was printed.\n' + e.message, 'OK');
-        return false;
-      }
+      var ex = window.NativePrintExporter;
+      if (!ex || !ex.buildResult) return Promise.resolve(true);
+      var resolve = ex.embedExternalImages
+        ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
+        : Promise.resolve({});
+      return resolve.then(function (resolvedImages) {
+        try {
+          var r = ex.buildResult(ui.editor.graph, paperPx(),
+            { resolvedImages: resolvedImages });
+          contract = r.contract;
+          exporterNotices = r.notices || [];
+          return true;
+        } catch (e) {
+          contract = null;
+          exporterNotices = [];
+          rearm();
+          status.textContent = 'Bake failed: ' + e.message;
+          ui.showError('Native Print',
+            'Bake failed — nothing was printed.\n' + e.message, 'OK');
+          return false;
+        }
+      });
     }
 
     function refreshGate() {
@@ -339,13 +350,13 @@
         'Custom… (set physical dimensions)'));
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
       customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
-      rearm(); if (rebake()) doPreview();
+      rearm(); rebake().then(function (ok) { if (ok) doPreview(); });
     });
     stockSel.addEventListener('change', function () {
       customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
-      rearm(); if (rebake()) doPreview();
+      rearm(); rebake().then(function (ok) { if (ok) doPreview(); });
     });
-    function onCustomDim() { rearm(); if (rebake()) doPreview(); }
+    function onCustomDim() { rearm(); rebake().then(function (ok) { if (ok) doPreview(); }); }
     customW.addEventListener('change', onCustomDim);
     customH.addEventListener('change', onCustomDim);
     copies.addEventListener('change', rearm);

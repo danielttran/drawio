@@ -566,7 +566,7 @@ test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs ori
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('list marker: glyph + numbering exact, inset measured from content, loud', () => {
+test('list marker: glyph + numbering exact, placed by measured content, no notice', () => {
   const shape = domEl('g', {}, [domEl('rect', {})]);
   const t = { nodeType: 3, nodeValue: 'Item one' };
   const li = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t],
@@ -590,8 +590,10 @@ test('list marker: glyph + numbering exact, inset measured from content, loud', 
     assert.match(svg, /<text x="94" y="51"[^>]*text-anchor="end"[^>]*>•<\/text>/,
       'bullet glyph placed by measured content inset');
     assert.match(svg, /<text x="100" [^>]*text-anchor="start"[^>]*>Item<\/text>/);
-    assert.ok(r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
-      '::marker box not measurable browser-free -> inherently loud');
+    // A standard `disc` bullet is a known glyph placed faithfully -> the bake
+    // must NOT raise a marker approximation notice for it (built-in WYSIWYG).
+    assert.ok(!r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
+      'known list marker renders faithfully -> no SvgListMarkerApprox notice');
     assert.ok(!/<foreignObject/i.test(svg));
   } finally { delete globalThis.getComputedStyle; }
 });
@@ -1201,14 +1203,11 @@ test('image style without shape=image is still detected as an image', () => {
 });
 
 for (const [label, src, why] of [
-  ['JPEG', 'data:image/jpeg;base64,/9j/4AAQ', /format "jpeg"/],
-  ['GIF', 'data:image/gif;base64,R0lGODlh', /format "gif"/],
-  ['SVG data URI', 'data:image/svg+xml;base64,PHN2Zz4=', /format "svg\+xml"/],
   ['non-base64 data URI', 'data:image/svg+xml;utf8,<svg/>', /non-base64/],
   ['external http URL', 'https://example.com/pic.png', /external image URL/],
   ['relative URL', '/images/logo.png', /external image URL/]
 ]) {
-  test(`non-PNG image loud-flagged specifically, not silent/generic: ${label}`, () => {
+  test(`unembeddable image loud-flagged specifically, not silent/generic: ${label}`, () => {
     const r = oneVertex({ shape: 'image', image: src });
     const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
     assert.ok(n, `${label} must emit ExporterUnsupportedImage`);
@@ -1808,25 +1807,167 @@ test('PNG data URI with internal whitespace is parsed (newlines stripped)', () =
   assert.equal(r.notices.length, 0);
 });
 
-// --- Image: non-PNG data URI is loudly named, not silent -----------------
+// --- Image: rasterizer-embeddable non-PNG data URIs embed (no notice) -----
+// resvg decodes JPEG/GIF and renders nested SVG, so these print faithfully as
+// a kind:"svg" <image> node built from the bytes (works headless — no live DOM
+// needed). Only formats no backend renders stay loud.
 for (const [tag, dataUri] of [
   ['jpeg', 'data:image/jpeg;base64,/9j/'],
   ['gif',  'data:image/gif;base64,R0lGOD'],
   ['svg',  'data:image/svg+xml;base64,PHN2'],
-  ['bmp',  'data:image/bmp;base64,Qk0='],
 ]) {
-  test(`unsupported image format ${tag} → loud notice + placeholder box`, () => {
+  test(`embeddable image format ${tag} → kind:svg <image>, no notice`, () => {
     const r = oneVertex({ shape: 'image', image: dataUri });
-    const note = r.notices.find((n) => n.kind === 'ExporterUnsupportedImage');
-    assert.ok(note, `ExporterUnsupportedImage notice fires for ${tag}`);
-    assert.match(note.detail.detail, new RegExp(tag, 'i'),
-      `notice names the actual format (${tag})`);
-    // There's a placeholder shape (path with stroke), never silent.
-    const placeholder = r.contract.document.pages[0].paint
-      .find((n) => n.kind === 'path');
-    assert.ok(placeholder, 'placeholder path emitted to mark where image would be');
+    assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+      `${tag} embeds faithfully -> no ExporterUnsupportedImage`);
+    const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    assert.ok(node, `${tag} emitted as a kind:svg image node`);
+    const svg = Buffer.from(node.source, 'base64').toString('utf8');
+    assert.ok(svg.includes('xlink:href="' + dataUri.replace(/;base64,.*/, ';base64,')),
+      `${tag} <image> carries its data URI`);
   });
 }
+
+// --- Image: external URL embedded via bake-time fetch (no notice) ---------
+// embedExternalImages fetches http(s) image cells and returns url->dataURI;
+// buildResult(graph, paper, {resolvedImages}) then prints the real pixels.
+// This eliminates the external-image warning for fetchable (same-origin /
+// CORS) images. Cross-origin-without-CORS / 404 stay loud (browser-security
+// wall) — proven by the failure case below.
+test('embedExternalImages: fetched external image embeds, no notice', async () => {
+  const URL_ = 'https://example.com/logo.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  // Mock fetch -> a 4-byte JPEG-ish blob (content irrelevant; the bake only
+  // base64-encodes the bytes; resvg decodes at print time).
+  const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const fakeFetch = async (u) => ({ ok: u === URL_,
+    blob: async () => new Blob([bytes], { type: 'image/jpeg' }) });
+  const resolved = await exporter.embedExternalImages(graph, fakeFetch);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/jpeg;base64,'),
+    'external URL fetched into a data URI');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'resolved external image embeds -> no notice');
+  const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(node, 'resolved external image emitted as kind:svg <image>');
+  assert.ok(Buffer.from(node.source, 'base64').toString('utf8')
+    .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
+});
+
+test('embedExternalImages: non-resvg format (webp) is canvas-transcoded to PNG', async () => {
+  // resvg can't draw webp/bmp, but the BROWSER decodes them — so canvas
+  // re-encodes to PNG and the print stays WYSIWYG with no notice. Here the
+  // canvas step is injected; in production it's a real offscreen canvas.
+  const WEBP = 'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: WEBP } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const fakeCanvas = async (src) => (src === WEBP ? 'data:image/png;base64,' + PNG : null);
+  const resolved = await exporter.embedExternalImages(graph, null, fakeCanvas, null);
+  assert.ok(resolved[WEBP] && resolved[WEBP].startsWith('data:image/png;base64,'),
+    'webp data URI transcoded to PNG via canvas');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'transcoded webp embeds -> no notice');
+});
+
+test('embedExternalImages: proxy fallback embeds a CORS-blocked image', async () => {
+  // Direct fetch is CORS-blocked; the same-origin proxy (server-side fetch)
+  // returns the bytes readably -> embeds, no notice. All URLs resolve in
+  // parallel via Promise.all; here we assert the per-URL fetch->proxy chain.
+  const URL_ = 'https://cdn.example/cors-blocked.png';
+  const PROXY = '/proxy';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const fetchImpl = async (target) => {
+    if (target === URL_) throw new Error('CORS');           // direct blocked
+    if (target.startsWith(PROXY + '?url=')) {                // proxy succeeds
+      return { ok: true, blob: async () => new Blob([bytes], { type: 'image/png' }) };
+    }
+    return { ok: false };
+  };
+  // canvasImpl null so only fetch+proxy are exercised; proxyBase = PROXY.
+  const resolved = await exporter.embedExternalImages(graph, fetchImpl,
+    async () => null, PROXY);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/png;base64,'),
+    'proxy returned the bytes -> data URI');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'proxied external image embeds -> no notice');
+});
+
+test('embedExternalImages: multiple images resolve together (parallel)', async () => {
+  const A = 'https://a.example/1.png', B = 'https://b.example/2.png';
+  const cells = { a: { id: 'a', vertex: true }, b: { id: 'b', vertex: true } };
+  const states = { a: { x: 0, y: 0, width: 20, height: 20 },
+    b: { x: 30, y: 0, width: 20, height: 20 } };
+  const styles = { a: { shape: 'image', image: A }, b: { shape: 'image', image: B } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  let inFlight = 0, maxInFlight = 0;
+  const fetchImpl = async (u) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return { ok: true, blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) };
+  };
+  const resolved = await exporter.embedExternalImages(graph, fetchImpl, async () => null, null);
+  assert.ok(resolved[A] && resolved[B], 'both images resolved');
+  assert.ok(maxInFlight >= 2, 'images fetched in parallel, not sequentially');
+});
+
+test('embedExternalImages: canvas fallback embeds when fetch is CORS-blocked', async () => {
+  // Owner-authorised: when fetch() fails (CORS), re-encode the image via canvas.
+  // Here the canvas step is injected (browser-only in production) to verify the
+  // fetch->canvas fallback wiring deterministically.
+  const URL_ = 'https://cdn.example/cors-blocked.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const failFetch = async () => { throw new Error('CORS'); };
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const fakeCanvas = async (u) => (u === URL_ ? 'data:image/png;base64,' + PNG : null);
+  const resolved = await exporter.embedExternalImages(graph, failFetch, fakeCanvas);
+  assert.ok(resolved[URL_] && resolved[URL_].startsWith('data:image/png;base64,'),
+    'canvas fallback produced a data URI when fetch failed');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'canvas-embedded external image -> no notice');
+});
+
+test('embedExternalImages: unfetchable + unreadable external image stays loud', async () => {
+  const URL_ = 'https://cross-origin.example/no-cors.png';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: URL_ } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const failFetch = async () => { throw new Error('CORS'); };   // browser wall
+  const resolved = await exporter.embedExternalImages(graph, failFetch);
+  assert.deepEqual(resolved, {}, 'unfetchable URL is left unresolved');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  const n = r.notices.find((x) => x.kind === 'ExporterUnsupportedImage');
+  assert.ok(n, 'still loud + placeholder when the image cannot be fetched');
+  assert.match(n.detail.detail, /could not be fetched/);
+});
+
+// --- Image: a format NO backend renders stays loud -----------------------
+test('unsupported image format bmp → loud notice + placeholder box', () => {
+  const r = oneVertex({ shape: 'image', image: 'data:image/bmp;base64,Qk0=' });
+  const note = r.notices.find((n) => n.kind === 'ExporterUnsupportedImage');
+  assert.ok(note, 'ExporterUnsupportedImage notice fires for bmp');
+  assert.match(note.detail.detail, /bmp/i, 'notice names the format');
+  const placeholder = r.contract.document.pages[0].paint
+    .find((n) => n.kind === 'path');
+  assert.ok(placeholder, 'placeholder path emitted to mark where image would be');
+});
 
 // --- Image: external URL is loudly named (would not embed) ---------------
 test('external image URL is loudly noticed, never silently shipped', () => {
@@ -2007,7 +2148,7 @@ test('notices: identical degradations dedupe; distinct cellIds keep distinct ent
     const id = 'i' + i;
     cells[id] = { id, vertex: true };
     states[id] = { x: i * 100, y: 0, width: 60, height: 40 };
-    styles[id] = { shape: 'image', image: 'data:image/jpeg;base64,/9j/abc' };
+    styles[id] = { shape: 'image', image: 'data:image/bmp;base64,Qk0abc' };
   }
   const r = exporter.buildResult(graphFixture(cells, states, {}, styles,
     { x: 0, y: 0, width: 400, height: 200 }, 1));
@@ -2422,7 +2563,7 @@ test('HTML-label border: solid root border transcribes to stroked rect', () => {
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('HTML-label border: per-side mismatch fires RichApproximate (deduped)', () => {
+test('HTML-label border: per-side differences render faithfully, no notice', () => {
   const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
     fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
     backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
@@ -2431,38 +2572,117 @@ test('HTML-label border: per-side mismatch fires RichApproximate (deduped)', () 
     borderBottomStyle: 'solid', borderLeftStyle: 'solid',
     borderTopWidth: '2px', borderRightWidth: '2px',
     borderBottomWidth: '2px', borderLeftWidth: '2px',
-    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
+    borderTopColor: 'rgb(255,0,0)', borderRightColor: 'rgb(0,0,255)',
     borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
   const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
     childNodes: [], previousElementSibling: null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
   const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
     textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
     ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => sty;
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
   try {
     const shape = domEl('g', {}, [domEl('rect', {})]);
     const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
     const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const mixed = r.notices.filter((n) => n.kind === 'RichApproximate' &&
-      /per-side/.test(n.detail.detail));
-    assert.equal(mixed.length, 1,
-      'mixed per-side borders -> exactly one RichApproximate notice');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    // Per-side borders now transcribe to one stroked <line> per visible side,
+    // each with its own colour/style -> no flatten-to-one-side approximation.
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate' &&
+      /per-side/.test(n.detail.detail)),
+      'per-side borders render faithfully -> no RichApproximate notice');
+    const lines = svg.match(/<line\b[^>]*>/g) || [];
+    assert.equal(lines.length, 4, 'one stroked line per visible side');
+    assert.ok(lines.some((l) => /stroke="#ff0000"/.test(l)), 'top side keeps red');
+    assert.ok(lines.some((l) => /stroke="#0000ff"/.test(l)), 'right side keeps blue');
+    assert.equal(lines.filter((l) => /stroke-dasharray/.test(l)).length, 1,
+      'only the dashed (right) side carries a dasharray');
   } finally { delete globalThis.getComputedStyle; }
 });
 
-test('HTML-label background-image: loud RichUnsupported (deduped across nested elements)', () => {
+test('HTML-label border: uniform double -> two stroked rects, no notice', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'double',
+    borderTopStyle: 'double', borderRightStyle: 'double',
+    borderBottomStyle: 'double', borderLeftStyle: 'double',
+    borderTopWidth: '6px', borderRightWidth: '6px',
+    borderBottomWidth: '6px', borderLeftWidth: '6px',
+    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
+    borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    const rects = svg.match(/<rect\b[^>]*fill="none"[^>]*>/g) || [];
+    assert.equal(rects.length, 2, 'double border -> two concentric stroked rects');
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
+      'double border renders faithfully -> no RichApproximate notice');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label border: 3D bevel (outset) renders two-tone, no notice', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'outset', borderTopStyle: 'outset', borderRightStyle: 'outset',
+    borderBottomStyle: 'outset', borderLeftStyle: 'outset',
+    borderWidth: '4px', borderTopWidth: '4px', borderRightWidth: '4px',
+    borderBottomWidth: '4px', borderLeftWidth: '4px',
+    borderColor: 'rgb(200,200,200)', borderTopColor: 'rgb(200,200,200)',
+    borderRightColor: 'rgb(200,200,200)', borderBottomColor: 'rgb(200,200,200)',
+    borderLeftColor: 'rgb(200,200,200)' };
+  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
+    borderTopStyle: 'none', borderRightStyle: 'none',
+    borderBottomStyle: 'none', borderLeftStyle: 'none' });
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bevel',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'bevel') ? sty : noBorder;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
+      'bevel border renders two-tone faithfully -> no RichApproximate notice');
+    const lines = svg.match(/<line\b[^>]*>/g) || [];
+    assert.equal(lines.length, 4, 'one shaded line per side');
+    // outset: top/left LIT (#c8c8c8), right/bottom SHADOWED (darkened ~#646464)
+    assert.ok(lines.some((l) => /stroke="#c8c8c8"/.test(l)), 'lit edge keeps border colour');
+    assert.ok(lines.some((l) => /stroke="#646464"/.test(l)), 'shadowed edge darkened');
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: CSS gradient transcribes faithfully, no notice', () => {
+  // Computed-style form (browsers normalise colours to rgb()).
   const styWithBgi = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
     fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
     backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
     letterSpacing: 'normal',
-    backgroundImage: 'linear-gradient(to right, red, blue)' };
-  // Nested: root + 3 inner spans, each with same background-image.
-  const mkSpan = () => ({ nodeType: 1, tagName: 'span', _styleKey: 'span',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 30, height: 14 }) });
+    backgroundImage: 'linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255))' };
   const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [mkSpan(), mkSpan(), mkSpan()], previousElementSibling: null,
+    childNodes: [], previousElementSibling: null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
   const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
     textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
@@ -2472,10 +2692,64 @@ test('HTML-label background-image: loud RichUnsupported (deduped across nested e
     const shape = domEl('g', {}, [domEl('rect', {})]);
     const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
     const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const bgi = r.notices.filter((n) => n.kind === 'RichUnsupported' &&
-      /background-image/.test(n.detail.detail));
-    assert.equal(bgi.length, 1,
-      '4 elements with same bg-image -> ONE notice (per-cell dedup)');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
+      'a CSS gradient background is faithfully transcribed -> no notice');
+    assert.match(svg, /<linearGradient[^>]*>.*<stop[^>]*stop-color="#ff0000".*<stop[^>]*stop-color="#0000ff".*<\/linearGradient>/,
+      'gradient -> SVG linearGradient with both stops');
+    assert.match(svg, /<rect[^>]*fill="url\(#lblbg\d+\)"/, 'rect filled with the gradient');
+    // to right -> horizontal line (x1=0 .. x2=1, y constant)
+    assert.match(svg, /<linearGradient[^>]*x1="0"[^>]*x2="1"/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: external url() stays loud (cannot embed)', () => {
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    backgroundImage: 'url("https://example.com/bg.png")' };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => sty;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const n = r.notices.find((x) => x.kind === 'RichUnsupported' &&
+      /background-image/.test(x.detail.detail));
+    assert.ok(n, 'external-URL background cannot be embedded -> loud notice');
+    assert.match(n.detail.detail, /external URL/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label background-image: data-URI url() embeds as <image>, no notice', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    backgroundImage: 'url("data:image/png;base64,' + PNG + '")' };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+    childNodes: [], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
+    ownerDocument: { createRange: mkRange } };
+  globalThis.getComputedStyle = () => sty;
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
+      'data-URI background embeds -> no notice');
+    assert.ok(/<image [^>]*xlink:href="data:image\/png;base64,/.test(svg),
+      'data-URI background painted as <image>');
   } finally { delete globalThis.getComputedStyle; }
 });
 
@@ -2511,6 +2785,101 @@ test('HTML-label inline <img>: PNG data URI transcribed to <image>; non-PNG loud
       /inline.*img/i.test(n.detail.detail));
     assert.ok(imgNotice, 'external-URL <img> loudly noticed');
     assert.match(imgNotice.detail.detail, /external URL/);
+  } finally { delete globalThis.getComputedStyle; }
+});
+
+test('HTML-label inline <img>: JPEG/GIF/SVG data URIs embed faithfully, no notice', () => {
+  const baseStyle = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal' };
+  const mkImg = (src) => ({ nodeType: 1, tagName: 'img', _styleKey: 'img',
+    childNodes: [], previousElementSibling: null,
+    getAttribute: (k) => (k === 'src' ? src : null),
+    getBoundingClientRect: () => ({ left: 10, top: 10, width: 16, height: 16 }) });
+  // resvg renders PNG/JPEG/GIF rasters and nested SVG from data URIs, so each
+  // of these embeds as <image> with NO RichUnsupported notice.
+  const cases = [
+    ['data:image/jpeg;base64,/9j/AAAA', 'data:image/jpeg;base64,'],
+    ['data:image/gif;base64,R0lGODlhAQABAAAAACw=', 'data:image/gif;base64,'],
+    ['data:image/svg+xml;base64,PHN2Zy8+', 'data:image/svg+xml;base64,']
+  ];
+  cases.forEach(([src, mimePrefix]) => {
+    const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
+      childNodes: [mkImg(src)], previousElementSibling: null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }) };
+    const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+      textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }),
+      ownerDocument: { createRange: mkRange } };
+    globalThis.getComputedStyle = () => baseStyle;
+    try {
+      const shape = domEl('g', {}, [domEl('rect', {})]);
+      const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+      const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+      const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+      assert.ok(svg.includes('xlink:href="' + mimePrefix),
+        mimePrefix + ' inline <img> embedded as SVG <image>');
+      assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported' &&
+        /inline.*img/i.test(n.detail.detail)),
+        'embeddable inline <img> -> no RichUnsupported notice');
+    } finally { delete globalThis.getComputedStyle; }
+  });
+});
+
+// ---- GOAL: built-in objects rendered normally emit NO notice -------------
+// A realistic built-in object — a rectangle whose HTML label is a bulleted
+// list inside a uniformly-bordered div — must bake with zero notices, because
+// every feature now transcribes faithfully (no flatten/approx left).
+test('GOAL: built-in shape with bulleted, bordered HTML label -> zero notices', () => {
+  const t1 = { nodeType: 3, nodeValue: 'First item' };
+  const li1 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t1],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
+  t1.parentNode = li1;
+  const t2 = { nodeType: 3, nodeValue: 'Second item' };
+  const li2 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t2],
+    previousElementSibling: li1,
+    getBoundingClientRect: () => ({ left: 80, top: 78, width: 120, height: 16 }) };
+  t2.parentNode = li2;
+  const ul = { nodeType: 1, tagName: 'ul', _styleKey: 'ul', childNodes: [li1, li2],
+    previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 34 }) };
+  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bordered',
+    childNodes: [ul], previousElementSibling: null,
+    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }) };
+  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
+    textContent: 'First item Second item',
+    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }),
+    ownerDocument: { createRange: mkRange } };
+  const noBorder = { borderStyle: 'none', borderTopStyle: 'none',
+    borderRightStyle: 'none', borderBottomStyle: 'none', borderLeftStyle: 'none' };
+  const bordered = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
+    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
+    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
+    letterSpacing: 'normal',
+    borderStyle: 'solid', borderTopStyle: 'solid', borderRightStyle: 'solid',
+    borderBottomStyle: 'solid', borderLeftStyle: 'solid',
+    borderWidth: '1px', borderTopWidth: '1px', borderRightWidth: '1px',
+    borderBottomWidth: '1px', borderLeftWidth: '1px',
+    borderColor: 'rgb(0,0,0)', borderTopColor: 'rgb(0,0,0)',
+    borderRightColor: 'rgb(0,0,0)', borderBottomColor: 'rgb(0,0,0)',
+    borderLeftColor: 'rgb(0,0,0)' };
+  globalThis.getComputedStyle = (el) => {
+    const k = el && el._styleKey;
+    if (k === 'bordered') return bordered;
+    if (k === 'li') return Object.assign({}, bordered, noBorder, { display: 'list-item' });
+    return Object.assign({}, bordered, noBorder);   // ul / fo / text parents
+  };
+  try {
+    const shape = domEl('g', {}, [domEl('rect', {})]);
+    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
+    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
+    assert.deepEqual(r.notices, [],
+      'every feature transcribes faithfully -> no bake notice for a built-in object');
+    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
+    assert.ok(/<rect\b[^>]*fill="none"/.test(svg), 'uniform border -> one stroked rect');
+    assert.ok(/•/.test(svg), 'list bullets rendered');
+    assert.ok(!/<foreignObject/i.test(svg), 'never ships foreignObject');
   } finally { delete globalThis.getComputedStyle; }
 });
 
@@ -2550,4 +2919,42 @@ test('noticeSeverity: unknown kind fails safe to degradation', () => {
   assert.equal(exporter.noticeSeverity('SomethingNewAndUnknown'), 'degradation');
   assert.equal(exporter.noticeSeverity(''), 'degradation');
   assert.equal(exporter.noticeSeverity(undefined), 'degradation');
+});
+
+// --- Animation: built-in (CSS flow) prints clean; embedded SMIL stays guarded.
+// drawio's ONLY built-in animation is edge "Flow Animation", which it renders
+// as CSS @keyframes animating stroke-dashoffset on an already-drawn dashed
+// stroke (Graph.js createFlowAnimationCss) — NOT SMIL <animate>. resvg ignores
+// the CSS and draws the static dashed edge, which is a faithful still. So a
+// built-in flow-animated edge must NOT raise AnimatedSvgFrozen.
+test('built-in flow animation (CSS) prints static with NO AnimatedSvgFrozen notice', () => {
+  const cells = { e: { id: 'e', edge: true } };
+  const flowSvg =
+    '<g><path d="M0 0 L80 0" fill="none" stroke="#000000" stroke-width="2" ' +
+    'stroke-dasharray="8 8" style="animation: ge-flow-x 0.5s linear infinite"/>' +
+    '<style>@keyframes ge-flow-x { to { stroke-dashoffset: 0; } }</style></g>';
+  const states = { e: { x: 10, y: 20, width: 80, height: 2,
+    shape: { node: { outerHTML: flowSvg } } } };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
+  assert.ok(!r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
+    'CSS flow animation (drawio built-in) must not warn');
+  const svgs = r.contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  const carried = svgs.some((n) =>
+    Buffer.from(n.source, 'base64').toString().includes('stroke-dasharray'));
+  assert.ok(carried, 'the frozen dashed edge stroke is carried into the print (WYSIWYG)');
+});
+
+// The guard must remain for a USER-EMBEDDED SVG file that contains real SMIL —
+// not a built-in object — because such a clip can have a transparent frame-0
+// (e.g. opacity 0 -> 1) that would otherwise print SILENTLY BLANK.
+test('embedded SMIL animation still raises AnimatedSvgFrozen (silent-blank guard)', () => {
+  const cells = { v: { id: 'v', vertex: true } };
+  const smil =
+    '<g><rect width="40" height="30" opacity="0">' +
+    '<animate attributeName="opacity" from="0" to="1" dur="1s"/></rect></g>';
+  const states = { v: { x: 10, y: 20, width: 40, height: 30,
+    shape: { node: { outerHTML: smil } } } };
+  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
+  assert.ok(r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
+    'embedded SMIL (possibly blank frame-0) must stay loud');
 });

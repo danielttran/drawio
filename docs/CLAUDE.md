@@ -58,6 +58,18 @@ Always prioritize using `jcodemunch-mcp` tools over native shell commands (`grep
    exception. A pixel-comparison oracle is impossible under this rule —
    do not try to sneak one in.
 
+   > **Owner carve-out (2026-05-24): image embedding may use canvas.**
+   > To keep external/URL-referenced image artwork WYSIWYG, the bake MAY
+   > fetch the image and/or re-encode it via an offscreen `canvas`
+   > (`drawImage` + `toDataURL`) to embed it as a data URI
+   > (`exporter.js` `embedExternalImages` / `urlToPngViaCanvas` /
+   > `imgElementToPngDataUri`). This is authorised **only** for
+   > *embedding image data so it prints faithfully* — NOT for building a
+   > verification / pixel-comparison oracle, which stays forbidden. The
+   > WYSIWYG guarantee itself still holds by construction (§3), and the
+   > test harness stays browser-free (the canvas path no-ops in Node and
+   > is unit-tested via an injected stub).
+
 3. **Therefore the guarantee holds by construction, not by comparison.**
    The bake must losslessly transcribe drawio's *actual rendered* SVG
    (the existing `harvestShape` approach), eliminating re-derived/heuristic
