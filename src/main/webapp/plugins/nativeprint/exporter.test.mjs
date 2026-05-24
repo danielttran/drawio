@@ -1857,6 +1857,25 @@ test('embedExternalImages: fetched external image embeds, no notice', async () =
     .includes('data:image/jpeg;base64,'), 'carries the fetched data URI');
 });
 
+test('embedExternalImages: non-resvg format (webp) is canvas-transcoded to PNG', async () => {
+  // resvg can't draw webp/bmp, but the BROWSER decodes them — so canvas
+  // re-encodes to PNG and the print stays WYSIWYG with no notice. Here the
+  // canvas step is injected; in production it's a real offscreen canvas.
+  const WEBP = 'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==';
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 0, y: 0, width: 40, height: 30 } };
+  const styles = { v: { shape: 'image', image: WEBP } };
+  const graph = graphFixture(cells, states, {}, styles, FIXED_BOUNDS, 1);
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  const fakeCanvas = async (src) => (src === WEBP ? 'data:image/png;base64,' + PNG : null);
+  const resolved = await exporter.embedExternalImages(graph, null, fakeCanvas, null);
+  assert.ok(resolved[WEBP] && resolved[WEBP].startsWith('data:image/png;base64,'),
+    'webp data URI transcoded to PNG via canvas');
+  const r = exporter.buildResult(graph, null, { resolvedImages: resolved });
+  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedImage'),
+    'transcoded webp embeds -> no notice');
+});
+
 test('embedExternalImages: proxy fallback embeds a CORS-blocked image', async () => {
   // Direct fetch is CORS-blocked; the same-origin proxy (server-side fetch)
   // returns the bytes readably -> embeds, no notice. All URLs resolve in

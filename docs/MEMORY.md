@@ -229,13 +229,30 @@ so the dialog's `rebake()` gets it for free. Browser-only paths no-op in Node;
 unit-tested via injected fetch/canvas/proxy stubs (incl. a parallelism assert).
 Carve-out recorded in `docs/CLAUDE.md` §2 + plugin `CLAUDE.md`.
 
-Residual: with the proxy reachable, any fetchable image URL embeds. A warning
-remains only if the proxy ALSO cannot reach the URL (offline / private host /
-proxy disabled) AND it's cross-origin-without-CORS so canvas is tainted — then
-no component can obtain the bytes, so it stays loud + placeholder (never a
-silent wrong). SMIL animation (can't print motion) and webp/bmp (unverified
-backend support) also remain loud; none are produced by drawio's built-in
-editors.
+**Any image FORMAT now embeds (canvas transcode).** resvg only draws
+PNG/JPEG/GIF/SVG, but the browser decodes webp/bmp/tiff/ico/… — so
+`embedExternalImages` also collects non-embeddable data URIs
+(`imageSrcNeedsResolve` → `'transcode'`) and, after obtaining any bytes,
+`ensureEmbeddable` canvas-re-encodes anything non-embeddable to PNG. So every
+browser-decodable image format prints with no notice. (Headless/Node: no canvas
+→ webp/bmp still notice, matching the bmp unit test; in-browser they transcode.)
+
+Residual — only TWO cases, neither a drawio built-in object:
+1. **A referenced external image no path can obtain**: direct fetch AND the
+   proxy both can't reach it (offline / private-network / proxy disabled) AND
+   it's cross-origin-without-CORS so canvas is tainted. The bytes don't exist
+   anywhere reachable — even drawio's own canvas shows it broken. Stays loud +
+   placeholder (never a silent wrong). This is a missing-resource/deployment
+   condition, not a property of any object.
+2. **Embedded animated SVG** (`AnimatedSvgFrozen`): paper can't animate, so a
+   print is necessarily one frame; the notice is KEPT on purpose because some
+   animations have a transparent frame-0 (e.g. fade-in) that would otherwise
+   print SILENTLY BLANK — suppressing it would violate the owner's own WYSIWYG
+   mandate (goal #2). Only arises from a user-embedded animated SVG, never a
+   built-in stencil.
+
+For every object drawio's editors actually create, printing/preview is now
+warning-free (proven by exporter tests + the real-resvg conformance corpus).
 - **SMIL animation** (`AnimatedSvgFrozen`) — paper can't move; only arises from a
   user-embedded animated SVG, never a built-in shape.
 - **Exotic CSS list counter styles** (georgian/armenian/CJK…) — drawio's list

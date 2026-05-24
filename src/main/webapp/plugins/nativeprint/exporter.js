@@ -2020,22 +2020,38 @@
     return (typeof s === 'string' && /^https?:\/\//i.test(s)) ? s : null;
   }
 
-  // Collect external image URLs referenced inside a label's live DOM: inline
-  // <img src=...> and CSS background-image url(...). Browser-only (no-op when
-  // there is no live node / getComputedStyle).
+  // Is this image source already in a form the engine/resvg embeds directly?
+  function isEmbeddableSrc(src) {
+    return !!embeddableImageMime(parseImage(src));
+  }
+
+  // Does this image source need bake-time resolution to become embeddable?
+  //   'url'       -> external http(s): fetch / proxy / canvas to get the bytes.
+  //   'transcode' -> a data URI in a format resvg can't draw (webp/bmp/tiff/…):
+  //                  the BROWSER can decode it, so canvas re-encodes it to PNG.
+  //   null        -> already embeddable (png/jpeg/gif/svg) or not an image.
+  function imageSrcNeedsResolve(src) {
+    if (typeof src !== 'string' || src === '') return null;
+    if (externalUrl(src)) return 'url';
+    var p = parseImage(src);
+    if (p && p.data && !embeddableImageMime(p)) return 'transcode';
+    return null;
+  }
+
+  // Collect image sources referenced inside a label's live DOM that need
+  // resolution: inline <img src> and CSS background-image url(). Browser-only.
   function collectLabelImageUrls(node, urls) {
     if (!node || node.nodeType !== 1) return;
     if (String(node.tagName || '').toLowerCase() === 'img') {
-      var u = externalUrl(node.getAttribute && node.getAttribute('src'));
-      if (u) urls[u] = true;
+      var s = node.getAttribute && node.getAttribute('src');
+      if (imageSrcNeedsResolve(s)) urls[s] = true;
     }
     try {
       var cs = root.getComputedStyle ? root.getComputedStyle(node) : null;
       var bgi = cs && cs.backgroundImage;
       if (bgi && /url\(/i.test(bgi)) {
         var m = /url\(\s*["']?([^"')]+)["']?\s*\)/i.exec(bgi);
-        var bu = m && externalUrl(m[1]);
-        if (bu) urls[bu] = true;
+        if (m && imageSrcNeedsResolve(m[1])) urls[m[1]] = true;
       }
     } catch (e) { /* computed style unavailable */ }
     for (var i = 0; node.childNodes && i < node.childNodes.length; i++) {
@@ -2043,20 +2059,21 @@
     }
   }
 
-  // Resolve EVERY external (http/https) image the diagram references — image
-  // cells, inline label <img>, and CSS url() backgrounds — into embedded data
-  // URIs so the print shows their real pixels. All URLs resolve IN PARALLEL
-  // (Promise.all), each trying, in order of cost/reliability:
+  // Resolve EVERY image the diagram references that isn't already embeddable —
+  // external http(s) (image cells, inline <img>, CSS url() backgrounds) AND
+  // data URIs in formats resvg can't draw (webp/bmp/…) — into an embeddable
+  // data URI so the print shows the real pixels. Everything resolves IN
+  // PARALLEL (Promise.all); each source tries, in order of cost/reliability:
   //   1. fetch() the bytes directly (cache hit; same-origin / CORS images);
-  //   2. fetch() via drawio's same-origin proxy (PROXY_URL) — defeats CORS
-  //      because the SERVER fetches it, then serves it from our origin;
-  //   3. canvas re-encode of a fresh load (owner-authorised; last resort).
-  // Returns a map url -> "data:<mime>;base64,...". A URL no path can read
-  // (offline / proxy unreachable / cross-origin + no CORS + canvas tainted) is
-  // left out -> the caller stays loud + placeholder (never a silent wrong).
-  // Async + additive: the synchronous buildResult path is unchanged without a
-  // map. The whole batch is awaited once, then the bake runs — no per-image
-  // sync stalls.
+  //   2. fetch() via drawio's same-origin proxy (PROXY_URL) — defeats CORS,
+  //      since the SERVER fetches it and serves it from our origin;
+  //   3. canvas re-encode (owner-authorised) — also TRANSCODES any browser-
+  //      decodable format (webp/bmp/…) to PNG.
+  // Whatever bytes we obtain are then guaranteed embeddable (PNG transcode if
+  // needed). A source no path can read/decode is left out -> the caller stays
+  // loud + placeholder (never a silent wrong). Async + additive: the sync
+  // buildResult path is unchanged without a map; the whole batch is awaited
+  // once, then the bake runs — no per-image sync stalls.
   function embedExternalImages(graph, fetchImpl, canvasImpl, proxyBase) {
     var f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
     var canvas = canvasImpl || urlToPngViaCanvas;
@@ -2073,8 +2090,7 @@
       if (!cell) return;
       var style = (typeof graph.getCellStyle === 'function' &&
         graph.getCellStyle(cell)) || {};
-      var u = externalUrl(style.image);
-      if (u) urls[u] = true;
+      if (imageSrcNeedsResolve(style.image)) urls[style.image] = true;
       var state = (view && typeof view.getState === 'function')
         ? view.getState(cell) : null;
       var tnode = state && state.text && state.text.node;
@@ -2099,12 +2115,21 @@
         'url=' + encodeURIComponent(url);
       return fetchToDataUri(pu);
     };
-    return Promise.all(Object.keys(urls).map(function (url) {
-      return fetchToDataUri(url)                        // 1. direct
-        .then(function (du) { return du || viaProxy(url); })   // 2. proxy
-        .then(function (du) { return du || canvas(url); })     // 3. canvas
-        .then(function (du) { if (du) out[url] = du; })
-        .catch(function () { /* unreadable -> stays a loud notice */ });
+    // Whatever data URI we end up with must be engine-embeddable; if it's a
+    // format resvg can't draw (webp/bmp/…), canvas re-encodes it to PNG.
+    var ensureEmbeddable = function (du) {
+      if (!du) return Promise.resolve(null);
+      return isEmbeddableSrc(du) ? Promise.resolve(du)
+        : Promise.resolve(canvas(du));
+    };
+    return Promise.all(Object.keys(urls).map(function (src) {
+      var bytes = externalUrl(src)
+        ? fetchToDataUri(src).then(function (du) { return du || viaProxy(src); })
+        : Promise.resolve(src);            // a non-embeddable data URI we hold
+      return bytes
+        .then(function (du) { return du ? ensureEmbeddable(du) : canvas(src); })
+        .then(function (du) { if (du) out[src] = du; })
+        .catch(function () { /* unreadable/undecodable -> stays a loud notice */ });
     })).then(function () { return out; });
   }
 
