@@ -430,7 +430,7 @@ TEST_CASE("SVG rasterizer cdylib: a real drawio-flavor SVG corpus all renders"
 }
 
 TEST_CASE("SVG rasterizer cdylib: the FULL mxSvgCanvas feature vocabulary"
-          " renders (no failure, no silent blank) — built-in stencils never"
+          " renders (no failure, no silent blank) -- built-in stencils never"
           " trip StubbedSvgArtwork",
           "[svg][cdylib][wysiwyg][conformance]") {
   // GOAL pin: a diagram built only from drawio's built-in objects must print
