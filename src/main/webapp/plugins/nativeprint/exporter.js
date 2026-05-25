@@ -640,7 +640,13 @@
     return s;
   }
 
-  function resolveThemeDefaults(style, graph) {
+  // isVertex flag distinguishes the default-style sets from styles/default.xml:
+  // defaultVertex has fillColor="default", strokeColor="default", fontColor="default";
+  // defaultEdge has strokeColor="default", fontColor="default" (no fill).
+  // The live path: getCellStyle merges the mxStylesheet defaults so these keys
+  // are always present. The headless path: getCellStyle returns only the raw cell
+  // style → no defaults. Supply them here so headless and live are consistent.
+  function resolveThemeDefaults(style, graph, isVertex) {
     if (!style) return style;
     var bg = themeColor(graph && graph.shapeBackgroundColor,
       isDark() ? '#121212' : '#ffffff');
@@ -670,6 +676,14 @@
         if (r === 'default') { r = def; }
         if (r !== v) { set(k, r); }
       });
+    // Supply drawio's stylesheet defaults when absent (styles/default.xml
+    // defaultVertex: fillColor="default", strokeColor="default", fontColor="default";
+    // defaultEdge: strokeColor="default", fontColor="default").
+    // On the live path getCellStyle already merges these; on the headless path
+    // getCellStyle returns only the raw cell style, so we fill them in.
+    if (!('strokeColor' in out)) set('strokeColor', fg);
+    if (!('fontColor' in out)) set('fontColor', fg);
+    if (isVertex && !('fillColor' in out)) set('fillColor', bg);
     return out;
   }
 
@@ -912,11 +926,19 @@
     return head + ' ' + body;
   }
 
-  // swimlane: rectangle with a horizontal header bar
-  function swimlanePath(x, y, w, h) {
-    var startSize = Math.max(16, h * 0.2);
-    return rectPath(x, y, w, h) +
-      ' M ' + p(x, y + startSize) + ' L ' + p(x + w, y + startSize);
+  // swimlane: rectangle with a header bar + divider line.
+  // horizontal=1 (default): header at top, divider is horizontal at y=startSize.
+  // horizontal=0: header on the left, divider is vertical at x=startSize.
+  function swimlanePath(style, x, y, w, h) {
+    var isHoriz = style.horizontal !== '0';
+    var startSize = Math.min(Math.max(0, number(style.startSize, 30)), isHoriz ? h : w);
+    if (isHoriz) {
+      return rectPath(x, y, w, h) +
+        ' M ' + p(x, y + startSize) + ' L ' + p(x + w, y + startSize);
+    } else {
+      return rectPath(x, y, w, h) +
+        ' M ' + p(x + startSize, y) + ' L ' + p(x + startSize, y + h);
+    }
   }
 
   // hexagon: 6-sided polygon (flat top, like a hex cell)
@@ -970,7 +992,7 @@
     if (shape === 'hexagon') return hexagonPath(x, y, w, h);
     if (shape === 'doubleEllipse') return doubleEllipsePath(x, y, w, h);
     if (shape === 'actor') return actorPath(x, y, w, h);
-    if (shape === 'swimlane') return swimlanePath(x, y, w, h);
+    if (shape === 'swimlane') return swimlanePath(style, x, y, w, h);
     if (shape === 'line') return linePath(x, y, w, h);
     if (shape === 'arrow') return arrowShapePath(x, y, w, h);
     if (shape === 'arrowConnector') return arrowConnectorPath(x, y, w, h);
@@ -983,6 +1005,158 @@
     // group: draw.io's container group — rendered as a plain rectangle
     if (shape === 'group') {
       return rectPath(x, y, w, h);
+    }
+    if (shape === 'switch') {
+      // Closed bezier diamond (SwitchShape curve=0.5, Shapes.js).
+      // Q→C conversion: C1=start+2/3*(ctrl-start), C2=end+2/3*(ctrl-end).
+      var sw3 = w / 3, sw23 = 2 * w / 3, sh3 = h / 3, sh23 = 2 * h / 3;
+      return 'M ' + p(x, y) +
+        ' C ' + p(x + sw3, y + sh3) + ' ' + p(x + sw23, y + sh3) + ' ' + p(x + w, y) +
+        ' C ' + p(x + sw23, y + sh3) + ' ' + p(x + sw23, y + sh23) + ' ' + p(x + w, y + h) +
+        ' C ' + p(x + sw23, y + sh23) + ' ' + p(x + sw3, y + sh23) + ' ' + p(x, y + h) +
+        ' C ' + p(x + sw3, y + sh23) + ' ' + p(x + sw3, y + sh3) + ' ' + p(x, y) + ' Z';
+    }
+    // mxgraph namespace shapes: stencil lookup happens first; if we reach here the
+    // stencil is absent. The live canvas renders the JS-registered shape faithfully
+    // (mxCellRenderer.registerShape), so returning null here lets the caller emit
+    // an ExporterUnsupportedShape notice rather than silently approximating (§5).
+    if (/^mxgraph\./.test(shape)) return null;
+    return null;
+  }
+
+  // Returns inner SVG element string(s) for built-in multi-element shapes
+  // (registered via mxCellRenderer.registerShape in Shapes.js). The content is
+  // positioned in a (0,0)→(w,h) local viewport; the caller wraps it in <svg>.
+  // Returns null for unknown shapes.
+  function builtinShapeSvg(style, w, h) {
+    var shape = style.shape;
+    var fill = fillSvgAttr(style, '');
+    var strk = strokeSvgAttrs(style);
+    if (shape === 'umlActor') {
+      // Head (fillAndStroke) + body/arms/legs (stroke) — UmlActorShape, Shapes.js
+      var head = '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 8) + '" rx="' + fmt(w / 4) + '" ry="' + fmt(h / 8) + '"' + fill + strk + '/>';
+      var lns = [
+        [w / 2, h / 4, w / 2, 2 * h / 3],
+        [w / 2, h / 3, 0, h / 3],
+        [w / 2, h / 3, w, h / 3],
+        [w / 2, 2 * h / 3, 0, h],
+        [w / 2, 2 * h / 3, w, h]
+      ];
+      return head + lns.map(function (l) {
+        return '<line x1="' + fmt(l[0]) + '" y1="' + fmt(l[1]) + '" x2="' + fmt(l[2]) + '" y2="' + fmt(l[3]) + '" fill="none"' + strk + '/>';
+      }).join('');
+    }
+    if (shape === 'process') {
+      // Rectangle + two vertical inset lines — ProcessShape, Shapes.js (default size=0.1)
+      var pInset = Math.round(w * Math.max(0, Math.min(1, number(style.size, 0.1))));
+      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
+        '<line x1="' + fmt(pInset) + '" y1="0" x2="' + fmt(pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>' +
+        '<line x1="' + fmt(w - pInset) + '" y1="0" x2="' + fmt(w - pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'smileyFace') {
+      // Face circle + 2 eyes + crescent/line mouth — SmileyFaceShape, Shapes.js
+      var sType = style.smileyType || 'happy';
+      var fColor = style.smileyFeatureColor || '#666666';
+      var sr = Math.min(w, h) / 2, ss = Math.min(w, h) / 30;
+      var sfcx = w / 2, sfcy = h / 2;
+      var face = '<ellipse cx="' + fmt(sfcx) + '" cy="' + fmt(sfcy) + '" rx="' + fmt(sr) + '" ry="' + fmt(sr) + '"' + fill + strk + '/>';
+      var eyeR = 1.5 * ss, eyeXOff = 5 * ss, eyeYOff = 5 * ss;
+      var eyeA = ' fill="' + fColor + '" stroke="' + fColor + '" stroke-width="' + fmt(2 * ss) + '"';
+      var eye1 = '<ellipse cx="' + fmt(sfcx - eyeXOff) + '" cy="' + fmt(sfcy - eyeYOff) + '" rx="' + fmt(eyeR) + '" ry="' + fmt(eyeR) + '"' + eyeA + '/>';
+      var eye2 = '<ellipse cx="' + fmt(sfcx + eyeXOff) + '" cy="' + fmt(sfcy - eyeYOff) + '" rx="' + fmt(eyeR) + '" ry="' + fmt(eyeR) + '"' + eyeA + '/>';
+      var mouth, sfmcy;
+      if (sType === 'happy') {
+        sfmcy = sfcy + 2 * ss;
+        mouth = '<path d="M ' + fmt(sfcx + 7.5 * ss) + ' ' + fmt(sfmcy) +
+          ' A ' + fmt(7.5 * ss) + ' ' + fmt(7.5 * ss) + ' 0 1 1 ' + fmt(sfcx - 7.5 * ss) + ' ' + fmt(sfmcy) +
+          ' L ' + fmt(sfcx - 6.818 * ss) + ' ' + fmt(sfmcy) +
+          ' A ' + fmt(6.818 * ss) + ' ' + fmt(6.818 * ss) + ' 0 1 0 ' + fmt(sfcx + 6.818 * ss) + ' ' + fmt(sfmcy) +
+          ' Z" fill="#000000" stroke="' + fColor + '" stroke-width="' + fmt(ss) + '"/>';
+      } else if (sType === 'sad') {
+        sfmcy = sfcy + 7 * ss;
+        mouth = '<path d="M ' + fmt(sfcx - 7.5 * ss) + ' ' + fmt(sfmcy) +
+          ' A ' + fmt(7.5 * ss) + ' ' + fmt(7.5 * ss) + ' 0 1 1 ' + fmt(sfcx + 7.5 * ss) + ' ' + fmt(sfmcy) +
+          ' L ' + fmt(sfcx + 6.818 * ss) + ' ' + fmt(sfmcy) +
+          ' A ' + fmt(6.818 * ss) + ' ' + fmt(6.818 * ss) + ' 0 1 0 ' + fmt(sfcx - 6.818 * ss) + ' ' + fmt(sfmcy) +
+          ' Z" fill="#000000" stroke="' + fColor + '" stroke-width="' + fmt(ss) + '"/>';
+      } else {
+        mouth = '<line x1="' + fmt(sfcx - 5 * ss) + '" y1="' + fmt(sfcy + 7 * ss) +
+          '" x2="' + fmt(sfcx + 5 * ss) + '" y2="' + fmt(sfcy + 7 * ss) +
+          '" fill="none" stroke="' + fColor + '" stroke-width="' + fmt(ss) + '"/>';
+      }
+      return face + eye1 + eye2 + mouth;
+    }
+    if (shape === 'associativeEntity') {
+      // Rectangle background + diamond stroke overlay — AssociativeEntity, Shapes.js
+      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
+        '<path d="M ' + fmt(w / 2) + ' 0 L ' + fmt(w) + ' ' + fmt(h / 2) +
+        ' L ' + fmt(w / 2) + ' ' + fmt(h) + ' L 0 ' + fmt(h / 2) + ' Z" fill="none"' + strk + '/>';
+    }
+    if (shape === 'endState') {
+      // Inner ellipse (fillAndStroke) + outer ellipse (stroke only) — StateShape, Shapes.js
+      var esInset = Math.min(4, Math.min(w / 5, h / 5));
+      return '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt((w - 2 * esInset) / 2) + '" ry="' + fmt((h - 2 * esInset) / 2) + '"' + fill + strk + '/>' +
+        '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h / 2) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'folder') {
+      // Tab + body path (fillAndStroke, non-rounded) — FolderShape, Shapes.js
+      var fDx = Math.max(0, Math.min(w, number(style.tabWidth, 60)));
+      var fDy = Math.max(0, Math.min(h, number(style.tabHeight, 20)));
+      var fTp = style.tabPosition || 'right';
+      var fD;
+      if (fTp === 'left') {
+        fD = 'M 0 ' + fmt(fDy) + ' L 0 0 L ' + fmt(fDx) + ' 0 L ' + fmt(fDx) + ' ' + fmt(fDy) +
+          ' M 0 ' + fmt(fDy) + ' L ' + fmt(w) + ' ' + fmt(fDy) + ' L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' Z';
+      } else {
+        fD = 'M ' + fmt(w - fDx) + ' ' + fmt(fDy) + ' L ' + fmt(w - fDx) + ' 0 L ' + fmt(w) + ' 0 L ' + fmt(w) + ' ' + fmt(fDy) +
+          ' M 0 ' + fmt(fDy) + ' L ' + fmt(w) + ' ' + fmt(fDy) + ' L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' Z';
+      }
+      return '<path d="' + fD + '"' + fill + strk + '/>';
+    }
+    if (shape === 'component') {
+      // Main body (notched, fillAndStroke) + jetty outlines (stroke only) — ComponentShape, Shapes.js
+      var cJw = number(style.jettyWidth, 32), cJh = number(style.jettyHeight, 12);
+      var cx0 = cJw / 2, cx1 = cJw;
+      var cy0 = 0.3 * h - cJh / 2, cy1 = 0.7 * h - cJh / 2;
+      var cBody = 'M ' + fmt(cx0) + ' 0 L ' + fmt(w) + ' 0 L ' + fmt(w) + ' ' + fmt(h) +
+        ' L ' + fmt(cx0) + ' ' + fmt(h) +
+        ' L ' + fmt(cx0) + ' ' + fmt(cy1 + cJh) + ' L 0 ' + fmt(cy1 + cJh) +
+        ' L 0 ' + fmt(cy1) + ' L ' + fmt(cx0) + ' ' + fmt(cy1) +
+        ' L ' + fmt(cx0) + ' ' + fmt(cy0 + cJh) + ' L 0 ' + fmt(cy0 + cJh) +
+        ' L 0 ' + fmt(cy0) + ' L ' + fmt(cx0) + ' ' + fmt(cy0) + ' Z';
+      var cFg = 'M ' + fmt(cx0) + ' ' + fmt(cy0) + ' L ' + fmt(cx1) + ' ' + fmt(cy0) +
+        ' L ' + fmt(cx1) + ' ' + fmt(cy0 + cJh) + ' L ' + fmt(cx0) + ' ' + fmt(cy0 + cJh) +
+        ' M ' + fmt(cx0) + ' ' + fmt(cy1) + ' L ' + fmt(cx1) + ' ' + fmt(cy1) +
+        ' L ' + fmt(cx1) + ' ' + fmt(cy1 + cJh) + ' L ' + fmt(cx0) + ' ' + fmt(cy1 + cJh);
+      return '<path d="' + cBody + '"' + fill + strk + '/><path d="' + cFg + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'table') {
+      // Full rect + header separator line — TableShape (swimlane-like), Shapes.js
+      var tStart = Math.min(h, Math.max(0, number(style.startSize, 30)));
+      var tLine = (tStart > 0 && tStart < h)
+        ? '<line x1="0" y1="' + fmt(tStart) + '" x2="' + fmt(w) + '" y2="' + fmt(tStart) + '" fill="none"' + strk + '/>'
+        : '';
+      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' + tLine;
+    }
+    if (shape === 'tableRow' || shape === 'partialRectangle') {
+      // Fill rect + selective border lines — PartialRectangleShape/TableRowShape, Shapes.js
+      // Default: all borders ON (mxUtils.getValue default '1'); explicit '0' turns them off.
+      var prTop = style.top !== '0' && style.top !== 0;
+      var prRight = style.right !== '0' && style.right !== 0;
+      var prBottom = style.bottom !== '0' && style.bottom !== 0;
+      var prLeft = style.left !== '0' && style.left !== 0;
+      var prOut = '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + ' stroke="none"/>';
+      if (prTop || prRight || prBottom || prLeft) {
+        var prD = 'M 0 0';
+        if (prTop) { prD += ' L ' + fmt(w) + ' 0'; } else { prD += ' M ' + fmt(w) + ' 0'; }
+        if (prRight) { prD += ' L ' + fmt(w) + ' ' + fmt(h); } else { prD += ' M ' + fmt(w) + ' ' + fmt(h); }
+        if (prBottom) { prD += ' L 0 ' + fmt(h); } else { prD += ' M 0 ' + fmt(h); }
+        if (prLeft) { prD += ' L 0 0'; }
+        prOut += '<path d="' + prD + '" fill="none"' + strk + '/>';
+      }
+      return prOut;
     }
     return null;
   }
@@ -2823,6 +2997,15 @@
       if (fmt === 'png') return { format: 'png', data: data };
       return { format: fmt, data: data, unsupportedFormat: fmt };  // jpeg/gif/svg+xml/...
     }
+    // draw.io sometimes emits data:image/xxx,<base64> without the ';base64' marker.
+    // Detect by checking that the data consists only of base64 alphabet characters.
+    var m2 = /^data:image\/([a-z0-9.+-]+),([A-Za-z0-9+/=]+)$/i.exec(src);
+    if (m2) {
+      var imgFmt = m2[1].toLowerCase();
+      var imgData = m2[2];
+      if (imgFmt === 'png') return { format: 'png', data: imgData };
+      return { format: imgFmt, data: imgData, unsupportedFormat: imgFmt };
+    }
     if (/^data:image\//i.test(src)) return { unsupportedFormat: 'non-base64' };
     return { externalUrl: src };               // http(s)/relative URL
   }
@@ -3139,10 +3322,11 @@
       if (cell == null || (!model.isVertex(cell) && !model.isEdge(cell))) return;
       var state = view.getState(cell);
       if (state == null) return;
+      var isEdgeCell = model.isEdge(cell);
       var style = resolveThemeDefaults(
-        graph.getCellStyle(cell) || state.style || {}, graph);
+        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell);
 
-      if (model.isEdge(cell)) {
+      if (isEdgeCell) {
         emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);
         return;
       }
@@ -3461,6 +3645,56 @@
       }
       // --- End stencil lookup ---
 
+      // --- Built-in multi-element shapes (registered in Shapes.js, not stencil XML) ---
+      var builtinContent = builtinShapeSvg(style, box.w, box.h);
+      if (builtinContent !== null) {
+        var rotDegBI = number(style.rotation, 0);
+        if (rotDegBI) {
+          var thetaBI = rotDegBI * Math.PI / 180;
+          var expWBI = box.w * Math.abs(Math.cos(thetaBI)) + box.h * Math.abs(Math.sin(thetaBI));
+          var expHBI = box.w * Math.abs(Math.sin(thetaBI)) + box.h * Math.abs(Math.cos(thetaBI));
+          var offXBI = (expWBI - box.w) / 2;
+          var offYBI = (expHBI - box.h) / 2;
+          var rcxBI = expWBI / 2, rcyBI = expHBI / 2;
+          var textElBI = label !== '' ? textSvgStr(label, rcxBI, rcyBI, style) : '';
+          var innerBI = '<g transform="translate(' + fmt(offXBI) + ' ' + fmt(offYBI) + ')">' + builtinContent + '</g>';
+          var rotGroupBI = '<g transform="rotate(' + fmt(rotDegBI) + ' ' + fmt(rcxBI) + ' ' + fmt(rcyBI) + ')">' + innerBI + textElBI + '</g>';
+          var svgStrBI = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(expWBI) + '" height="' + fmt(expHBI) + '">' + rotGroupBI + '</svg>';
+          paint.push({
+            kind: 'svg',
+            box: { x: box.x + box.w / 2 - expWBI / 2, y: box.y + box.h / 2 - expHBI / 2, w: expWBI, h: expHBI },
+            source: base64(svgStrBI),
+            aspect: 'preserve'
+          });
+        } else {
+          var svgStrBI = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) + '" height="' + fmt(box.h) + '">' + builtinContent + '</svg>';
+          paint.push({ kind: 'svg', box: box, source: base64(svgStrBI), aspect: 'preserve' });
+          if (label !== '') {
+            var lblBoxBI = box;
+            var lposBI = style.labelPosition, vlposBI = style.verticalLabelPosition;
+            var lblWBI = style.labelWidth ? parseFloat(style.labelWidth) : null;
+            if (lposBI === 'left') {
+              var lwBI = lblWBI || box.w;
+              lblBoxBI = { x: box.x - lwBI, y: box.y, w: lwBI, h: box.h };
+            } else if (lposBI === 'right') {
+              var lwBI = lblWBI || box.w;
+              lblBoxBI = { x: box.x + box.w, y: box.y, w: lwBI, h: box.h };
+            } else if (lblWBI) {
+              lblBoxBI = { x: box.x, y: box.y, w: lblWBI, h: box.h };
+            }
+            if (vlposBI === 'top') {
+              lblBoxBI = { x: lblBoxBI.x, y: box.y - box.h, w: lblBoxBI.w, h: box.h };
+            } else if (vlposBI === 'bottom') {
+              lblBoxBI = { x: lblBoxBI.x, y: box.y + box.h, w: lblBoxBI.w, h: box.h };
+            }
+            var blbBI = labelBoxNode(style, lblBoxBI);
+            if (blbBI) paint.push(blbBI);
+            paint.push(textNode(graph, cell, state, style, lblBoxBI, label, notices));
+          }
+        }
+        return;
+      }
+
       var d = shapePath(style, box.x, box.y, box.w, box.h);
       if (!d) {
         d = rectPath(box.x, box.y, box.w, box.h);
@@ -3538,10 +3772,20 @@
       }
     }
 
+    // Swimlane labels live in the header area only (mxSwimlane.getLabelBounds).
+    // Constrain the label box to avoid centering over the whole swimlane height.
+    var swimLabelBx = box;
+    if (style.shape === 'swimlane') {
+      var swimIsH = style.horizontal !== '0';
+      var swimSz = Math.min(Math.max(0, number(style.startSize, 30)), swimIsH ? box.h : box.w);
+      swimLabelBx = swimIsH
+        ? { x: box.x, y: box.y, w: box.w, h: swimSz }
+        : { x: box.x, y: box.y, w: swimSz, h: box.h };
+    }
     if (label !== '') {
-      var vlb = labelBoxNode(style, box);
+      var vlb = labelBoxNode(style, swimLabelBx);
       if (vlb) paint.push(vlb);
-      paint.push(textNode(graph, cell, state, style, box, label, notices));
+      paint.push(textNode(graph, cell, state, style, swimLabelBx, label, notices));
     }
   }
 
@@ -3575,6 +3819,10 @@
     }
     if (points.length < 2) return;
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });
+    if (style.shape) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'Custom edge shape "' + style.shape + '" exported as straight-line fallback.', cell.id));
+    }
     paint.push({
       kind: 'path',
       d: edgePath(points, boolish(style.rounded)),

@@ -322,8 +322,23 @@
           {
             "kind": "path",
             "d": "M 2645.833333 2645.833333 L 37041.666667 2645.833333 L 37041.666667 23812.5 L 2645.833333 23812.5 Z",
-            "fill": null,
-            "stroke": null
+            "fill": {
+              "type": "solid",
+              "color": "#ffffff",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#000000",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
           }
         ]
       }

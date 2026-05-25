@@ -19,6 +19,7 @@
 //       const { contract } = bake(xmlString, { unattended: true }); // throws on notices
 
 import { readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -29,6 +30,36 @@ import { createSvgEnv } from './svg-shim/index.mjs';
 import { loadStencils } from './stencil-loader.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
+
+// The webapp root for resolving relative image URLs (e.g. img/clipart/Gear_128x128.png).
+const WEBAPP_DIR = resolve(__dir, '../../src/main/webapp');
+
+// Fetch implementation for relative/root-relative URLs that resolves against
+// WEBAPP_DIR. Used as the default fetchFn so local images print WYSIWYG.
+// Falls back to { ok: false } for http(s) URLs (no outbound network in headless).
+function localFileFetch(url) {
+  return Promise.resolve().then(function () {
+    if (/^https?:\/\//i.test(url)) return { ok: false };
+    var rel = url.replace(/^\//, '');
+    var filePath = resolve(WEBAPP_DIR, rel);
+    var bytes;
+    try { bytes = readFileSync(filePath); } catch (_) { return { ok: false }; }
+    var ext = filePath.split('.').pop().toLowerCase();
+    var mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml' };
+    var mime = mimeMap[ext] || 'application/octet-stream';
+    return {
+      ok: true,
+      blob: function () {
+        return Promise.resolve({
+          type: mime,
+          arrayBuffer: function () {
+            return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+          }
+        });
+      }
+    };
+  });
+}
 
 // Inject the SVG serialization shim into globalThis BEFORE requiring the exporter.
 // The exporter IIFE (line 2697) captures `root = globalThis` at require-time, so
@@ -60,7 +91,7 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
   // embedExternalImages is a no-op when no external URLs are present.
   let resolvedImages = {};
   if (typeof exporter.embedExternalImages === 'function') {
-    resolvedImages = await exporter.embedExternalImages(graph, fetchFn || null, null, null)
+    resolvedImages = await exporter.embedExternalImages(graph, fetchFn || localFileFetch, null, null)
       .catch(() => ({}));
   }
   return exporter.buildResult(graph, pageData.paper,

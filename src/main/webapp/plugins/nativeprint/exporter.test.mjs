@@ -154,9 +154,10 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
 });
 
 test('exporter reports unsupported shapes while preserving a valid fallback path', () => {
+  // Non-mxgraph unknown shape emits ExporterUnsupportedShape + rect fallback
   const cells = { weird: { id: 'weird', vertex: true } };
   const states = { weird: { x: 10, y: 20, width: 100, height: 50 } };
-  const styles = { weird: { shape: 'mxgraph.custom.thing', fillColor: '#abcdef', strokeColor: '#fedcba' } };
+  const styles = { weird: { shape: 'parallelogram', fillColor: '#abcdef', strokeColor: '#fedcba' } };
 
   const result = exporter.buildResult(graphFixture(cells, states, {}, styles));
   const path = result.contract.document.pages[0].paint[0];
@@ -164,6 +165,20 @@ test('exporter reports unsupported shapes while preserving a valid fallback path
   assert.equal(result.notices.length, 1);
   assert.equal(result.notices[0].kind, 'ExporterUnsupportedShape');
   assert.equal(path.d, 'M 0 0 L 50 0 L 50 25 L 0 25 Z');
+});
+
+test('mxgraph.custom.thing: rect fallback WITH ExporterUnsupportedShape notice (§5)', () => {
+  // mxgraph namespace shapes with no stencil have a JS-registered live canvas
+  // path (mxCellRenderer.registerShape); headless must emit a loud notice (§5).
+  const cells = { weird: { id: 'weird', vertex: true } };
+  const states = { weird: { x: 10, y: 20, width: 100, height: 50 } };
+  const styles = { weird: { shape: 'mxgraph.custom.thing', fillColor: '#abcdef', strokeColor: '#fedcba' } };
+
+  const result = exporter.buildResult(graphFixture(cells, states, {}, styles));
+  assert.equal(result.notices.length, 1, 'mxgraph.* absent stencil must emit one ExporterUnsupportedShape notice');
+  assert.equal(result.notices[0].kind, 'ExporterUnsupportedShape', 'notice kind');
+  const path = result.contract.document.pages[0].paint[0];
+  assert.equal(path.d, 'M 0 0 L 50 0 L 50 25 L 0 25 Z', 'rect fallback path');
 });
 
 test('exporter carries fill gradients opacity dash and remains zoom independent', () => {
@@ -350,6 +365,7 @@ const SUPPORTED_SHAPES = [
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
   ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
+  ['switch', { shape: 'switch' }, /^M 0 0 C [\d.]+ [\d.]+ [\d.]+ [\d.]+ 80 0 C /],
   ['default (no shape)', {}, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/]
 ];
 for (const [name, style, dRe] of SUPPORTED_SHAPES) {
@@ -364,11 +380,10 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
 }
 
 // ---- Every UNSUPPORTED stencil is loudly flagged (never silent) ----------
-// Note: hexagon and actor were here but are now implemented in shapePath().
+// Note: hexagon, actor, process, umlActor are now implemented (moved to SUPPORTED /
+// builtinShapeSvg). mxgraph.* shapes silently fall back to rect (matching live canvas).
 const UNSUPPORTED = [
-  'step', 'process', 'parallelogram', 'callout',
-  'mxgraph.flowchart.decision', 'mxgraph.azure.vm', 'mxgraph.aws4.lambda',
-  'mxgraph.bpmn.task', 'tape', 'card', 'umlActor', 'note', 'cube'
+  'step', 'parallelogram', 'callout', 'tape', 'card', 'note', 'cube'
 ];
 for (const shape of UNSUPPORTED) {
   test(`unsupported stencil loudly degraded, not silent: ${shape}`, () => {
@@ -379,6 +394,44 @@ for (const shape of UNSUPPORTED) {
     const path = r.contract.document.pages[0].paint[0];
     assert.match(path.d, /^M 0 0 L \d+ 0 L \d+ \d+ L 0 \d+ Z$/,
       'fallback is a valid bounding-box rect');
+    assertSchemaValid(r.contract, shape);
+  });
+}
+
+// ---- builtinShapeSvg shapes: no notice, kind:'svg' -------------------------
+// Shapes implemented via builtinShapeSvg() (registered in Shapes.js, not stencil XML).
+const BUILTIN_SVG_SHAPES = ['umlActor', 'process', 'smileyFace', 'associativeEntity',
+  'endState', 'folder', 'component', 'table', 'tableRow', 'partialRectangle'];
+for (const shape of BUILTIN_SVG_SHAPES) {
+  test(`builtinShapeSvg shape faithfully baked (no notice, kind:svg): ${shape}`, () => {
+    const r = oneVertex({ shape, fillColor: '#abcdef', strokeColor: '#fedcba',
+      startSize: '30', tabWidth: '40', tabHeight: '14', tabPosition: 'left',
+      jettyWidth: '8', jettyHeight: '4' });
+    assert.equal(r.notices.length, 0, `${shape} must NOT emit a notice`);
+    const node = r.contract.document.pages[0].paint[0];
+    assert.equal(node.kind, 'svg', `${shape} must emit kind:'svg'`);
+    assert.ok(typeof node.source === 'string' && node.source.length > 0, 'source present');
+    assertSchemaValid(r.contract, shape);
+  });
+}
+
+// ---- mxgraph.* shapes not in stencil XML: rect fallback WITH notice (§5) ---
+// mxgraph namespace shapes not in any bundled stencil XML fall back to a
+// bounding-box rectangle. The live canvas renders them faithfully via
+// mxCellRenderer.registerShape, so a loud ExporterUnsupportedShape notice
+// is required (§5 — no silent divergence from the live canvas).
+const MXGRAPH_NOTSTENCIL = [
+  'mxgraph.flowchart.decision', 'mxgraph.azure.vm',
+  'mxgraph.aws4.lambda', 'mxgraph.bpmn.task'
+];
+for (const shape of MXGRAPH_NOTSTENCIL) {
+  test(`mxgraph stencil absent: rect fallback with ExporterUnsupportedShape notice: ${shape}`, () => {
+    const r = oneVertex({ shape, fillColor: '#abcdef', strokeColor: '#fedcba' });
+    assert.equal(r.notices.length, 1, `${shape} must emit exactly one notice`);
+    assert.equal(r.notices[0].kind, 'ExporterUnsupportedShape', 'notice kind');
+    const node = r.contract.document.pages[0].paint[0];
+    assert.equal(node.kind, 'path', `${shape} must emit kind:'path' rect fallback`);
+    assert.match(node.d, /^M 0 0 L \d+ 0 L \d+ \d+ L 0 \d+ Z$/, 'rect fallback path');
     assertSchemaValid(r.contract, shape);
   });
 }
@@ -896,17 +949,22 @@ test('one unplaceable sub-element does not discard the whole shape', () => {
   assertSchemaValid(r.contract, 'partial harvest');
 });
 
-test('harvest absent (headless) -> named-shape/notice fallback preserved', () => {
-  // No state.shape => the legacy path still runs (this is what Node CI uses).
+test('harvest absent (headless) -> builtinShapeSvg covers known shapes, notice for unknown', () => {
+  // umlActor is now implemented in builtinShapeSvg → no notice, kind:'svg'
   const r = oneVertex({ shape: 'umlActor', fillColor: '#abcdef', strokeColor: '#fedcba' });
-  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
-    'without a live SVG node the loud fallback is unchanged');
+  assert.equal(r.notices.length, 0, 'umlActor is covered by builtinShapeSvg — no notice');
+  assert.equal(r.contract.document.pages[0].paint[0].kind, 'svg', 'umlActor emits kind:svg');
+  // An actually-unsupported shape still gets a notice
+  const r2 = oneVertex({ shape: 'step', fillColor: '#abcdef', strokeColor: '#fedcba' });
+  assert.ok(r2.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'step (no headless impl) still emits ExporterUnsupportedShape');
 });
 
 // ---- Fill variants -------------------------------------------------------
 test('fill: solid / none / transparent / gradient / opacity', () => {
-  assert.equal(oneVertex({ shape: 'rectangle' }).contract.document.pages[0].paint[0].fill, null,
-    'truly absent fillColor key -> null (the sentinel case is covered separately)');
+  assert.deepEqual(oneVertex({ shape: 'rectangle' }).contract.document.pages[0].paint[0].fill,
+    { type: 'solid', color: '#ffffff', alpha: 1 },
+    'absent fillColor defaults to theme bg (#ffffff in light mode, matching live getCellStyle defaults)');
   assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'none' })
     .contract.document.pages[0].paint[0].fill, null);
   assert.equal(oneVertex({ shape: 'rectangle', fillColor: 'transparent' })

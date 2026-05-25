@@ -254,12 +254,12 @@ test('C1: bake output matches simple.contract.golden.json', async () => {
     'bake output diverged from golden — update golden if bake logic changed intentionally');
 });
 
-test('bake: ExporterUnsupportedShape notice for unknown shape', async () => {
-  // Use a shape name that does not exist in any stencil or built-in registry
+test('bake: ExporterUnsupportedShape notice for unknown non-mxgraph shape', async () => {
+  // Non-mxgraph shapes with no built-in or stencil implementation emit a loud notice
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
-      <mxCell id="2" vertex="1" value="X" style="shape=mxgraph.nonexistent.fakeshape999;fillColor=#ffffff;" parent="1">
+      <mxCell id="2" vertex="1" value="X" style="shape=parallelogram;fillColor=#ffffff;" parent="1">
         <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
       </mxCell>
     </root>
@@ -458,11 +458,11 @@ test('bake: pages option selects subset of pages', async () => {
 });
 
 test('D5: unattended mode throws on degradation notices', async () => {
-  // Unknown shape (not in stencil registry or built-ins) triggers ExporterUnsupportedShape notice
+  // Non-mxgraph unknown shape triggers ExporterUnsupportedShape notice → D5 rejects
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
-      <mxCell id="2" vertex="1" value="" style="shape=mxgraph.nonexistent.fakeshape999;" parent="1">
+      <mxCell id="2" vertex="1" value="" style="shape=parallelogram;" parent="1">
         <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
       </mxCell>
     </root>
@@ -690,6 +690,19 @@ test('C4: multipage.drawio produces zero degradation notices', async () => {
   const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
+const templateDrawio = join(here, '../../src/main/native-print-engine/tests/fixtures/labels/test.drawio');
+test('C4: test.drawio emits only ExporterUnsupportedShape notices (no silent divergence)', async () => {
+  // Notices are expected for JS-registered shapes (mxgraph.basic.button,
+  // mxgraph.arrows2.wedgeArrowDashed2, flexArrow) that have no stencil XML
+  // and no live DOM to harvest — these are loud per §5. Any other notice kind
+  // is a regression (unexpected silent divergence or new unhandled failure).
+  const xml = await readFile(templateDrawio, 'utf8');
+  const { notices } = await bake(xml);
+  const unexpected = notices.filter((n) => n.kind !== 'ExporterUnsupportedShape');
+  assert.equal(unexpected.length, 0,
+    `C4 failed — unexpected notices: ${unexpected.map((n) => `${n.kind}:${n.cellId || ''}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
 });
 
 // C5: vocabulary coverage — connector, gradient, groups all produce non-empty output
