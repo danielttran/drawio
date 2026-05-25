@@ -207,6 +207,13 @@ The core does not render to a printer directly. It emits trace commands such as 
 
 Preview and print share `draw_trace`. This is the key implementation point for preview/print parity.
 
+#### Host prerequisites
+
+The host is **Windows-only** (Win32 + GDI+); there is no cross-platform host implementation. Two operational requirements follow from this and from the text model:
+
+- **Required fonts must be installed on the Windows host.** Assigned fonts — for both static and variable/merge text — are resolved against fonts **installed on the host**: GDI+ via `FontFamily::IsAvailable` for engine-laid text, and resvg's system-font database for baked `svg` text. The contract carries only the font *name*, never font bytes; fonts are **not** embedded in the contract or shipped with the job. A face that is not installed on the host is substituted with Arial and a loud `FontSubstituted` notice. Install every required font on the print host to keep WYSIWYG.
+- **Text is measured on the host, with no browser.** All glyph metrics, line breaking, alignment, and shrink-to-fit run through GDI+ `MeasureString` at device resolution (the "measure-at-the-sink" model), so no browser is involved at print time. See §11.1 for the current fit model and its limits.
+
 ### 6.6 SVG Rasterizer Backend
 
 The C++ host loads `svg_rasterizer.dll` from next to `print_engine_host.exe`. The DLL must implement the hand-owned ABI in `svg_rasterizer_abi.h`.
@@ -471,12 +478,14 @@ The renderer checks whether paint node boxes escape the selected page. If conten
 It handles:
 
 - anti-aliased path fills and strokes;
-- GDI+ text layout and font substitution;
-- merge text shrink/clip/reject behavior at device metrics;
+- GDI+ text layout and font substitution (against host-installed fonts; see §6.5 prerequisites);
+- merge/variable text **fit-to-fixed-box** behavior at device metrics — the box dimensions come from the contract and are *not* grown to fit the text. The policy is shrink-to-fit (reduce font size to a floor), `clip` (with a `MergeClip` notice), or `reject` (`MergeOverflowError`). Sizing the box itself to the text is not done here; see §11.5.
 - rich text runs, underline, and strikethrough;
 - PNG image decode and placement;
 - SVG rasterization and GDI+ bitmap draw;
 - barcode crosshatch stubs.
+
+All text measurement uses GDI+ `MeasureString` (`build(em)` / `measure_seg` in `win32_services.cpp`), so the host already has a browser-free way to measure text in any host-installed font.
 
 Because preview and print both call this function, the same layout and rasterization decisions are used for both output modes.
 
@@ -527,6 +536,20 @@ For `Svg` trace commands, the host:
 8. draws the bitmap into the command destination.
 
 On success it emits `SvgArtworkRasterized` with the backend identity. On failure it draws a visible crosshatch stub and emits `StubbedSvgArtwork` with the reason.
+
+### 11.5 Variable-Text Box Sizing (current model and gap)
+
+This matters for variable/merge data, where the resolved string length is not known until print time and may differ from the design-time sample.
+
+**Current behavior — fit *content* to a *fixed* box.** The contract box dimensions are authoritative. After resolving the merge value, the host measures it with GDI+ `MeasureString` at device metrics and fits it into that fixed box by shrink-to-fit, `clip`, or `reject` (§11.1). The box is never resized.
+
+**Not yet implemented — fit the *box* to the *content* (auto-grow/shrink).** A draw.io text box or labelled shape can be authored to grow or shrink with its text. For variable data printed headlessly, reproducing that requires the host to *compute the box* from the resolved text length and font size — with no browser. The pieces line up as follows:
+
+- **The measurement primitive already exists and is browser-free.** `build(em)` already computes the natural content extent (`block_w`, `block_h`) via GDI+ `MeasureString`; an auto-sized box is essentially that extent plus padding. Windows being a required host (§6.5) guarantees this primitive is always available.
+- **What is missing:** (1) a contract layout policy for auto-size — grow-width / grow-height / both, a max-width for wrapped growth, padding, line-height, and a growth **anchor** (which corner/center stays fixed as the box grows); (2) host logic to set the box from the measured extent and reposition by the anchor instead of using the fixed contract box; (3) a **re-check of page bounds after growth** — `HardwareMarginClip` is computed in the engine core *before* measurement, so a grown box that escapes the page must be re-detected at the sink.
+- **Container artwork is the hard constraint.** A background/border that was baked as a frozen `svg` node cannot grow without distorting strokes and corners. Auto-grow therefore only works when the container is **drawn parametrically by the engine** (e.g. a rect or rounded-rect primitive sized to the computed box). A variable field bound to an arbitrary baked shape cannot auto-grow faithfully and must emit a loud notice rather than stretch a raster.
+
+In short: the engine can size an auto-growing text box without a browser (GDI+ measurement on the required Windows host), but the contract needs an auto-size policy and the growable container must be engine-drawn, not frozen SVG.
 
 ## 12. Notice and Gate Model
 
@@ -622,6 +645,8 @@ The broker is a development bridge and must be replaced by an equivalent trusted
 |---|---|
 | Barcode SDK adapter is not implemented | Barcode nodes print as loud crosshatch stubs. |
 | Real merge-data UI/source is not complete in the draw.io plugin | Protocol and engine support merge maps, but UI currently sends empty merge data. |
+| Host is Windows-only and depends on host-installed fonts | No cross-platform host. Required font faces must be installed on the Windows host; a missing face substitutes Arial with a loud `FontSubstituted` notice (§6.5). Fonts are not embedded in the contract. |
+| Auto-sizing text boxes for variable data are not implemented | The host measures text browser-free (GDI+ `MeasureString`) and fits content to a **fixed** box (shrink-to-fit, clip, or reject). Growing/shrinking the box itself to the resolved text needs a contract auto-size policy plus an engine-drawn parametric container — a frozen `svg` container cannot grow without distortion. See §11.5. |
 | Dev broker assumes local Vite environment | Production packaging needs an equivalent trusted local bridge. |
 | SVG rasterizer DLL must be present beside `print_engine_host.exe` | Missing DLL causes loud crosshatch stubs for SVG artwork. |
 | Some external images can still be unreachable | If direct fetch, proxy, and canvas all fail, output is a noticed placeholder. |
