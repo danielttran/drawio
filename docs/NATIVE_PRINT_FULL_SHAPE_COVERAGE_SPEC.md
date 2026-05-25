@@ -1,6 +1,6 @@
 # Native Print — Full Draw.io Shape Coverage: Implementation Specification
 
-**Status:** Draft — awaiting advisor review  
+**Status:** Revised — advisor review complete (2026-05-25)  
 **Date:** 2026-05-25  
 **Repository:** `danielttran/drawio`  
 **Branch:** `claude/native-print-unattended-5qWWK`  
@@ -18,11 +18,16 @@ All constraints from `docs/CLAUDE.md` and the prior spec remain in force unchang
 
 1. **No browser anywhere** — no Chromium, Playwright, jsdom, pixel oracles.  
 2. **WYSIWYG by construction** — transcribe draw.io's actual rendering, never re-derive.  
-3. **Faithful OR loud** — never a silent divergence or silent approximation.  
+3. **Faithful OR loud** — never a silent divergence, never a silent approximation.  
 4. **Frozen engine boundary (INV-1)** — no draw.io/mxGraph concepts in C++; contract schema unchanged by this spec.  
 5. **D5 failure policy** — any degradation notice → job refused (HTTP 422).
 
-**Allowed-renderer boundary (D1):** Running draw.io's own stencil XML under a minimal SVG-serialization shim is permitted and is *not* a browser. The shim implements only element creation, attribute manipulation, tree assembly, and XML serialization. It must not implement HTML layout, CSS cascade, box layout, measurement, event handling, or produce pixels.
+**Allowed-renderer boundary (D1):** Running draw.io's own stencil XML through a pure arithmetic
+renderer (no mxGraph runtime, no DOM shim, no browser) is permitted and is *not* a browser.
+The renderer implements only coordinate arithmetic, SVG path string assembly, and XML attribute
+reading. It must not implement HTML layout, CSS cascade, box layout, measurement, event
+handling, or produce pixels. The existing svg-shim (`tools/native-print-bake/svg-shim/`) is
+not required for Phase 1 — the stencil renderer is pure math.
 
 ---
 
@@ -31,17 +36,17 @@ All constraints from `docs/CLAUDE.md` and the prior spec remain in force unchang
 The headless bake path (Node.js, no browser) currently supports only ~8 named shape types:
 `rectangle`, `ellipse`, `rhombus`, `triangle` (4 directions), `cylinder`, `cloud`, `label`.
 
-Any cell whose style includes `shape=<anything else>` — including all mxgraph.* stencil shapes
-(3,798 uniquely named shapes across 202 XML files), plus built-in shapes like `hexagon`,
-`actor`, `parallelogram` — hits `ExporterUnsupportedShape`, emits a degradation notice, and
-causes D5 job refusal.
+Any cell whose style includes `shape=<anything else>` — including all `mxgraph.*` stencil
+shapes (~3,798 uniquely named shapes across 202 XML files), plus built-in shapes like
+`hexagon`, `actor`, `parallelogram` — hits `ExporterUnsupportedShape`, emits a degradation
+notice, and causes D5 job refusal.
 
 The live-browser path works for all shapes because `harvestShape` transcribes the
 already-rendered SVG from `state.shape.node`. Headless has no such rendered state.
 
-**Goal of this spec:** Extend headless coverage to 100% of draw.io shapes without a browser,
-by implementing a stencil XML → SVG path renderer that uses the same stencil definitions the
-browser uses — WYSIWYG by construction.
+**Goal:** Extend headless coverage to 100% of draw.io shapes without a browser by implementing
+a stencil XML → SVG renderer that uses the same stencil definitions the browser uses — WYSIWYG
+by construction.
 
 ---
 
@@ -51,12 +56,12 @@ Draw.io's shape library is defined as XML in `src/main/webapp/stencils/` (202 fi
 shapes). Each stencil shape is a sequence of drawing commands in a well-defined mini-language:
 
 ```xml
-<shape name="Gear" h="54" w="54" aspect="variable">
+<shape name="Card" h="60" w="98" aspect="variable" strokewidth="inherit">
   <background>
     <path>
-      <move x="10" y="0"/>
-      <line x="44" y="0"/>
-      <arc rx="4" ry="4" x-axis-rotation="0" large-arc-flag="0" sweep-flag="1" x="54" y="10"/>
+      <move x="19" y="0"/>
+      <line x="93" y="0"/>
+      <arc rx="5" ry="5" x-axis-rotation="0" large-arc-flag="0" sweep-flag="1" x="98" y="5"/>
       <close/>
     </path>
   </background>
@@ -66,26 +71,21 @@ shapes). Each stencil shape is a sequence of drawing commands in a well-defined 
 </shape>
 ```
 
-These commands map **directly and exactly** to SVG path syntax:
+These commands map to SVG with a coordinate transform. The full command → SVG mapping:
 
-| Stencil command | SVG equivalent |
-|---|---|
-| `<move x y>` | `M x y` |
-| `<line x y>` | `L x y` |
-| `<curve x1 y1 x2 y2 x3 y3>` | `C x1 y1 x2 y2 x3 y3` |
-| `<quad x1 y1 x2 y2>` | `Q x1 y1 x2 y2` |
-| `<arc rx ry xrot laf sf x y>` | `A rx ry xrot laf sf x y` |
-| `<close>` | `Z` |
-| `<rect x y w h>` | `<rect x y width height/>` |
-| `<roundrect x y w h arcsize>` | `<rect x y width height rx ry/>` |
-| `<ellipse x y w h>` | `<ellipse cx cy rx ry/>` |
+| Stencil command | SVG path token | Notes |
+|---|---|---|
+| `<move x y>` | `M ox+x*sw oy+y*sh` | Absolute moveto |
+| `<line x y>` | `L ox+x*sw oy+y*sh` | Absolute lineto |
+| `<curve x1 y1 x2 y2 x3 y3>` | `C` (6 values scaled) | Cubic Bezier |
+| `<quad x1 y1 x2 y2>` | `Q` (4 values scaled) | Quadratic Bezier |
+| `<arc rx ry xrot laf sf x y>` | `A su*rx su*ry xrot laf sf ox+x*sw oy+y*sh` | Arc; radii scale by uniform factor (see §3.3) |
+| `<close>` | `Z` | |
+| `<rect x y w h>` | `<rect x="ox+x*sw" y="oy+y*sh" width="w*sw" height="h*sh"/>` | |
+| `<roundrect x y w h arcsize>` | `<rect ... rx="r" ry="r"/>` | r = arcsize/100 * min(w*sw, h*sh); if arcsize=0 → r = 10 (mxConstants default) |
+| `<ellipse x y w h>` | `<ellipse cx="ox+(x+w/2)*sw" cy="oy+(y+h/2)*sy" rx="w/2*sw" ry="h/2*sh"/>` | Note: stencil x,y is top-left, NOT center |
 
-Coordinates are in **stencil space** (origin 0,0; unit square = w0 × h0 from the shape's `w`
-and `h` attributes) and must be scaled to actual cell dimensions at render time. No browser, no
-DOM, no canvas engine is needed — it is pure arithmetic.
-
-This means: **every draw.io stencil shape can be rendered headlessly** by parsing its XML
-definition and scaling coordinates to the cell bounding box.
+Where `ox`, `oy`, `sw`, `sh` come from `computeAspect` (see §3.3 step 2). For `aspect="variable"` shapes: `ox=0, oy=0, sw=cellW/w0, sh=cellH/h0`. For `aspect="fixed"` shapes the formula is different — see §3.3 step 2.
 
 ---
 
@@ -97,109 +97,286 @@ The shape rendering pipeline adds one new step before the existing fallback:
 
 ```
 emitVertex(cell)
-  ├─ harvestShape()          (live path only — requires state.shape.node)
-  ├─ stencilToSvg()          ← NEW: headless stencil shapes
-  ├─ shapePath()             (existing: basic 8 shapes)
-  └─ ExporterUnsupportedShape notice  (remaining edge cases only)
+  ├─ harvestShape()              (live path only — requires state.shape.node)
+  ├─ inlineStencilDecode()       ← NEW: decode stencil(base64...) inline shapes
+  ├─ stencilRegistryLookup()     ← NEW: look up mxgraph.* stencil XML shapes
+  │    └─ stencilToSvg()         ← NEW: render stencil XML → SVG string
+  ├─ shapePath()                 (existing: basic 8 shapes)
+  └─ ExporterUnsupportedShape notice  (truly unresolvable shapes only)
 ```
 
-### 3.2 Stencil Registry
+### 3.2 Stencil Registry — Correct Key Format
 
-At bake startup (`bake.mjs`), before processing any cells:
+**IMPORTANT: The key format is derived from the `<shapes name="...">` XML attribute, NOT from
+the file path.** This is how `mxStencilRegistry` (`parseStencilSet` in `Graph.js` line ~11308)
+works:
 
-1. Read every `.xml` file from `src/main/webapp/stencils/` (recursively).
-2. Parse each file as XML (Node.js built-in `DOMParser` or `@xmldom/xmldom`).
-3. For each `<shape name="...">` element, register it under its normalized name:
-   - File `stencils/basic.xml`, shape name `"Star"` → key `"mxgraph.basic.star"` (package = filename without extension, name = lowercased value).
-   - File `stencils/flowchart.xml`, shape name `"Card"` → `"mxgraph.flowchart.card"`.
-   - Exception: shapes in root-level `stencils/*.xml` files are registered under package `mxgraph.<filename>`.
-   - Subdirectory files (e.g. `stencils/aws2/compute.xml`) → `mxgraph.aws2.compute.<name>`.
-4. Pass the registry into the exporter via a new `registerStencils(map)` API call.
+```
+key = shapes_element_name_attr.toLowerCase() + "." + shape_name.replace(/ /g, "_").toLowerCase()
+```
 
-The registry is a plain `Map<string, Element>` (stencil XML `<shape>` node). Memory cost is
-negligible (all stencil XML totals ~8 MB text, parsed once).
+Examples:
+- `stencils/basic.xml` has `<shapes name="mxgraph.basic">` → `"mxgraph.basic.4_point_star"`, `"mxgraph.basic.star"`, etc. (NOT `"mxgraph.basic.4 Point Star"`)
+- `stencils/flowchart.xml` has `<shapes name="mxGraph.flowchart">` → lowercased → `"mxgraph.flowchart.card"`, `"mxgraph.flowchart.start_1"`
+- `stencils/aws2/compute.xml` has `<shapes name="mxgraph.aws2.compute">` → `"mxgraph.aws2.compute.ec2"`
 
-### 3.3 `stencilToSvg(stencilNode, w, h, style)` — New Function in exporter.js
+**Note:** `basic.xml` shapes are `"mxgraph.basic.*"` (not plain names). Plain names like
+`"parallelogram"`, `"hexagon"` are built-in JS shapes, not stencil XML shapes.
 
-**Signature:** `stencilToSvg(stencilNode, w, h, style) → string | null`
+**Bake loader algorithm** (`bake.mjs`):
+1. Recursively read every `.xml` file from `src/main/webapp/stencils/`.
+2. Parse each file with `@xmldom/xmldom` (already a project dependency) — Node.js does not have a built-in DOMParser.
+3. Read the `name` attribute from the root `<shapes>` element → `packagePrefix = name.toLowerCase()`.
+4. For each `<shape name="N">` child: `key = packagePrefix + "." + N.replace(/ /g,"_").toLowerCase()`.
+5. Store `Map<key, shapeElement>` — the raw `<shape>` DOM node.
+6. Call `exporter.registerStencils(map)` before any bake calls.
 
-**Inputs:**
-- `stencilNode`: the `<shape>` DOM element from the stencil registry
-- `w`, `h`: actual cell width and height in px
-- `style`: parsed style object (for fill color, stroke color, opacity, etc.)
+Memory cost: all stencil XML is ~8 MB text, parsed once at startup.
 
-**Output:** An SVG string `<svg xmlns="..." width="w" height="h">...</svg>`, or `null` if the
-stencil uses a feature that cannot be rendered headlessly (triggers a notice instead).
+### 3.3 `computeAspect` — Coordinate Transform (Critical)
 
-**Algorithm:**
+Every coordinate in a stencil must be transformed through `computeAspect` before scaling.
+This mirrors `mxStencil.computeAspect` exactly.
 
-1. Read `w0 = stencilNode.getAttribute('w') || 100` and `h0 = stencilNode.getAttribute('h') || 100`. These are the stencil's native coordinate space dimensions.
-2. Define scale factors: `sx = w / w0`, `sy = h / h0`.
-3. Walk `<background>` children (fill shapes, painted first) and `<foreground>` children (stroke/overlay shapes), in document order.
-4. For each `<path>` block: accumulate child command nodes into one SVG `d` attribute string, scaling each coordinate: `xScaled = x * sx`, `yScaled = y * sy`. Arc radii scale as `rx * sx` and `ry * sy`.
-5. For `<rect x y w h>`: emit `<rect x="x*sx" y="y*sy" width="w*sx" height="h*sy"/>`.
-6. For `<roundrect x y w h arcsize>`: arcsize is a percentage of min(w,h); emit `<rect ... rx="..." ry="..."/>`.
-7. For `<ellipse x y w h>`: emit `<ellipse cx="(x+w/2)*sx" cy="(y+h/2)*sy" rx="w/2*sx" ry="h/2*sy"/>`.
-8. Apply fill/stroke from `<fillstroke/>`, `<fill/>`, `<stroke/>` commands using the cell's style (fillColor, strokeColor, etc.) via the existing `fillSvgAttr()` and `strokeSvgAttrs()` helpers.
-9. Handle state modifiers: `<strokecolor>`, `<fillcolor>`, `<strokewidth>`, `<dashed>`, `<dashpattern>`, `<linecap>`, `<linejoin>`, `<alpha>`, `<fillalpha>`, `<strokealpha>` — push/pop via `<save>`/`<restore>`.
-10. Ignore `<connections>` nodes (connection point hints; irrelevant for printing).
-11. If any node type is encountered that this renderer does not implement, add an `ExporterUnsupportedStencilFeature` notice and return `null` (job then refused per D5).
+**Inputs:** `w0`, `h0` (stencil native dimensions), `cellW`, `cellH` (actual cell px), `aspect` attribute value.
 
-Unimplemented stencil features (rare; raise notice):
-- `<image>` inside a stencil: requires external image fetch (same as existing `embedExternalImages` path — can be wired in Phase 2).
-- `<include-shape>`: recursive stencil composition — defer to Phase 2.
-- `<text>` inside a stencil: labels-within-shapes (rare decorative use) — defer to Phase 2.
+**For `aspect="variable"` (most shapes):**
+```
+sw = cellW / w0
+sh = cellH / h0
+ox = 0
+oy = 0
+```
+Arc radii: `rx_scaled = rx * sw`, `ry_scaled = ry * sh`.
 
-### 3.4 Integration in `emitVertex`
+**For `aspect="fixed"` (many icon-style shapes like AWS, Azure, etc.):**
+```
+su = min(cellW / w0, cellH / h0)    // uniform scale
+sw = su,  sh = su
+ox = (cellW - w0 * su) / 2          // centering offset
+oy = (cellH - h0 * su) / 2
+```
+Arc radii: `rx_scaled = rx * su`, `ry_scaled = ry * su` (same factor for both — preserves circle arcs).
 
-After `harvestShape` returns null (headless), before `shapePath`:
+Applying the transform to a coordinate: `xOut = ox + x * sw`, `yOut = oy + y * sh`.
 
+**`direction` style property**: If the cell style has `direction=north` or `direction=south`,
+width and height are swapped when computing the aspect transform:
+```
+if direction == "north" or "south":
+    swap(cellW, cellH) when calling computeAspect
+    then wrap the resulting SVG in <g transform="rotate(-90, cx, cy)"> or <g transform="rotate(90, cx, cy)">
+```
+For `direction=north`: rotate −90°, pivot at `(cellW/2, cellH/2)`.  
+For `direction=south`: rotate +90°, pivot at `(cellW/2, cellH/2)`.  
+For `direction=west`: rotate 180°.  
+`direction=east` is the default (no rotation).
+
+### 3.4 `stencilToSvg(shapeNode, cellW, cellH, style)` — Full Algorithm
+
+**Signature:** `stencilToSvg(shapeNode, cellW, cellH, style) → string | null`
+
+Returns an SVG string, or `null` + pushes a notice if an unsupported feature is encountered.
+
+**Step 1 — Read shape metadata:**
+```
+w0 = parseFloat(shapeNode.getAttribute("w")) || 100
+h0 = parseFloat(shapeNode.getAttribute("h")) || 100
+aspect = shapeNode.getAttribute("aspect") || "variable"
+stencilStrokeWidth = shapeNode.getAttribute("strokewidth")  // may be "inherit" or a number
+```
+
+**Step 2 — Compute aspect transform** via §3.3.
+
+**Step 3 — Compute initial stroke width:**
+```
+if stencilStrokeWidth == "inherit" or null:
+    sw_px = cellStyle.strokeWidth (from parsed style, default 1)
+else:
+    sw_px = parseFloat(stencilStrokeWidth) * min(sw, sh)   // stencil units → px
+```
+
+**Step 4 — Initialize render state stack** (for `<save>`/`<restore>`):
+```
+state = {
+  fillColor:    style.fillColor,
+  strokeColor:  style.strokeColor,
+  strokeWidth:  sw_px,
+  dashed:       style.dashed,
+  dashPattern:  style.dashPattern,
+  lineCap:      style.lineCap || "butt",
+  lineJoin:     style.lineJoin || "miter",
+  miterLimit:   style.miterLimit || 10,
+  alpha:        opacity(style, "opacity"),
+  fontColor:    style.fontColor || "#000000",
+  fontSize:     style.fontSize || 11,
+  fontFamily:   style.fontFamily || "Arial",
+  fontStyle:    style.fontStyle || 0,
+}
+stateStack = []
+```
+
+**Step 5 — Walk `<background>` and `<foreground>` nodes in order**, processing sibling nodes:
+
+The walker operates at the child level of `<background>` and `<foreground>`. At this level,
+nodes are one of: `<path>`, `<rect>`, `<roundrect>`, `<ellipse>`, `<fillstroke>`, `<fill>`,
+`<stroke>`, state-modifier commands, or `<save>`/`<restore>`.
+
+**`<fillstroke>`, `<fill>`, `<stroke>` are siblings of `<path>`, NOT children.** A typical
+stencil has: `<path>…commands…</path>` then `<fillstroke/>` as the next sibling. The walker
+must maintain a "current path accumulator" that is populated by a `<path>` block and then
+consumed by the next `<fillstroke>`/`<fill>`/`<stroke>` sibling.
+
+**Step 6 — Processing `<path>` blocks:**
+
+When the walker encounters a `<path>` node:
+1. Check for `rounded` attribute: if `rounded="1"`, the path uses Bezier rounding of polyline points. This is a distinct rendering mode. **Raise `ExporterUnsupportedStencilFeature` notice and return `null`** for Phase 1 (these are rare but visually distinct — cannot be silently approximated as sharp corners).
+2. Otherwise: walk child nodes in order and build an SVG `d` string:
+   - `<move x y>` → `"M " + fmt(ox+x*sw) + " " + fmt(oy+y*sh)`
+   - `<line x y>` → `"L " + fmt(ox+x*sw) + " " + fmt(oy+y*sh)`
+   - `<curve x1 y1 x2 y2 x3 y3>` → `"C " + (6 scaled values)`
+   - `<quad x1 y1 x2 y2>` → `"Q " + (4 scaled values)`
+   - `<arc rx ry xrot laf sf x y>` → `"A " + fmt(rx*su_or_sw) + " " + fmt(ry*su_or_sh) + " " + xrot + " " + laf + " " + sf + " " + fmt(ox+x*sw) + " " + fmt(oy+y*sh)` (arc radii use uniform scale for `aspect="fixed"`, asymmetric for `aspect="variable"`)
+   - `<close>` → `"Z"`
+3. Store the accumulated `d` string as the current path.
+
+**Step 7 — Processing `<rect>`, `<roundrect>`, `<ellipse>` directly:**
+
+These are self-contained; they become the current path (as SVG element strings, not `d` strings):
+- `<rect x y w h>` → `<rect x="ox+x*sw" y="oy+y*sh" width="w*sw" height="h*sh"/>`
+- `<roundrect x y w h arcsize>` → compute corner radius `r = (arcsize || mxConstants.RECTANGLE_ROUNDING_FACTOR*100) / 100 * min(w*sw, h*sh)` → `<rect ... rx="r" ry="r"/>`
+- `<ellipse x y w h>` → Note: `x`,`y` are the **top-left corner** of the ellipse bounding box: `<ellipse cx="ox+(x+w/2)*sw" cy="oy+(y+h/2)*sh" rx="w/2*sw" ry="h/2*sh"/>`
+
+**Step 8 — Processing paint commands (`<fillstroke>`, `<fill>`, `<stroke>`):**
+
+When the walker encounters a paint command, it takes the current path accumulator and emits an SVG element:
+- Determine fill attr: `fillSvgAttr(state)` — uses `state.fillColor` and gradient if present.
+- Determine stroke attrs: `strokeSvgAttrs(state)` — uses `state.strokeColor`, `state.strokeWidth`, `state.dashed`, etc.
+- For `<fill>`: emit with fill, `stroke="none"`.
+- For `<stroke>`: emit with `fill="none"`, stroke attrs.
+- For `<fillstroke>`: emit with both fill and stroke attrs.
+- Reset the current path accumulator.
+
+**Step 9 — Gradient fill for stencil shapes:**
+
+If `state.fillColor` is paintable AND `style.gradientColor` is paintable, emit a `<linearGradient>` in the SVG `<defs>` block. Reuse the same `<defs>` handling already implemented for the basic-shape rotation path in `emitVertex`. Do not silently drop gradients.
+
+**Step 10 — Processing state modifiers** (all are siblings at the `<background>`/`<foreground>` child level):
+
+| Command | Effect on state |
+|---|---|
+| `<save>` | Push copy of current state onto `stateStack` |
+| `<restore>` | Pop state from `stateStack` |
+| `<strokecolor color="...">` | `state.strokeColor = color` |
+| `<fillcolor color="...">` | `state.fillColor = color` |
+| `<strokewidth width="..." fixed="...">` | `state.strokeWidth = fixed=="1" ? w : w * min(sw,sh)` |
+| `<dashed dashed="...">` | `state.dashed = dashed=="1"` |
+| `<dashpattern pattern="...">` | `state.dashPattern = pattern` |
+| `<linecap cap="...">` | `state.lineCap = cap` (attr name is `cap`) |
+| `<linejoin join="...">` | `state.lineJoin = join` (attr name is `join`) |
+| `<miterlimit limit="...">` | `state.miterLimit = limit` |
+| `<alpha alpha="...">` | `state.alpha = alpha` (note: `fillalpha` and `strokealpha` in stencil XML BOTH map to `alpha` in mxGraph's canvas — there is no separate fill/stroke alpha in the stencil engine) |
+| `<fontcolor color="...">` | `state.fontColor = color` (used if `<text>` encountered) |
+| `<fontsize size="...">` | `state.fontSize = size * min(sw,sh)` (scaled by aspect) |
+| `<fontstyle style="...">` | `state.fontStyle = style` |
+| `<fontfamily family="...">` | `state.fontFamily = family` |
+
+**Step 11 — Unsupported commands** (raise notice + return null):
+
+- `<image>`: requires external image embedding — defer to Phase 3.
+- `<include-shape>`: recursive stencil composition — defer to Phase 3.
+- `<text>`: label-within-shape decorative text — defer to Phase 3.
+- `<path rounded="1">`: Bezier-rounded polylines — defer to Phase 3.
+- Any unrecognized node type: raise `ExporterUnsupportedStencilFeature` notice and return `null`.
+
+**Step 12 — Flip transforms:**
+
+After building the inner SVG, check cell style:
+- `style.flipH == "1"` → wrap inner content in `<g transform="scale(-1,1) translate(-cellW, 0)">`.
+- `style.flipV == "1"` → wrap in `<g transform="scale(1,-1) translate(0, -cellH)">`.
+- `style.stencilFlipH` / `style.stencilFlipV`: same treatment (stencil-specific override).
+
+**Step 13 — Assemble SVG:**
+
+```xml
+<svg xmlns="http://www.w3.org/2000/svg" width="cellW" height="cellH">
+  <defs><!-- linearGradient if needed --></defs>
+  <!-- direction rotation wrapper if needed -->
+  <!-- flip wrapper if needed -->
+  <!-- background paths -->
+  <!-- foreground paths -->
+</svg>
+```
+
+### 3.5 Inline Stencil Shapes (`stencil(base64...)`)
+
+Some cells embed their stencil XML inline in the style string:
+```
+style="shape=stencil(PHNoYXBlIG5hbWU9...)"
+```
+
+The value is the base64-encoded stencil XML. These are used by custom shapes and cells
+copied between draw.io instances.
+
+**Handling in `emitVertex`** (before registry lookup):
 ```javascript
-// Try stencil registry (covers all mxgraph.* shapes)
-var stencilName = style.shape;
-if (stencilName) {
-  var stencilNode = _stencilRegistry.get(stencilName);
-  if (stencilNode) {
-    var svgStr = stencilToSvg(stencilNode, box.w, box.h, style);
-    if (svgStr) {
-      var labelStr = textSvgStr(label, box.w / 2, box.h / 2, style);
-      // wrap label into same SVG or emit separately
-      paint.push({ kind: 'svg', box: box, source: base64(svgStr), aspect: 'preserve' });
-      if (label) { /* emit kind:'text' node over the svg box */ }
-      return;
-    }
-    // svgStr === null means notice was emitted; fall through to bbox fallback
+var shapeVal = style.shape || "";
+if (shapeVal.startsWith("stencil(") && shapeVal.endsWith(")")) {
+  var b64 = shapeVal.slice(8, -1);
+  var xml = Buffer.from(b64, "base64").toString("utf8");
+  var inlineNode = parseStencilXml(xml);  // returns <shape> element
+  if (inlineNode) {
+    // proceed with stencilToSvg(inlineNode, ...)
   }
 }
 ```
 
-Label placement for stencil shapes uses the same rules as for basic shapes: the label is either
-embedded in the SVG (for rotated shapes) or emitted as a separate `kind:'text'` node centered
-on the cell box (non-rotated).
+`parseStencilXml` uses the same XML parser used by the stencil loader (`@xmldom/xmldom`).
+If parsing fails, raise `ExporterUnsupportedShape` notice.
 
-### 3.5 Rotation
+### 3.6 Label Placement
 
-Stencil shapes that are rotated (`style.rotation !== 0`) follow the same pattern as the
-existing rotation fix: the SVG is wrapped in a `<g transform="rotate(deg cx cy)">` with an
-expanded viewport (axis-aligned bounding box of the rotated stencil), and the label is embedded
-in the same SVG. This is identical to what the existing rotation path already does for basic
-shapes. `stencilToSvg` produces the inner shape geometry; the rotation wrapper is applied in
-`emitVertex` as it is today for `shapePath` results.
+For non-rotated stencil shapes, emit a separate `kind:'text'` node centered on the cell box.
+This matches draw.io's default label placement for stencil shapes (mxShape.getLabelMargins
+returns `null` for stencil-based shapes, meaning no inset).
 
-### 3.6 Built-in JS Shapes (Phase 2)
+**Style overrides that change label placement** — these must be checked and respected:
+
+| Style property | Effect | Handling |
+|---|---|---|
+| `labelPosition=left/right` | Label to the left/right of the cell | Adjust text node x position |
+| `verticalLabelPosition=top/bottom` | Label above/below the cell | Adjust text node y position |
+| `labelWidth` | Override label width | Pass to text node width |
+| `align` | Horizontal text alignment | Already handled by existing text rendering |
+| `verticalAlign` | Vertical text alignment | Already handled |
+
+If `labelPosition` or `verticalLabelPosition` is present and non-center, the label box shifts
+outside the cell bounding box. The existing `edgeLabelBox` / `plainLabel` machinery already
+handles this for basic shapes; stencil shapes must follow the same code path.
+
+For rotated stencil shapes (`style.rotation !== 0`), the label is embedded in the SVG exactly
+as it is for basic shapes today (see §3.7).
+
+### 3.7 Rotation
+
+Stencil shapes with `style.rotation !== 0` follow the existing rotation pattern:
+- Compute expanded viewport: `expW = cellW*|cos θ| + cellH*|sin θ|`, `expH = cellW*|sin θ| + cellH*|cos θ|`.
+- `stencilToSvg` produces the inner shape geometry at the original `cellW × cellH` size.
+- Wrap inner SVG content in `<g transform="rotate(deg cx cy)">` where `cx = expW/2`, `cy = expH/2`, and the stencil geometry is offset by `((expW-cellW)/2, (expH-cellH)/2)`.
+- Embed label in the same SVG via `textSvgStr`.
+- Emit single `kind:'svg'` node sized `expW × expH` centered on the cell center point.
+
+### 3.8 Built-in JS Shapes (Phase 2)
 
 A small set of named shapes are defined as JavaScript classes (not stencil XML):
-`hexagon`, `actor` (person), `parallelogram`, `trapezoid`, `cross`, `plus`,
-`double-ellipse`, `star` (mxgraph built-in), `swimlane`, `process`, `triangle`
-(already covered), `line`, `link`, `arrow`.
+`hexagon`, `doubleEllipse`, `actor` (person), `parallelogram`, `trapezoid`, `cross`, `plus`,
+`mxgraph.*` built-in star, `swimlane`, `process`, `arrow`, `line`, `link`.
 
 These are a finite, bounded list (~20-30 shapes). Each will be added to the existing
-`shapePath` function as an additional `else if (name === '...')` branch, computing path data
-from the cell's `w`, `h`, and relevant style properties.
+`shapePath` function as an additional `else if (name === '...')` branch.
 
-Acceptance criterion: the `shapePath` function returns a valid SVG path `d` string for each
-built-in shape, matching the browser-rendered geometry to within the coordinate precision
-already used by the rest of the codebase.
+Acceptance criterion: `shapePath` returns a valid SVG `d` string for each built-in, matching
+the browser-rendered geometry to within the coordinate precision already in use.
 
 ---
 
@@ -207,43 +384,41 @@ already used by the rest of the codebase.
 
 | File | Change |
 |---|---|
-| `tools/native-print-bake/bake.mjs` | Add stencil XML loader: read all `.xml` from `stencils/`, parse, build `Map<name, Element>`, call `exporter.registerStencils(map)` |
-| `src/main/webapp/plugins/nativeprint/exporter.js` | Add `registerStencils(map)`, `stencilToSvg(node, w, h, style)`, and integration in `emitVertex`; extend `shapePath` with ~20 built-in shapes |
-| `tools/native-print-bake/bake.test.mjs` | Add tests: stencil shape bakes to `kind:'svg'` with correct geometry; built-in shapes bake without notice; edge-case stencil features emit correct notice |
-| `src/main/native-print-engine/tests/fixtures/labels/master-test.drawio` | Extend with one representative stencil shape (e.g. `mxgraph.flowchart.start_1`) and one built-in (e.g. `hexagon`) |
+| `tools/native-print-bake/bake.mjs` | Add stencil XML loader: read `stencils/` recursively, parse with `@xmldom/xmldom`, build `Map<key, Element>` using correct key formula (§3.2), call `exporter.registerStencils(map)` |
+| `src/main/webapp/plugins/nativeprint/exporter.js` | Add `registerStencils(map)`, `computeAspect(w0,h0,cellW,cellH,aspect)`, `stencilToSvg(node,w,h,style)`, inline stencil decoder, and integration in `emitVertex`; extend `shapePath` with ~20 built-in shapes |
+| `tools/native-print-bake/bake.test.mjs` | Add tests (see §7) |
+| `src/main/native-print-engine/tests/fixtures/labels/master-test.drawio` | Add representative stencil shape + built-in shape |
 
 No changes to the C++ engine, contract schema, or `docs/PRINT_ENGINE_SPEC_v1.1.md`.  
-The `kind:'svg'` contract node type already exists and is already handled by `pxContractToUm`.
+`kind:'svg'` already exists in v1.1 and is already handled by `pxContractToUm`.
 
 ---
 
 ## 5. Contract Impact
 
-**None.** The `kind:'svg'` node type already exists in the v1.1 contract schema and is already
-handled by the C++ engine (`pxContractToUm` line 74-77 scales the box; SVG coordinates are
-unitless and scaled by the engine to fit the um box). No schema version bump required.
+**None.** `kind:'svg'` already exists and is handled by the C++ engine. No schema version bump.
 
 ---
 
-## 6. Stencil Name Mapping Reference
+## 6. Stencil Name Mapping — Authoritative Reference
 
-Draw.io resolves `style="shape=X"` as follows (from `mxCellRenderer`):
+Draw.io resolves `style="shape=X"` in this priority order:
 
-1. Look up `X` in `mxStencilRegistry.stencils` → stencil XML instance.
-2. If not found, look up `X` in `mxCellRenderer.defaultShapes` → built-in JS class.
-3. If not found → fall back to rectangle.
+1. Check if `X` starts with `"stencil("` → inline base64 XML (§3.5).
+2. Look up `X` in `mxStencilRegistry.stencils` → registered stencil XML.
+3. Look up `X` in `mxCellRenderer.defaultShapes` → built-in JS class (Phase 2).
+4. Fall back to rectangle (current behavior; continues to apply for any remaining gaps).
 
-The stencil registry is populated from the XML files. Naming convention in draw.io:
+The key format for step 2, derived from `parseStencilSet` in `Graph.js`:
+```
+key = xml_shapes_element_name_attr.toLowerCase()
+    + "."
+    + shape_name_attr.replace(/ /g, "_").toLowerCase()
+```
 
-- `stencils/basic.xml` → shapes registered as `shape` (no prefix, plain names like `"parallelogram"`)
-- `stencils/flowchart.xml` → `"mxgraph.flowchart.shape_name"`
-- `stencils/aws2/compute.xml` → `"mxgraph.aws2.compute.shape_name"`
-
-**Important:** The exact key format is determined by how draw.io's `Graph.js`/`mxStencilRegistry`
-registers stencils at load time, not by the file hierarchy alone. The bake loader must replicate
-this key format exactly, or shapes will not match. The stencil loading code in
-`src/main/webapp/js/diagramly/Graph.js` (search `mxStencilRegistry.loadStencilSet`) documents
-the exact URL → name mapping. The bake loader must mirror this.
+The XML `<shapes name="...">` root attribute is the authoritative package prefix. The file path
+is not part of the key. The bake loader reads this attribute to build keys that exactly match
+what the browser registers at runtime.
 
 ---
 
@@ -251,33 +426,41 @@ the exact URL → name mapping. The bake loader must mirror this.
 
 ### 7.1 Unit Tests (bake.test.mjs, node --test)
 
-For each new capability, add a test that:
-1. Creates a minimal `.drawio` XML string with one cell using the target shape style.
-2. Calls `bake(xml)`.
-3. Asserts: contract has a `kind:'svg'` node, no degradation notices for supported shapes, correct label in text or svg node.
+For each new capability:
+1. Create a minimal `.drawio` XML string with one cell using the target style.
+2. Call `bake(xml)`.
+3. Assert: correct contract node type, no unexpected notices, label preserved.
 
-Test cases required:
-- Basic stencil shape: `shape=mxgraph.flowchart.start_1` → `kind:'svg'`, no notice
-- Stencil with fill+stroke: `shape=mxgraph.basic.star` → `kind:'svg'`, SVG contains `<path`
-- Stencil with rotation: `shape=mxgraph.flowchart.card` + `rotation=30` → `kind:'svg'`, SVG contains `rotate(`
-- Built-in: `shape=hexagon` → `kind:'svg'` or path node, no notice
-- Unsupported stencil feature (mock): `<image>` inside stencil → `ExporterUnsupportedStencilFeature` notice
-- Label on stencil shape: cell with value `"Hello"` → label text preserved in contract
+Required test cases:
 
-### 7.2 Golden Contract Test (C1 equivalent)
+| Test | Style | Expected |
+|---|---|---|
+| Variable-aspect stencil | `shape=mxgraph.flowchart.start_1` | `kind:'svg'`, no notice |
+| Fixed-aspect stencil (centering) | `shape=mxgraph.aws2.general.generic_office_365` (or any `aspect="fixed"`) | `kind:'svg'`, SVG width=height when cell is square |
+| Stencil with gradient | `shape=mxgraph.basic.star` + `gradientColor=#ff0000` | `kind:'svg'`, SVG defs contains `linearGradient` |
+| Stencil with rotation | `shape=mxgraph.flowchart.card` + `rotation=30` | `kind:'svg'`, SVG contains `rotate(30` |
+| Stencil with direction | `shape=mxgraph.flowchart.start_1` + `direction=north` | `kind:'svg'`, SVG contains rotation transform |
+| Inline base64 stencil | `shape=stencil(<base64 of simple shape XML>)` | `kind:'svg'`, no notice |
+| Unsupported: `<image>` in stencil | mock stencil node with `<image>` child | `ExporterUnsupportedStencilFeature` notice |
+| Unsupported: `<path rounded="1">` | mock stencil with `rounded="1"` | `ExporterUnsupportedStencilFeature` notice |
+| Built-in hexagon | `shape=hexagon` | no `ExporterUnsupportedShape` notice |
+| Label on stencil shape | any stencil + `value="Hello"` | label text present in contract |
+| `labelPosition=right` | stencil + `labelPosition=right` | text node x > cell right edge |
 
-Extend `master-test.drawio` with a stencil shape and a built-in shape.  
-Generate a new golden contract. C1 test in `bake.test.mjs` verifies bake output matches golden.
+### 7.2 Golden Contract Test (C1)
+
+Extend `master-test.drawio` with one stencil shape (variable-aspect), one fixed-aspect stencil,
+and one built-in. Regenerate golden. C1 test in `bake.test.mjs` verifies bake output matches.
 
 ### 7.3 WYSIWYG Structural Check (wysiwyg-compare.mjs)
 
 Extend `compare()` with:
-- Stencil shape cells in `master-test.drawio` produce a `kind:'svg'` node each.
-- No `ExporterUnsupportedShape` notices in bake output.
+- Stencil shape cells produce `kind:'svg'` nodes (no `ExporterUnsupportedShape` notices).
+- SVG defs contain gradient elements for cells with `gradientColor`.
 
 ### 7.4 Engine Tests (ctest)
 
-No new C++ tests needed — `kind:'svg'` already tested. Existing tests must continue to pass.
+No new C++ tests needed. Existing tests must pass unchanged.
 
 ---
 
@@ -287,53 +470,53 @@ No new C++ tests needed — `kind:'svg'` already tested. Existing tests must con
 |---|---|---|
 | Basic shapes (rectangle, ellipse, etc.) | ~8 types | ✓ Already done |
 | Built-in JS shapes (hexagon, actor, etc.) | ~20-30 | ✓ Phase 2 |
-| Stencil XML shapes (AWS, BPMN, Cisco, etc.) | ~3,798 | ✓ Phase 1 |
-| Stencil shapes with unsupported features (`<image>`, `<include-shape>`) | ~few dozen | Loud notice + D5 refusal |
+| Stencil XML — variable-aspect | ~2,500+ | ✓ Phase 1b |
+| Stencil XML — fixed-aspect | ~1,200+ | ✓ Phase 1b (computeAspect) |
+| Stencil with direction/flip | spread across above | ✓ Phase 1b (§3.3/§3.4 step 12) |
+| Inline `stencil(base64...)` shapes | unknown count | ✓ Phase 1a (§3.5) |
+| Stencil with `<image>` command | ~few dozen | Loud notice + D5 refusal (Phase 3) |
+| Stencil with `<include-shape>` | ~few dozen | Loud notice + D5 refusal (Phase 3) |
+| Stencil with `<path rounded="1">` | ~handful | Loud notice + D5 refusal (Phase 3) |
 | **Total faithfully printable** | **~3,820+** | **100% or loud refusal** |
 
 ---
 
 ## 9. Do-Not List
 
-- Do **not** run `mxSvgCanvas2D` headlessly (complex DOM dependencies; not needed).
-- Do **not** run any mxGraph JS class (`mxStencil`, `mxShape`, `mxCellRenderer`) headlessly.
-- Do **not** add `window`, `document.body`, layout measurement to the SVG shim.
+- Do **not** run `mxSvgCanvas2D`, `mxStencil`, `mxShape`, or `mxCellRenderer` headlessly.
+- Do **not** add `window`, `document.body`, or layout measurement to the SVG shim.
 - Do **not** change the engine contract schema or C++ engine code.
 - Do **not** add a pixel-comparison oracle or screenshot diff.
-- Do **not** add a browser (headless or otherwise) at any point.
-- Do **not** silently fall back to bounding box for any stencil shape that can be rendered.
+- Do **not** add a browser (headless or otherwise).
+- Do **not** silently approximate `aspect="fixed"` centering — compute it exactly (§3.3).
+- Do **not** silently drop gradient fills for stencil shapes — emit gradient SVG or notice.
+- Do **not** silently approximate `<path rounded="1">` as sharp corners — raise notice.
 
 ---
 
-## 10. Open Questions for Advisor Review
+## 10. Implementation Order
 
-1. **Stencil name key format**: The spec says the bake loader must mirror `mxStencilRegistry`'s
-   naming convention exactly. Is the mapping described in §6 accurate? Are there edge cases
-   (e.g. shapes registered without a package prefix)?
-
-2. **`<image>` in stencils**: Should Phase 1 wire `<image>` stencil commands through the
-   existing `embedExternalImages` path (making them printable from day 1), or raise a notice
-   and defer? The carve-out in `CLAUDE.md §2` permits canvas for image embedding specifically.
-
-3. **Label placement**: For non-rotated stencil shapes, the spec emits a separate `kind:'text'`
-   node centered on the cell box. Is this correct for all stencil shapes? Some stencils define
-   internal label areas — should the spec ignore those and always center?
-
-4. **`aspect="fixed"` stencils**: Some shapes declare `aspect="fixed"`, meaning the shape must
-   maintain its aspect ratio. The bake currently ignores aspect constraints (cell `w` and `h`
-   come from the diagram). Should the renderer silently stretch (matching current browser
-   behavior, which also stretches), or preserve aspect and center?
-
-5. **Phase ordering**: Is it correct to do Phase 1 (stencil XML) before Phase 2 (built-in JS
-   shapes)? Built-in shapes are fewer but may be more commonly used in existing diagrams.
+1. **Phase 1a** — Stencil loader in `bake.mjs`: read XML, build registry with correct key formula; inline stencil base64 decoder in `emitVertex`.
+2. **Phase 1b** — `computeAspect` and `stencilToSvg` in `exporter.js`: `<path>` with `<move>/<line>/<curve>/<quad>/<arc>/<close>`, `<rect>/<roundrect>/<ellipse>`, state modifiers, fill/stroke/fillstroke paint commands, gradient support, direction/flip wrappers. Wire into `emitVertex`.
+3. **Phase 1c** — Tests: unit tests per §7.1, golden contract update, wysiwyg-compare extension.
+4. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests.
+5. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`; `<include-shape>` recursion.
 
 ---
 
-## 11. Implementation Order
+## Appendix: Advisor Review Summary (2026-05-25)
 
-1. **Phase 1a** — Stencil loader in `bake.mjs`: read XML files, build registry, call `registerStencils`.
-2. **Phase 1b** — `stencilToSvg` function in `exporter.js` with `<path>` command support only (covers ~95% of stencil shapes).
-3. **Phase 1c** — Add `<rect>`, `<roundrect>`, `<ellipse>`, state modifiers (`<save>`/`<restore>`, `<strokecolor>`, etc.).
-4. **Phase 1d** — Wire into `emitVertex`; add unit tests; update master-test fixture.
-5. **Phase 2** — Extend `shapePath` for ~20 built-in shapes; add unit tests.
-6. **Phase 3** — `<include-shape>` recursion; `<image>` stencil command via `embedExternalImages`.
+The initial draft had 10 defects, all corrected in this revision:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | Key format derived from file path, not `<shapes name="...">` attr | §3.2 rewritten with correct formula |
+| 2 | No space→underscore replacement in shape names | Added to §3.2 key formula |
+| 3 | `aspect="fixed"` centering offset missing | §3.3 `computeAspect` added |
+| 4 | `direction` / `flipH` / `flipV` transforms not mentioned | §3.3 direction handling + §3.4 step 12 |
+| 5 | Gradient fills silently dropped | §3.4 step 9 gradient handling added |
+| 6 | `<path rounded="1">` silently approximated as sharp | §3.4 step 6: raise notice for rounded paths |
+| 7 | Inline `stencil(base64...)` shapes not handled | §3.5 added |
+| 8 | `strokewidth="inherit"` initial setup not described | §3.4 step 3 added |
+| 9 | `labelPosition`/`verticalLabelPosition` not handled | §3.6 style overrides table added |
+| 10 | `<fillstroke>` described as child of `<path>` (wrong — it's a sibling) | §3.4 step 5 clarified with explicit sibling walker model |
