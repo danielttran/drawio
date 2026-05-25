@@ -513,14 +513,14 @@ No new C++ tests needed. Existing tests must pass unchanged.
    Wire into `emitVertex`.
 
 4. **Phase 1c** — Bake all master test labels, verify zero `ExporterUnsupportedShape` notices
-   across all files (§13 Gate 1). Generate and commit golden contracts for all files.
+   across all files (§12.3 Gate 1). Generate and commit golden contracts for all files.
 
-5. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests; re-run §13 Gate 1.
+5. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests; re-run §12.3 Gate 1.
 
 6. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`;
-   `<include-shape>` recursion; re-run §13 Gate 1.
+   `<include-shape>` recursion; re-run §12.3 Gate 1.
 
-7. **Done Gate** — All §13 acceptance criteria pass. Only then is the implementation complete.
+7. **Done Gate** — All §12.5 Done Declaration criteria pass. Only then is the implementation complete.
 
 ---
 
@@ -535,14 +535,25 @@ Each label file is a `.drawio` diagram containing shapes arranged on a grid, eve
 no two shapes overlap, with varied rotation angles. Every cell carries a text label that names
 the shape, enabling the WYSIWYG checker to verify label preservation.
 
-Grid layout rule: shapes are placed on a grid with 20 px gutters. Each cell is 120 × 100 px
-unless the shape has a natural aspect ratio (aspect="fixed"), in which case use 100 × 100 px.
-Rows wrap every 8 shapes. Canvas width is auto-sized to fit all shapes; `pageWidth` and
-`pageHeight` in `mxGraphModel` are set to the canvas extent.
+Grid layout rule: shapes are placed on a regular grid. Each cell is 120 × 100 px unless the
+shape has `aspect="fixed"`, in which case use 100 × 100 px. The grid pitch (center-to-center
+distance) is: **220 px horizontally, 200 px vertically**. This pitch is derived from the
+maximum axis-aligned bounding box of a 120×100 cell rotated 45° (~155×155 px) plus a 60 px
+safety margin on each side, giving ample clearance for the most extreme rotation. Rows wrap
+every 8 shapes.
+
+Explicit positioning: cell `(col, row)` (0-indexed) is placed at:
+```
+x = 20 + col * 220
+y = 20 + row * 200
+```
+These are the `x`,`y` values in `<mxGeometry>` (top-left corner of the cell bounding box).
+
+Canvas size: `pageWidth = 8 * 220 + 40`, `pageHeight = numRows * 200 + 40`.
 
 Rotation rule: within each file, apply a mix of 0°, 15°, 30°, 45°, −20°, and −35° rotations
 spread across cells so that every rotation-sensitive code path is exercised at least once per
-file.
+file. No two adjacent cells (same row) both use the same extreme rotation (±45°).
 
 ### 11.2 Test Label Files
 
@@ -602,7 +613,7 @@ Cells (8 per row, 120×100 px each):
 | f13 | `shape=mxgraph.flowchart.card` | `Card` | 30° |
 | f14 | `shape=mxgraph.flowchart.punched_tape` | `Tape` | 0° |
 | f15 | `shape=mxgraph.flowchart.connector` | `Connector` | 0° |
-| f16 | `shape=mxgraph.flowchart.summing_junction` | `Sum Junct` | 0° |
+| f16 | `shape=mxgraph.flowchart.summing_function` | `Sum Func` | 0° |
 | f17 | `shape=mxgraph.flowchart.or` | `Or` | 0° |
 | f18 | `shape=mxgraph.flowchart.collate` | `Collate` | 0° |
 | f19 | `shape=mxgraph.flowchart.sort` | `Sort` | −20° |
@@ -616,21 +627,22 @@ Cells (8 per row, 120×100 px each):
 
 #### `master-test-arrows-bpmn.drawio` *(new)*
 
-**Purpose:** Covers `arrows.xml` and `bpmn.xml`. Exercises a mix of `aspect="variable"` and
-`aspect="fixed"` shapes, and path commands including arc and curve.
+**Purpose:** Covers `arrows.xml` (`<shapes name="mxgraph.arrows">`) and `bpmn.xml`. Exercises
+a mix of `aspect="variable"` and `aspect="fixed"` shapes, and path commands including arc and
+curve.
 
 Arrows section (120×80 px, first two rows):
 
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|
-| a01 | `shape=mxgraph.arrows2.arrow` | `Arrow` | 0° |
-| a02 | `shape=mxgraph.arrows2.arrow;direction=west` | `Arrow W` | 0° |
-| a03 | `shape=mxgraph.arrows2.arrow;direction=north` | `Arrow N` | 0° |
-| a04 | `shape=mxgraph.arrows2.arrow;direction=south` | `Arrow S` | 0° |
-| a05 | `shape=mxgraph.arrows2.arrow;flipH=1` | `Arrow FH` | 0° |
-| a06 | `shape=mxgraph.arrows2.arrow;rotation=45` | `Arrow 45` | 45° |
-| a07 | `shape=mxgraph.arrows2.bent_arrow` | `Bent Arrow` | 0° |
-| a08 | `shape=mxgraph.arrows2.bent_arrow;rotation=-30` | `Bent −30` | −30° |
+| a01 | `shape=mxgraph.arrows.arrow_down` | `Arrow Down` | 0° |
+| a02 | `shape=mxgraph.arrows.arrow_left` | `Arrow Left` | 0° |
+| a03 | `shape=mxgraph.arrows.arrow_up` | `Arrow Up` | 0° |
+| a04 | `shape=mxgraph.arrows.arrow_right` | `Arrow Right` | 0° |
+| a05 | `shape=mxgraph.arrows.arrow_down;flipH=1` | `Arrow FH` | 0° |
+| a06 | `shape=mxgraph.arrows.arrow_right;rotation=45` | `Arrow 45` | 45° |
+| a07 | `shape=mxgraph.arrows.bent_right_arrow` | `Bent Right` | 0° |
+| a08 | `shape=mxgraph.arrows.bent_left_arrow;rotation=-30` | `Bent L −30` | −30° |
 
 BPMN section (100×100 px, next rows):
 
@@ -649,48 +661,51 @@ BPMN section (100×100 px, next rows):
 
 #### `master-test-aws.drawio` *(new)*
 
-**Purpose:** Covers `aws4.xml` and representative shapes from `aws2/` subdirectory.
-Most AWS shapes are `aspect="fixed"` (icon shapes) — this file primarily tests the
-`computeAspect` centering path with square cells (100×100 px).
-
+**Purpose:** Covers `aws4.xml` (`<shapes name="mxgraph.aws4">`). All AWS4 shapes are
+`aspect="fixed"` — this file primarily tests the `computeAspect` centering path.
 All cells: 100×100 px, `fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff`.
+
+Note: AWS4 shapes are referenced directly by their stencil name (e.g. `shape=mxgraph.aws4.lambda`).
+The `resourceIcon;resIcon=` pattern used in the draw.io UI palette is a composite/parameterised
+container that is NOT a stencil shape — it does not exist in the stencil registry and must not
+be used here.
 
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|
-| w01 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda` | `Lambda` | 0° |
-| w02 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3` | `S3` | 0° |
-| w03 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2` | `EC2` | 0° |
-| w04 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.rds` | `RDS` | 0° |
-| w05 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb` | `DynamoDB` | 15° |
-| w06 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs` | `SQS` | 0° |
-| w07 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns` | `SNS` | −15° |
-| w08 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch` | `CloudWatch` | 0° |
-| w09 | `shape=mxgraph.aws4.group` | `Group` | 0° |
-| w10 | `shape=mxgraph.aws4.traditional_server` | `Server` | 0° |
-| w11 | `shape=mxgraph.aws4.user` | `User` | 0° |
-| w12 | `shape=mxgraph.aws4.generic_saml_idp` | `SAML IdP` | 30° |
+| w01 | `shape=mxgraph.aws4.lambda` | `Lambda` | 0° |
+| w02 | `shape=mxgraph.aws4.s3` | `S3` | 0° |
+| w03 | `shape=mxgraph.aws4.ec2` | `EC2` | 0° |
+| w04 | `shape=mxgraph.aws4.rds` | `RDS` | 0° |
+| w05 | `shape=mxgraph.aws4.dynamodb` | `DynamoDB` | 15° |
+| w06 | `shape=mxgraph.aws4.sqs` | `SQS` | 0° |
+| w07 | `shape=mxgraph.aws4.sns` | `SNS` | −15° |
+| w08 | `shape=mxgraph.aws4.cloudwatch` | `CloudWatch` | 0° |
+| w09 | `shape=mxgraph.aws4.api_gateway` | `API GW` | 0° |
+| w10 | `shape=mxgraph.aws4.general` | `General` | 0° |
+| w11 | `shape=mxgraph.aws4.vpc` | `VPC` | 0° |
+| w12 | `shape=mxgraph.aws4.route_53` | `Route 53` | 30° |
 
 ---
 
 #### `master-test-network.drawio` *(new)*
 
-**Purpose:** Covers `networks.xml`, `networks2.xml`, and representative Cisco shapes.
-Mix of `aspect="fixed"` and `aspect="variable"`. Cells: 100×100 px.
+**Purpose:** Covers `networks.xml` (`<shapes name="mxgraph.networks">`) and representative
+Cisco shapes. Mix of `aspect="variable"` shapes. Cells: 100×100 px.
 
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|
-| n01 | `shape=mxgraph.network.server` | `Server` | 0° |
-| n02 | `shape=mxgraph.network.router` | `Router` | 0° |
-| n03 | `shape=mxgraph.network.switch` | `Switch` | 0° |
-| n04 | `shape=mxgraph.network.firewall` | `Firewall` | 0° |
-| n05 | `shape=mxgraph.network.wireless_access_point` | `WAP` | 15° |
-| n06 | `shape=mxgraph.network.laptop` | `Laptop` | 0° |
-| n07 | `shape=mxgraph.network.workstation` | `Workstation` | 0° |
-| n08 | `shape=mxgraph.network.cloud` | `Cloud` | −15° |
-| n09 | `shape=mxgraph.cisco.computers_and_peripherals.pc` | `Cisco PC` | 0° |
-| n10 | `shape=mxgraph.cisco.routers.router` | `Cisco Router` | 0° |
-| n11 | `shape=mxgraph.cisco.switches.workgroup_switch` | `Cisco Switch` | 0° |
-| n12 | `shape=mxgraph.cisco.firewalls.firewall` | `Cisco FW` | 20° |
+| n01 | `shape=mxgraph.networks.server` | `Server` | 0° |
+| n02 | `shape=mxgraph.networks.router` | `Router` | 0° |
+| n03 | `shape=mxgraph.networks.hub` | `Hub` | 0° |
+| n04 | `shape=mxgraph.networks.firewall` | `Firewall` | 0° |
+| n05 | `shape=mxgraph.networks.laptop` | `Laptop` | 15° |
+| n06 | `shape=mxgraph.networks.desktop_pc` | `Desktop PC` | 0° |
+| n07 | `shape=mxgraph.networks.cloud` | `Cloud` | −15° |
+| n08 | `shape=mxgraph.networks.load_balancer` | `Load Bal` | 0° |
+| n09 | `shape=mxgraph.cisco.computers_and_peripherals.laptop` | `Cisco Laptop` | 0° |
+| n10 | `shape=mxgraph.cisco.routers.atm_router` | `Cisco Router` | 0° |
+| n11 | `shape=mxgraph.cisco.switches.atm_switch` | `Cisco Switch` | 0° |
+| n12 | `shape=mxgraph.cisco.security.firewall` | `Cisco FW` | 20° |
 
 ---
 
@@ -747,9 +762,16 @@ These shapes are known to use stencil features deferred to Phase 3. Including th
 test labels would produce legitimate notices and mask real failures. They are tracked here so
 they can be added to a `master-test-phase3.drawio` file when Phase 3 is implemented.
 
-- Any shape from `mxgraph.aws4.resourceIcon` group that uses `<include-shape>` internally.
 - Shapes with `<image>` stencil commands (identified by grepping the stencil XML for `<image`).
+- Shapes with `<include-shape>` stencil commands.
 - Shapes with `<path rounded="1">` (identified by grepping for `rounded="1"`).
+
+**Validation requirement:** Before running Gate 1 (§12.3), the `wysiwyg-compare.mjs --all`
+tool must scan each test label `.drawio` file and explicitly error if any cell's shape name
+maps to a stencil that contains an excluded command (`<image>`, `<include-shape>`, or
+`<path rounded="1">`). This prevents excluded shapes from slipping into Phase 1 test files
+undetected and masking real failures with expected notices. Implement this as a pre-Gate-1
+validation step in `wysiwyg-compare.mjs`.
 
 ---
 
@@ -844,39 +866,9 @@ The implementation is **done** when ALL of the following are true:
 
 ---
 
-## 10. Implementation Order (updated)
+## Appendix: Advisor Review Summary
 
-**TEST LABELS FIRST.** No implementation code may be written until all master test label
-`.drawio` files described in §11 exist on disk and are committed. This is a hard gate.
-
-1. **Gate 0 — Create all master test labels** (§11): create each `.drawio` file with the
-   shapes specified, commit to `src/main/native-print-engine/tests/fixtures/labels/`.
-   Verify each file opens correctly in draw.io (visual inspection at this stage only; bake
-   will fail until implementation exists — that is expected and acceptable at this gate).
-
-2. **Phase 1a** — Stencil loader in `bake.mjs`: read XML, build registry with correct key
-   formula (§3.2); inline stencil base64 decoder in `emitVertex`.
-
-3. **Phase 1b** — `computeAspect` and `stencilToSvg` in `exporter.js`: `<path>` with
-   `<move>/<line>/<curve>/<quad>/<arc>/<close>`, `<rect>/<roundrect>/<ellipse>`, state
-   modifiers, fill/stroke/fillstroke paint commands, gradient support, direction/flip wrappers.
-   Wire into `emitVertex`.
-
-4. **Phase 1c** — Bake all master test labels, verify zero `ExporterUnsupportedShape` notices
-   across all files (§13 Gate 1). Generate and commit golden contracts for all files.
-
-5. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests; re-run §13 Gate 1.
-
-6. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`;
-   `<include-shape>` recursion; re-run §13 Gate 1.
-
-7. **Done Gate** — All §13 acceptance criteria pass. Only then is the implementation complete.
-
----
-
-## Appendix: Advisor Review Summary (2026-05-25)
-
-The initial draft had 10 defects, all corrected in this revision:
+### Review 1 (2026-05-25) — Core spec, 10 defects corrected
 
 | # | Defect | Fix |
 |---|---|---|
@@ -890,3 +882,16 @@ The initial draft had 10 defects, all corrected in this revision:
 | 8 | `strokewidth="inherit"` initial setup not described | §3.4 step 3 added |
 | 9 | `labelPosition`/`verticalLabelPosition` not handled | §3.6 style overrides table added |
 | 10 | `<fillstroke>` described as child of `<path>` (wrong — it's a sibling) | §3.4 step 5 clarified with explicit sibling walker model |
+
+### Review 2 (2026-05-25) — Test label suite, 8 defects corrected
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | `mxgraph.arrows2.*` package doesn't exist; correct is `mxgraph.arrows` | §11.2 arrows table rewritten with verified shape names from `arrows.xml` |
+| 2 | `summing_junction` → `summing_function` (actual XML name is "Summing Function") | f16 cell corrected |
+| 3 | AWS `resourceIcon` shape doesn't exist in stencil registry; is a UI container | §11.2 AWS table rewritten using direct `mxgraph.aws4.*` shape names |
+| 4 | `mxgraph.network.*` → `mxgraph.networks.*` (package name has trailing 's'); cisco shapes used wrong names | §11.2 network table corrected with verified shape/package names |
+| 5 | Grid overlap unspecified: 20 px gutter insufficient for 45° rotated cells (~155 px bbox) | §11.1 grid pitch changed to 220×200 px with explicit coordinate formula |
+| 6 | `§13` cross-references (section doesn't exist) | All `§13` replaced with `§12.3` or `§12.5` |
+| 7 | Duplicate §10 section (merge error) | Duplicate removed; single §10 retained |
+| 8 | Excluded shapes validation unspecified: slipped-in excluded shapes would silently corrupt Gate 1 | §11.4 adds mandatory pre-Gate-1 validation scan in `wysiwyg-compare.mjs` |
