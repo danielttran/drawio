@@ -1,0 +1,256 @@
+{
+  "schema": {
+    "major": 1,
+    "minor": 1
+  },
+  "document": {
+    "units": "um",
+    "pages": [
+      {
+        "id": "page-1",
+        "size": {
+          "w": 105833.333333,
+          "h": 52916.666667
+        },
+        "tiles": [
+          {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "size": {
+              "w": 105833.333333,
+              "h": 52916.666667
+            }
+          }
+        ],
+        "paint": [
+          {
+            "kind": "path",
+            "d": "M 0 0 L 21166.666667 0 L 21166.666667 10583.333333 L 0 10583.333333 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#f8cecc",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#b85450",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 10583.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Rect"
+              ]
+            }
+          },
+          {
+            "kind": "path",
+            "d": "M 26458.333333 5291.666667 A 10583.333333 5291.666667 0 1 0 47625 5291.666667 A 10583.333333 5291.666667 0 1 0 26458.333333 5291.666667 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#d5e8d4",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#82b366",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 26458.333333,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 10583.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Ellipse"
+              ]
+            }
+          },
+          {
+            "kind": "path",
+            "d": "M 63500 0 L 74083.333333 5291.666667 L 63500 10583.333333 L 52916.666667 5291.666667 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#dae8fc",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#6c8ebf",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 52916.666667,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 10583.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Diamond"
+              ]
+            }
+          },
+          {
+            "kind": "path",
+            "d": "M 80645 0 L 99271.666667 0 A 1270 1270 0 0 1 100541.666667 1270 L 100541.666667 9313.333333 A 1270 1270 0 0 1 99271.666667 10583.333333 L 80645 10583.333333 A 1270 1270 0 0 1 79375 9313.333333 L 79375 1270 A 1270 1270 0 0 1 80645 0 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#fff2cc",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#d6b656",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "round",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 79375,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 10583.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Rounded"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 15875,
+              "w": 31750,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "center",
+              "v": "middle"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Text label"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

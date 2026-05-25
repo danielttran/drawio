@@ -305,3 +305,102 @@ test('bake: schema minor is 1 and units are um', () => {
   assert.equal(contract.schema.minor, 1);
   assert.equal(contract.document.units, 'um');
 });
+
+// --- C1: golden match for shapes corpus ---
+
+const shapesDrawio = join(fixtureDir, 'shapes.drawio');
+const shapesGolden = join(fixtureDir, 'shapes.contract.golden.json');
+
+test('C1: bake output matches shapes.contract.golden.json', async () => {
+  const xml    = await readFile(shapesDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(shapesGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden,
+    'shapes bake output diverged from golden');
+});
+
+// --- C3: structural invariants (WYSIWYG-by-construction) ---
+// These run against the bake output and verify that every labelled cell
+// maps faithfully to paint nodes — no silent drops, no re-derived geometry.
+
+test('C3: every vertex with a non-empty value has a text paint node', async () => {
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { cells } = parseDrawio(xml);
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const textNodes = paint.filter((n) => n.kind === 'text');
+
+  // Collect all labelled vertices (non-empty value, skip layers/root)
+  const labelledCells = Object.values(cells).filter(
+    (c) => c.vertex && c.value && c.value.trim() !== '' && c.parent !== null
+  );
+  assert.ok(labelledCells.length > 0, 'fixture should have labelled cells');
+
+  // Each labelled cell must have at least one text node matching its label
+  for (const cell of labelledCells) {
+    const label = cell.value.trim();
+    const found = textNodes.some((n) => {
+      const lines = n.content && n.content.lines;
+      return Array.isArray(lines) && lines.some((l) => l.includes(label));
+    });
+    assert.ok(found, `no text node found for label "${label}" (cell id=${cell.id})`);
+  }
+});
+
+test('C3: standard shapes produce no ExporterUnsupportedShape notice', async () => {
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0,
+    `unexpected ExporterUnsupportedShape: ${unsupported.map((n) => n.detail && n.detail.detail).join('; ')}`);
+});
+
+test('C3: all paint nodes have strictly positive box dimensions (where applicable)', async () => {
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const boxKinds = new Set(['text', 'image', 'svg', 'barcode']);
+  for (const node of paint) {
+    if (!boxKinds.has(node.kind)) continue;
+    assert.ok(node.box && node.box.w > 0 && node.box.h > 0,
+      `${node.kind} node has non-positive box: ${JSON.stringify(node.box)}`);
+  }
+});
+
+test('C3: simple.drawio — vertex count equals geometric-shape paint-node count', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { cells } = parseDrawio(xml);
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+
+  // Count visible vertices (not root/layer, with geometry)
+  const visibleVertices = Object.values(cells).filter(
+    (c) => c.vertex && c.geometry && c.geometry.width > 0 && c.geometry.height > 0
+      && c.parent !== null
+  );
+
+  // For shapes, the path paint nodes correspond to shape bodies;
+  // text nodes correspond to labels; shape='text' cells have no path body.
+  const nonTextShapes = visibleVertices.filter((c) => c.style.shape !== 'text');
+  const pathNodes = paint.filter((n) => n.kind === 'path');
+  // Each non-text shape should emit at least one path node (some emit multiple).
+  assert.ok(pathNodes.length >= nonTextShapes.length,
+    `expected ≥${nonTextShapes.length} path nodes, got ${pathNodes.length}`);
+});
+
+test('C3: bake output passes validate-contract', async () => {
+  // Run the validator on a tmp file to confirm C3 at the contract schema level.
+  const { execFile } = await import('node:child_process');
+  const { writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { promisify } = await import('node:util');
+  const execFileP = promisify(execFile);
+  const tmp = join(tmpdir(), 'bake-c3-test.json');
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { contract } = bake(xml);
+  await writeFile(tmp, JSON.stringify(contract));
+  const scriptPath = resolve(here, '../native-print-validate-contract.mjs');
+  const r = await execFileP(process.execPath, [scriptPath, tmp]).catch((e) => e);
+  assert.equal(r.code ?? 0, 0,
+    `validate-contract failed: ${r.stdout || ''}`);
+});

@@ -1,0 +1,25 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="400" pageHeight="200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="2" value="Rect" style="rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="10" y="10" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="3" value="Ellipse" style="ellipse;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="110" y="10" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="4" value="Diamond" style="rhombus;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="210" y="10" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="5" value="Rounded" style="rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="310" y="10" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="6" value="Text label" style="text;html=0;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="10" y="70" width="120" height="30" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
