@@ -439,6 +439,54 @@ AnimatedSvgFrozen notice posture).
 
 ---
 
+## Stencil Shape Coverage (2026-05-25 — Phase 1 complete)
+
+**Branch:** `claude/native-print-unattended-5qWWK`
+
+**Problem solved:** The headless bake (Node.js) previously produced `ExporterUnsupportedShape`
+for any `shape=mxgraph.*` stencil or built-in JS shape not in the 8-shape baseline. Now 8,910
+stencil shapes + Phase-2 built-ins are all rendered faithfully without a browser.
+
+**Architecture:**
+- `tools/native-print-bake/stencil-loader.mjs`: pure-JS XML parser + registry builder. Walks
+  `src/main/webapp/stencils/` recursively, builds `Map<"pkg.shape_name", shapeNode>`.
+- `tools/native-print-bake/bake.mjs`: top-level await loads stencil registry at startup.
+- `src/main/webapp/plugins/nativeprint/exporter.js`: new functions —
+  - `registerStencils(registry)`: stores registry in module-level `_stencilRegistry`
+  - `computeAspect(w0,h0,cellW,cellH,aspect)`: fixed/variable aspect coordinate transform
+  - `walkNodes(nodeList)`: shared-accumulator walker across background+foreground sections
+    (CRITICAL: per mxStencil spec, background defines geometry path, foreground's FIRST
+    paint command paints it — `currentPath` must persist across both sections)
+  - `stencilToSvg(shapeNode, cellW, cellH, style, notices)`: full stencil → SVG renderer
+  - Updated `emitVertex` to look up stencil registry before falling back to `shapePath`
+  - Extended `shapePath` with Phase-2 built-ins: hexagon, doubleEllipse, actor, swimlane,
+    line, arrow, arrowConnector, connector
+  - `stableGradId(fillColor, gradColor)`: deterministic gradient IDs (no Math.random)
+- `tools/native-print-bake/wysiwyg-compare.mjs`: `--all` batch mode + pre-Gate-1
+  `validateNoExcludedShapes` (image/include-shape commands).
+
+**Test status:**
+- 69/69 bake tests pass (10 new stencil-specific tests)
+- 13/13 wysiwyg-compare --all PASS (all master test label files)
+- Zero `ExporterUnsupportedShape` or `ExporterUnsupportedStencilFeature` notices across all fixtures
+
+**Deferred to Phase 3 (raise `ExporterUnsupportedStencilFeature` notice):**
+- `<image>` command inside stencil
+- `<include-shape>` recursion
+- `<text>` decorative text inside stencil
+- `<path rounded="1">` Bezier-rounded polylines
+
+**Master test labels** (`src/main/native-print-engine/tests/fixtures/labels/`):
+- `master-test.drawio` — extended with b01-b18 (basic stencil + Phase-2 built-ins)
+- `master-test-flowchart.drawio` — 24 flowchart shapes (f01-f24)
+- `master-test-arrows-bpmn.drawio` — 8 arrows + 8 BPMN shapes
+- `master-test-aws.drawio` — 12 AWS4 fixed-aspect shapes (w01-w12)
+- `master-test-network.drawio` — 8 network + 4 Cisco shapes
+- `master-test-style-variants.drawio` — 15 style variants (gradient, dashed, flipH/V, dir, inline stencil)
+- All 6 have corresponding `.contract.golden.json` frozen reference contracts.
+
+---
+
 ## Important Rules & Constraints
 1. **Never make upstream contributions** — fork only.
 2. **Save tokens**: keep this `MEMORY.md` updated.
