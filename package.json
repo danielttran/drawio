@@ -7,7 +7,8 @@
     "dev": "vite src/main/webapp --host localhost --port 3000 --open",
     "test:nativeprint-exporter": "node --test src/main/webapp/plugins/nativeprint/exporter.test.mjs",
     "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs",
-    "test:nativeprint-bake": "node --test tools/native-print-bake/bake.test.mjs"
+    "test:nativeprint-bake": "node --test tools/native-print-bake/bake.test.mjs",
+    "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs"
   },
   "devDependencies": {
     "vite": "^8.0.14"

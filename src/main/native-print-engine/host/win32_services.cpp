@@ -1369,37 +1369,50 @@ class Win32Services final : public EngineServices {
           break;
         }
         {
-          // Render the page to an OPAQUE memory bitmap (white background) at the
-          // printer's device resolution, then blit that bitmap to the printer
-          // DC. draw_trace DrawImage()s the shapes' anti-aliased rasters with
-          // premultiplied alpha; compositing premul alpha straight onto a
-          // PRINTER DC renders the AA edges dark/ragged (printer drivers handle
-          // alpha poorly — "all text dark/ragged, lines darker"). Compositing
-          // onto a memory bitmap (exactly like the preview) is correct, and the
-          // resulting bitmap is opaque, so the printer receives NO alpha.
+          // D6: Banded rasterization — render the page in horizontal bands so
+          // peak memory is bounded regardless of DPI/media size. Each band is an
+          // opaque 24-bit bitmap composited to the printer DC at the correct
+          // Y offset. Pixels are identical to a full-page bitmap because:
+          //   (a) the translation shifts draw_trace's world-space coordinates so
+          //       page row `band_y` appears at band-bitmap row 0;
+          //   (b) GDI+ clips content that falls outside the band bitmap bounds;
+          //   (c) deduplication (push_notice_unique) handles repeated notices.
+          // With kPrintBandHeightPx == ph (full-page) the result is exactly
+          // equivalent to the pre-D6 single-bitmap path (INV: pixel identity).
+          //
           // device_box coords are real device pixels; UnitPixel keeps true 1:1
           // (printer HDC GDI+ otherwise defaults to UnitDisplay=1/100").
           const int pw = std::max(1, GetDeviceCaps(hdc, HORZRES));
           const int ph = std::max(1, GetDeviceCaps(hdc, VERTRES));
-          Gdiplus::Bitmap page_bmp(pw, ph, PixelFormat24bppRGB);
-          Gdiplus::Graphics gb(&page_bmp);
-          gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white sheet
-          gb.SetPageUnit(Gdiplus::UnitPixel);
-          auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get());
-          if (!drawn) {
-            aborted = true;
-            fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
-                          " page=" + tile.page_id +
-                          " tile=" + std::to_string(tile.tile_index) +
-                          ": " + drawn.error().message;
-            break;
+          constexpr int kPrintBandHeightPx = 512;
+          const int n_bands = (ph + kPrintBandHeightPx - 1) / kPrintBandHeightPx;
+          for (int band = 0; band < n_bands && !aborted; ++band) {
+            const int band_y = band * kPrintBandHeightPx;
+            const int band_h = std::min(kPrintBandHeightPx, ph - band_y);
+            Gdiplus::Bitmap band_bmp(pw, band_h, PixelFormat24bppRGB);
+            Gdiplus::Graphics gb(&band_bmp);
+            gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white
+            gb.SetPageUnit(Gdiplus::UnitPixel);
+            // Shift the world origin so page row band_y maps to band row 0.
+            gb.TranslateTransform(
+                0.0f, static_cast<Gdiplus::REAL>(-band_y));
+            auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get());
+            if (!drawn) {
+              aborted = true;
+              fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
+                            " page=" + tile.page_id +
+                            " tile=" + std::to_string(tile.tile_index) +
+                            " band=" + std::to_string(band) +
+                            ": " + drawn.error().message;
+              break;
+            }
+            for (const auto& notice : drawn.value().notices) {
+              push_notice_unique(device_notices, notice);
+            }
+            Gdiplus::Graphics gp(hdc);
+            gp.SetPageUnit(Gdiplus::UnitPixel);
+            gp.DrawImage(&band_bmp, 0, band_y, pw, band_h);  // opaque → crisp
           }
-          for (const auto& notice : drawn.value().notices) {
-            push_notice_unique(device_notices, notice);
-          }
-          Gdiplus::Graphics gp(hdc);
-          gp.SetPageUnit(Gdiplus::UnitPixel);
-          gp.DrawImage(&page_bmp, 0, 0, pw, ph);          // opaque -> crisp print
         }
         if (EndPage(hdc) <= 0) {
           aborted = true;

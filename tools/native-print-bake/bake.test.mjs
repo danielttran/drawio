@@ -538,3 +538,53 @@ test('assertFontsAvailable: throws MISSING_FONTS when font absent', async () => 
     (err) => err.code === 'MISSING_FONTS' && Array.isArray(err.missingFonts)
   );
 });
+
+// --- C4: Zero-notice gate (§6 / §9.3) ---
+// Every supported-vocabulary sample renders with zero degradation notices.
+
+test('C4: simple.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => `${n.kind}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
+});
+
+test('C4: shapes.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => `${n.kind}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
+});
+
+// --- C5: Vocabulary coverage (§6 / §9.3) ---
+// Every object type in the corpus renders non-empty output (never a silent stub).
+
+test('C5: simple.drawio — all paint nodes have non-empty content', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  assert.ok(paint.length > 0, 'C5: no paint nodes produced for simple.drawio');
+  for (const node of paint) {
+    if (node.kind === 'path') {
+      assert.ok(node.d && node.d.trim().length > 1,
+        `C5: path node has trivially empty d: ${JSON.stringify(node.d)}`);
+    } else if (node.kind === 'text') {
+      assert.ok(node.box && node.box.w > 0 && node.box.h > 0,
+        `C5: text node has zero-area box: ${JSON.stringify(node.box)}`);
+    }
+  }
+});
+
+test('C5: shapes.drawio — rect/ellipse/diamond/rounded produce non-empty path nodes', async () => {
+  const xml = await readFile(shapesDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const pathNodes = paint.filter((n) => n.kind === 'path');
+  // shapes.drawio has rect, ellipse, diamond, rounded-rect = 4 shapes
+  assert.ok(pathNodes.length >= 4,
+    `C5: expected ≥4 non-empty path nodes for 4 shapes, got ${pathNodes.length}`);
+  for (const node of pathNodes) {
+    assert.ok(node.d && node.d.trim().length > 2,
+      `C5: shape path node has trivially empty d: ${JSON.stringify(node.d)}`);
+  }
+});
