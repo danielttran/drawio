@@ -536,20 +536,29 @@ no two shapes overlap, with varied rotation angles. Every cell carries a text la
 the shape, enabling the WYSIWYG checker to verify label preservation.
 
 Grid layout rule: shapes are placed on a regular grid. Each cell is 120 × 100 px unless the
-shape has `aspect="fixed"`, in which case use 100 × 100 px. The grid pitch (center-to-center
-distance) is: **220 px horizontally, 200 px vertically**. This pitch is derived from the
-maximum axis-aligned bounding box of a 120×100 cell rotated 45° (~155×155 px) plus a 60 px
-safety margin on each side, giving ample clearance for the most extreme rotation. Rows wrap
-every 8 shapes.
+shape has `aspect="fixed"`, in which case use 100 × 100 px. The grid pitch (top-left to
+top-left) is: **220 px horizontally, 200 px vertically**.
+
+**Overlap analysis (verified):**
+A 120×100 cell at the worst-case rotation (45°) has an axis-aligned bounding box of ~156×156 px.
+The gap between adjacent cells at pitch 220×200 is 64 px horizontally and 44 px vertically —
+both positive, so no two adjacent cells ever overlap.
+
+**Canvas overflow analysis (verified):**
+At 45°, the rotated bbox extends 78 px above the cell centre. With a cell top-left at y=20,
+the centre is at y=70, and the top of the rotated bbox reaches y=−8 — overflowing the canvas.
+The fix is to start the grid at **x=100, y=100** so the first-row centre is at (160, 150),
+giving a minimum canvas clearance of 72 px even at 45°.
 
 Explicit positioning: cell `(col, row)` (0-indexed) is placed at:
 ```
-x = 20 + col * 220
-y = 20 + row * 200
+x = 100 + col * 220
+y = 100 + row * 200
 ```
-These are the `x`,`y` values in `<mxGeometry>` (top-left corner of the cell bounding box).
+These are the `x`,`y` values in `<mxGeometry>` (top-left corner of the cell bounding box,
+before rotation). Rows wrap every 8 shapes.
 
-Canvas size: `pageWidth = 8 * 220 + 40`, `pageHeight = numRows * 200 + 40`.
+Canvas size: `pageWidth = 100 + 8 * 220 + 100 = 1960`, `pageHeight = 100 + numRows * 200 + 100`.
 
 Rotation rule: within each file, apply a mix of 0°, 15°, 30°, 45°, −20°, and −35° rotations
 spread across cells so that every rotation-sensitive code path is exercised at least once per
