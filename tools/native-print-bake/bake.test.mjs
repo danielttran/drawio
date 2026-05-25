@@ -11,6 +11,7 @@ import { bake } from './bake.mjs';
 import { pxContractToUm, SCALE } from './px-to-um.mjs';
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { ShimDocument, ShimElement, ShimTextNode, ShimXMLSerializer } from './svg-shim/index.mjs';
+import { referencedFonts, checkFontAvailability, assertFontsAvailable } from './font-preflight.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(here, '../../src/main/native-print-engine/tests/fixtures/labels');
@@ -403,4 +404,137 @@ test('C3: bake output passes validate-contract', async () => {
   const r = await execFileP(process.execPath, [scriptPath, tmp]).catch((e) => e);
   assert.equal(r.code ?? 0, 0,
     `validate-contract failed: ${r.stdout || ''}`);
+});
+
+// --- multi-page and D5 ---
+
+test('bake: multi-page .drawio produces contract with multiple pages', () => {
+  const xml = `<mxfile>
+    <diagram id="d1" name="Page-1">
+      <mxGraphModel pageWidth="200" pageHeight="100">
+        <root>
+          <mxCell id="0"/><mxCell id="1" parent="0"/>
+          <mxCell id="2" vertex="1" value="P1" style="rounded=1;" parent="1">
+            <mxGeometry x="10" y="10" width="80" height="30" as="geometry"/>
+          </mxCell>
+        </root>
+      </mxGraphModel>
+    </diagram>
+    <diagram id="d2" name="Page-2">
+      <mxGraphModel pageWidth="200" pageHeight="100">
+        <root>
+          <mxCell id="0"/><mxCell id="1" parent="0"/>
+          <mxCell id="2" vertex="1" value="P2" style="ellipse;" parent="1">
+            <mxGeometry x="10" y="10" width="80" height="30" as="geometry"/>
+          </mxCell>
+        </root>
+      </mxGraphModel>
+    </diagram>
+  </mxfile>`;
+  const { contract } = bake(xml);
+  assert.equal(contract.document.pages.length, 2);
+  assert.equal(contract.document.pages[0].id, 'page-1');
+  assert.equal(contract.document.pages[1].id, 'page-2');
+  assert.equal(contract.document.units, 'um');
+});
+
+test('bake: pages option selects subset of pages', () => {
+  const xml = `<mxfile>
+    <diagram id="d1" name="Page-1">
+      <mxGraphModel pageWidth="100" pageHeight="50">
+        <root><mxCell id="0"/><mxCell id="1" parent="0"/></root>
+      </mxGraphModel>
+    </diagram>
+    <diagram id="d2" name="Page-2">
+      <mxGraphModel pageWidth="100" pageHeight="50">
+        <root><mxCell id="0"/><mxCell id="1" parent="0"/></root>
+      </mxGraphModel>
+    </diagram>
+  </mxfile>`;
+  const { contract } = bake(xml, { pages: [1] }); // only second page
+  assert.equal(contract.document.pages.length, 1);
+  assert.equal(contract.document.pages[0].id, 'page-1'); // ordinal from selected set
+});
+
+test('D5: unattended mode throws on degradation notices', () => {
+  // Unknown shape triggers ExporterUnsupportedShape notice
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="" style="shape=mxgraph.aws4.user;" parent="1">
+        <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  assert.throws(
+    () => bake(xml, { unattended: true }),
+    (err) => err.code === 'BAKE_NOTICES' && Array.isArray(err.notices) && err.notices.length > 0
+  );
+});
+
+test('D5: unattended mode succeeds when no notices', () => {
+  // Standard shape with no notices
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="OK" style="rounded=1;" parent="1">
+        <mxGeometry x="10" y="10" width="80" height="30" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const { contract, notices } = bake(xml, { unattended: true }); // must not throw
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.units, 'um');
+});
+
+// --- font preflight (§3.5) ---
+
+test('referencedFonts: collects font families from text nodes', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const fonts = referencedFonts(contract);
+  assert.ok(fonts.size > 0, 'expected at least one font family');
+  assert.ok(fonts.has('Arial'), 'expected Arial (draw.io default)');
+});
+
+test('referencedFonts: collects rich-run fontFamily', () => {
+  const contract = {
+    document: { pages: [{ paint: [{
+      kind: 'text', box: { x:0,y:0,w:10,h:10 },
+      font: { family: 'Arial', sizePx: 12 },
+      align: { h:'left',v:'top' },
+      content: { type: 'rich', paragraphs: [{
+        align: 'left', runs: [
+          { text: 'A', fontFamily: 'Helvetica', sizePx: 12, weight: 400, italic: false, underline: false, strikethrough: false, color: '#000' }
+        ]
+      }]}
+    }]}]}
+  };
+  const fonts = referencedFonts(contract);
+  assert.ok(fonts.has('Arial'));
+  assert.ok(fonts.has('Helvetica'));
+});
+
+test('checkFontAvailability: returns missing fonts', () => {
+  const missing = checkFontAvailability(
+    new Set(['Arial', 'CustomFont']),
+    new Set(['Arial', 'Times New Roman'])
+  );
+  assert.deepEqual([...missing], ['CustomFont']);
+});
+
+test('assertFontsAvailable: passes when all fonts present', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const fonts = referencedFonts(contract);
+  assert.doesNotThrow(() => assertFontsAvailable(contract, fonts));
+});
+
+test('assertFontsAvailable: throws MISSING_FONTS when font absent', async () => {
+  const xml = await readFile(simpleDrawio, 'utf8');
+  const { contract } = bake(xml);
+  assert.throws(
+    () => assertFontsAvailable(contract, new Set(['Helvetica'])),
+    (err) => err.code === 'MISSING_FONTS' && Array.isArray(err.missingFonts)
+  );
 });

@@ -5,14 +5,23 @@
 // with the draw.io graph model built headlessly from the parsed XML.
 // Outputs schema 1.1 ("um" units, minor=1) as required by §4 of the spec.
 //
+// Multi-page: all diagram pages are baked and included as contract pages.
+// The spec (§3.2) requires explicit page scope — this bake produces ALL pages
+// by default.  Per-page selection can be added via options.pages (array of
+// 0-based page indices).
+//
+// D5 gate: pass { unattended: true } to fail loudly if any degradation notice
+// is produced (per spec §3.2 "Failure policy (D5)").
+//
 // CLI:  node bake.mjs <input.drawio> [output.contract.json]
 // API:  import { bake } from './bake.mjs';
-//       const { contract, notices } = await bake(xmlString);
+//       const { contract, notices } = bake(xmlString);
+//       const { contract } = bake(xmlString, { unattended: true }); // throws on notices
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { pxContractToUm } from './px-to-um.mjs';
@@ -24,18 +33,67 @@ const require = createRequire(import.meta.url);
 const exporterPath = resolve(__dir, '../../src/main/webapp/plugins/nativeprint/exporter.js');
 const exporter = require(exporterPath);
 
-// Bake a .drawio XML string to a contract.
-// Returns { contract, notices } where contract is a um-unit schema-1.1 object.
+// Bake a single page (internal helper).
+// Returns { pxContract (one-page), notices }.
+function bakePage(pageData, exporterOpts) {
+  const graph = buildGraph(pageData.cells, pageData.paper);
+  return exporter.buildResult(graph, pageData.paper, exporterOpts || null);
+}
+
+// Bake a .drawio XML string to a multi-page um-unit contract.
+//
+// options:
+//   unattended  {boolean} — D5: throw BakeNoticeError if any notice is produced
+//   pages       {number[]} — 0-based page indices to include (default: all)
+//   exporterOpts — passed through to exporter.buildResult()
+//
+// Returns { contract, notices } where:
+//   contract — schema-1.1 um-unit object with all baked pages
+//   notices  — flat array of all notices from all pages
 export function bake(drawioXml, options) {
   const opts = options || {};
-  const { cells, paper } = parseDrawio(drawioXml);
-  const graph = buildGraph(cells, paper);
+  const parsed = parseDrawio(drawioXml);
 
-  // paper: { wPx, hPx } — page size in model px; buildResult() expects { wPx, hPx }
-  const result = exporter.buildResult(graph, paper, opts.exporterOpts || null);
+  // Determine which pages to bake
+  let pagesToBake = parsed.pages;
+  if (Array.isArray(opts.pages) && opts.pages.length > 0) {
+    pagesToBake = opts.pages.map((i) => {
+      if (i < 0 || i >= parsed.pages.length) {
+        throw new RangeError(`page index ${i} out of range (file has ${parsed.pages.length} page(s))`);
+      }
+      return parsed.pages[i];
+    });
+  }
 
-  const umContract = pxContractToUm(result.contract);
-  return { contract: umContract, notices: result.notices };
+  const allNotices = [];
+  const pxPages = [];
+
+  pagesToBake.forEach((pageData, idx) => {
+    const result = bakePage(pageData, opts.exporterOpts || null);
+    allNotices.push(...result.notices);
+    // Take the single page the exporter produced, tag with ordinal id
+    const page = result.contract.document.pages[0];
+    page.id = `page-${idx + 1}`;
+    pxPages.push(page);
+  });
+
+  // D5: fail loudly if unattended and any notice was raised
+  if (opts.unattended && allNotices.length > 0) {
+    const err = new Error(
+      `D5: bake produced ${allNotices.length} degradation notice(s); job refused`);
+    err.code = 'BAKE_NOTICES';
+    err.notices = allNotices;
+    throw err;
+  }
+
+  // Build combined px contract, then convert to um
+  const pxContract = {
+    schema: { major: 1, minor: 0 },
+    document: { units: 'px', pages: pxPages }
+  };
+  const umContract = pxContractToUm(pxContract);
+
+  return { contract: umContract, notices: allNotices };
 }
 
 // CLI entry point

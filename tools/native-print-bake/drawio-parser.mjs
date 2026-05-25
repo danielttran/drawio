@@ -51,27 +51,39 @@ function parseStyle(s) {
 
 // --- XML structure extraction ---
 
-// Extract the raw content string between the first mxGraphModel tag pair
-// (or single mxGraphModel element).  Returns null if not found.
-function extractModelXml(xml) {
-  // Uncompressed: <mxGraphModel ...>...</mxGraphModel> or <mxGraphModel .../>
-  const open = /<mxGraphModel([^>]*)>/i.exec(xml);
-  if (open) return xml;
-
-  // Compressed: <diagram ...>base64data</diagram>
-  const diag = /<diagram[^>]*>([\s\S]*?)<\/diagram>/i.exec(xml);
-  if (diag) {
-    const raw = diag[1].trim();
-    if (!raw || raw.startsWith('<')) return null; // already xml
-    try {
-      const buf = Buffer.from(raw, 'base64');
-      const inflated = inflateRawSync(buf).toString('utf8');
-      return decodeURIComponent(inflated);
-    } catch {
-      return null;
-    }
+// Decode a single diagram block (which may be compressed or inline XML).
+// Returns the mxGraphModel XML string, or null on failure.
+function decodeDiagramBlock(content) {
+  const raw = content.trim();
+  if (!raw) return null;
+  if (raw.startsWith('<')) return raw; // already uncompressed XML
+  // Compressed: base64 + deflate-raw + URL-encoding
+  try {
+    const buf = Buffer.from(raw, 'base64');
+    const inflated = inflateRawSync(buf).toString('utf8');
+    return decodeURIComponent(inflated);
+  } catch {
+    return null;
   }
-  return null;
+}
+
+// Extract all diagram model XML strings from a .drawio file.
+// Returns an array of { name, xml } objects (one per page/diagram).
+function extractAllModels(xml) {
+  // Multi-diagram file: <mxfile><diagram ...>...</diagram>...</mxfile>
+  const diagRe = /<diagram([^>]*)>([\s\S]*?)<\/diagram>/gi;
+  const results = [];
+  let m;
+  while ((m = diagRe.exec(xml)) !== null) {
+    const diagAttrs = parseAttrs(m[1]);
+    const decoded = decodeDiagramBlock(m[2]);
+    if (decoded) results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
+  }
+  if (results.length > 0) return results;
+
+  // Single bare mxGraphModel (no mxfile wrapper)
+  if (/<mxGraphModel/i.test(xml)) return [{ name: '', id: '', xml }];
+  return [];
 }
 
 // Parse all mxCell elements from within <root>...</root>.
@@ -181,15 +193,8 @@ function cellToState(cell) {
 
 // --- public API ---
 
-// Parse a .drawio XML string.
-// Returns { cells, modelAttrs, paper } where:
-//   cells      — plain object: id → cell (vertex/edge/layer)
-//   modelAttrs — parsed mxGraphModel attributes
-//   paper      — { wPx, hPx } page dimensions in px (from pageWidth/pageHeight)
-export function parseDrawio(xml) {
-  const modelXml = extractModelXml(xml);
-  if (!modelXml) throw new Error('no mxGraphModel found in drawio file');
-
+// Parse a single mxGraphModel XML string into { cells, modelAttrs, paper }.
+function parseModel(modelXml) {
   const modelOpen = /<mxGraphModel([^>]*)>/i.exec(modelXml);
   const modelAttrs = modelOpen ? parseAttrs(modelOpen[1]) : {};
 
@@ -204,6 +209,27 @@ export function parseDrawio(xml) {
     : { wPx: Math.max(1, bounds.width), hPx: Math.max(1, bounds.height) };
 
   return { cells, modelAttrs, paper };
+}
+
+// Parse a .drawio XML string.
+// Returns { cells, modelAttrs, paper } for the FIRST page (for compatibility
+// with single-page callers), plus `pages` for multi-page access.
+//
+// pages: Array of { name, id, cells, modelAttrs, paper } — one entry per
+// diagram/page in the file.  The API must use `pages` to avoid silently
+// printing only page 1 in multi-page files (spec §3.2).
+export function parseDrawio(xml) {
+  const models = extractAllModels(xml);
+  if (models.length === 0) throw new Error('no mxGraphModel found in drawio file');
+
+  const pages = models.map((m) => {
+    const parsed = parseModel(m.xml);
+    return { name: m.name, diagramId: m.id, ...parsed };
+  });
+
+  // First-page compat fields
+  const first = pages[0];
+  return { cells: first.cells, modelAttrs: first.modelAttrs, paper: first.paper, pages };
 }
 
 // Build the fake graph object expected by exporter.buildResult().
