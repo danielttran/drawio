@@ -9,9 +9,10 @@
 //
 // Exit 0 = all checks pass, Exit 1 = gaps found.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 
 import { bake } from './bake.mjs';
 import { parseDrawio } from './drawio-parser.mjs';
@@ -268,11 +269,11 @@ function compare(drawioXml) {
 
   // ── 3. All shape types represented ─────────────────────────────────────────
   const shapeTypes = new Set(shapeVerts.map(v => v.style.shape || 'rectangle'));
-  // Contract path count > 0 is sufficient since we checked per-shape above
+  // Only check path count if there are non-text shape vertices (text-only files are valid)
   check(
     'All supported shape types produce path nodes',
-    contractPaths > 0,
-    `shape types in label: ${[...shapeTypes].join(', ')}`
+    shapeVerts.length === 0 || contractPaths > 0,
+    shapeVerts.length === 0 ? 'no shape-body vertices (text-only diagram)' : `shape types in label: ${[...shapeTypes].join(', ')}`
   );
 
   // ── 4. Gradient fills ──────────────────────────────────────────────────────
@@ -409,10 +410,137 @@ function pad(s, n) {
   return str.length >= n ? str.slice(0, n) : str + ' '.repeat(n - str.length);
 }
 
+// ---------- pre-Gate-1 validation: detect excluded shape commands in test files ----------
+
+// Scan stencil XML node tree (from stencil-loader parseXml output) for excluded commands.
+// Returns array of found excluded command names, or empty array if none.
+function findExcludedCommands(shapeNode) {
+  const EXCLUDED = new Set(['image', 'include-shape']);
+  const found = new Set();
+  function walk(node) {
+    if (!node || !node.children) return;
+    for (const child of node.children) {
+      if (EXCLUDED.has(child.name)) found.add(child.name);
+      // Check for rounded="1" paths
+      if (child.name === 'path' && child.attrs && child.attrs.rounded === '1') {
+        found.add('path rounded="1"');
+      }
+      walk(child);
+    }
+  }
+  walk(shapeNode);
+  return [...found];
+}
+
+// Validate that no cell in the drawio XML uses a stencil with excluded commands.
+// Returns array of { cellId, shape, excludedCmds } for any violations.
+async function validateNoExcludedShapes(drawioXml) {
+  // Lazily import stencil loader to avoid circular dependencies
+  const { loadStencils, parseXml } = await import('./stencil-loader.mjs');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname: dir, resolve: res } = await import('node:path');
+  const here2 = dir(fileURLToPath(import.meta.url));
+  const stencilDir = res(here2, '../../src/main/webapp/stencils');
+
+  // Load registry (cached between calls in same process)
+  if (!validateNoExcludedShapes._registry) {
+    validateNoExcludedShapes._registry = await loadStencils(stencilDir);
+  }
+  const registry = validateNoExcludedShapes._registry;
+
+  const cells = parseModelCells(drawioXml);
+  const violations = [];
+  for (const cell of cells) {
+    if (!cell.isVertex) continue;
+    const shapeName = cell.style && cell.style.shape;
+    if (!shapeName) continue;
+    // Check inline stencil
+    let shapeNode = null;
+    if (shapeName.startsWith('stencil(') && shapeName.endsWith(')')) {
+      try {
+        const b64 = shapeName.slice(8, -1);
+        const xml = Buffer.from(b64, 'base64').toString('utf8');
+        shapeNode = parseXml(xml);
+      } catch (e) { continue; }
+    } else {
+      shapeNode = registry.get(shapeName) || null;
+    }
+    if (!shapeNode) continue;
+    const excluded = findExcludedCommands(shapeNode);
+    if (excluded.length > 0) {
+      violations.push({ cellId: cell.id, shape: shapeName, excludedCmds: excluded });
+    }
+  }
+  return violations;
+}
+
 async function main() {
-  const [, , inputPath] = process.argv;
+  const args = process.argv.slice(2);
+
+  // --all mode: run compare on every .drawio file in the fixtures labels directory
+  if (args.includes('--all')) {
+    const here2 = dirname(fileURLToPath(import.meta.url));
+    const labelDir = resolve(here2, '../../src/main/native-print-engine/tests/fixtures/labels');
+    let files;
+    try {
+      files = readdirSync(labelDir).filter(f => f.endsWith('.drawio'));
+    } catch (e) {
+      process.stderr.write(`cannot read label dir ${labelDir}: ${e.message}\n`);
+      process.exit(2);
+    }
+
+    if (files.length === 0) {
+      console.log('No .drawio fixture files found.');
+      process.exit(0);
+    }
+
+    let allPassed = true;
+    for (const f of files) {
+      const filePath = join(labelDir, f);
+      let xml;
+      try {
+        xml = readFileSync(filePath, 'utf8');
+      } catch (e) {
+        console.error(`FAIL: ${f} (cannot read: ${e.message})`);
+        allPassed = false;
+        continue;
+      }
+
+      // Pre-Gate-1 validation: scan for excluded shapes
+      let violations = [];
+      try {
+        violations = await validateNoExcludedShapes(xml);
+      } catch (e) {
+        // Non-fatal: continue even if registry unavailable
+      }
+      if (violations.length > 0) {
+        console.error(`PRE-GATE-1 VIOLATION in ${f}:`);
+        for (const v of violations) {
+          console.error(`  Cell ${v.cellId} (shape=${v.shape}) uses excluded commands: ${v.excludedCmds.join(', ')}`);
+        }
+        allPassed = false;
+        continue;
+      }
+
+      const result = compare(xml);
+      if (result.fail > 0) {
+        allPassed = false;
+        console.log(`FAIL: ${f} (${result.fail} check(s) failed)`);
+        for (const c of result.checks.filter(c => !c.ok)) {
+          console.log(`  ✗ ${c.name}: ${c.detail}`);
+        }
+      } else {
+        console.log(`PASS: ${f} (${result.pass} checks pass)`);
+      }
+    }
+
+    process.exit(allPassed ? 0 : 1);
+    return;
+  }
+
+  const [inputPath] = args;
   if (!inputPath) {
-    process.stderr.write('usage: wysiwyg-compare.mjs <file.drawio>\n');
+    process.stderr.write('usage: wysiwyg-compare.mjs <file.drawio>\n       wysiwyg-compare.mjs --all\n');
     process.exit(2);
   }
 

@@ -8,6 +8,459 @@
 (function (root) {
   'use strict';
 
+  // ---------------------------------------------------------------------------
+  // Module-level stencil registry (set by registerStencils() from bake.mjs).
+  // Map<string, shapeNodeTree> where keys are "mxgraph.package.shapename".
+  var _stencilRegistry = null;
+
+  // Deterministic gradient ID: hash fill+grad colors so golden comparisons stay stable.
+  function stableGradId(fillColor, gradColor) {
+    var s = (fillColor || '') + ':' + (gradColor || '');
+    var h = 0;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) & 0xfffffff; }
+    return 'sg' + h.toString(36);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pure-JS XML parser for stencil XML (no DOMParser needed).
+  // Returns { name, attrs:{}, children:[] } or null.
+  function parseXml(xmlStr) {
+    var tagRe = /<(\/)?([A-Za-z][\w:-]*)([^>]*?)(\/)?>/g;
+    var attrRe = /([\w:-]+)=["']([^"']*)["']/g;
+    function parseAttrs(s) {
+      var a = {}, m;
+      attrRe.lastIndex = 0;
+      while ((m = attrRe.exec(s)) !== null) a[m[1]] = m[2];
+      return a;
+    }
+    var docRoot = { name: '#root', attrs: {}, children: [] };
+    var stack = [docRoot];
+    var m;
+    while ((m = tagRe.exec(xmlStr)) !== null) {
+      var slash = m[1], name = m[2], attrStr = m[3], selfClose = m[4];
+      var top = stack[stack.length - 1];
+      if (slash) {
+        if (stack.length > 1) stack.pop();
+      } else {
+        var node = { name: name.toLowerCase(), attrs: parseAttrs(attrStr), children: [] };
+        top.children.push(node);
+        if (!selfClose) stack.push(node);
+      }
+    }
+    return docRoot.children[0] || null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // computeAspect: maps stencil native coords to cell pixel space.
+  // Returns { ox, oy, sw, sh, su } for the coordinate transform.
+  function computeAspect(w0, h0, cellW, cellH, aspect) {
+    if (aspect === 'fixed') {
+      var su = Math.min(cellW / w0, cellH / h0);
+      return {
+        ox: (cellW - w0 * su) / 2,
+        oy: (cellH - h0 * su) / 2,
+        sw: su, sh: su, su: su
+      };
+    }
+    // aspect = "variable" (default)
+    var sw = cellW / w0, sh = cellH / h0;
+    return { ox: 0, oy: 0, sw: sw, sh: sh, su: Math.min(sw, sh) };
+  }
+
+  // ---------------------------------------------------------------------------
+  // stencilToSvg: render a parsed stencil <shape> node to an SVG string.
+  // Returns SVG string, or null if unsupported feature encountered (notice pushed).
+  function stencilToSvg(shapeNode, cellW, cellH, style, notices) {
+    // Step 1: Read shape metadata
+    var w0 = parseFloat(shapeNode.attrs.w) || 100;
+    var h0 = parseFloat(shapeNode.attrs.h) || 100;
+    var aspect = shapeNode.attrs.aspect || 'variable';
+    var stencilStrokeWidthAttr = shapeNode.attrs.strokewidth;
+
+    // Step 2: Handle direction: north/south swap cellW/cellH for computeAspect
+    var dir = style.direction || 'east';
+    var cw = cellW, ch = cellH;
+    if (dir === 'north' || dir === 'south') {
+      cw = cellH; ch = cellW;
+    }
+
+    // Compute aspect transform
+    var asp = computeAspect(w0, h0, cw, ch, aspect);
+    var ox = asp.ox, oy = asp.oy, sw = asp.sw, sh = asp.sh, su = asp.su;
+
+    // Step 3: Compute initial stroke width
+    var sw_px;
+    if (!stencilStrokeWidthAttr || stencilStrokeWidthAttr === 'inherit') {
+      sw_px = number(style.strokeWidth, 1);
+    } else {
+      sw_px = parseFloat(stencilStrokeWidthAttr) * su;
+    }
+
+    // Step 4: Initialize render state
+    var state = {
+      fillColor: style.fillColor,
+      strokeColor: style.strokeColor,
+      strokeWidth: sw_px,
+      dashed: boolish(style.dashed),
+      dashPattern: style.dashPattern,
+      lineCap: style.lineCap || 'butt',
+      lineJoin: style.lineJoin || 'miter',
+      miterLimit: number(style.miterLimit, 10),
+      alpha: opacity(style, 'opacity'),
+      fontColor: style.fontColor || '#000000',
+      fontSize: number(style.fontSize, 11),
+      fontFamily: style.fontFamily || 'Arial',
+      fontStyle: number(style.fontStyle, 0)
+    };
+    var stateStack = [];
+
+    // Gradient support: if gradientColor is paintable, we'll emit a linearGradient
+    var gradId = null;
+    var gradDef = '';
+    if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
+      gradId = stableGradId(state.fillColor, style.gradientColor);
+      gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
+        '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
+        '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
+        '</linearGradient>';
+    }
+
+    // Helper: fill SVG attr using current state
+    function stateFillAttr() {
+      if (!isPaintable(state.fillColor)) return ' fill="none"';
+      if (gradId) return ' fill="url(#' + gradId + ')"';
+      var c = hex(state.fillColor);
+      var a = state.alpha;
+      return ' fill="' + c + '"' + (a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '');
+    }
+
+    // Helper: stroke SVG attrs using current state
+    function stateStrokeAttrs() {
+      if (!isPaintable(state.strokeColor)) return ' stroke="none"';
+      var s = ' stroke="' + hex(state.strokeColor) + '"';
+      var sw2 = Math.max(0.1, state.strokeWidth);
+      s += ' stroke-width="' + fmt(sw2) + '"';
+      var sc = state.lineCap === 'round' ? 'round' : state.lineCap === 'square' ? 'square' : 'butt';
+      var sj = state.lineJoin === 'round' ? 'round' : state.lineJoin === 'bevel' ? 'bevel' : 'miter';
+      s += ' stroke-linecap="' + sc + '" stroke-linejoin="' + sj + '"';
+      if (state.dashed) {
+        var dp = state.dashPattern
+          ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
+          : [3, 3];
+        if (!dp.length) dp = [3, 3];
+        s += ' stroke-dasharray="' + dp.map(fmt).join(' ') + '"';
+      }
+      if (state.alpha < 1) s += ' stroke-opacity="' + fmt(state.alpha) + '"';
+      return s;
+    }
+
+    // Helper: transform a stencil x coordinate
+    function tx(x) { return ox + x * sw; }
+    // Helper: transform a stencil y coordinate
+    function ty(y) { return oy + y * sh; }
+    // Helper: transform arc radii (use su for fixed, asymmetric for variable)
+    function trx(r) { return aspect === 'fixed' ? r * su : r * sw; }
+    function try_(r) { return aspect === 'fixed' ? r * su : r * sh; }
+
+    // Walk a <path> block's children, building an SVG path d string.
+    // Returns d string, or null if unsupported command encountered.
+    function walkPath(pathNode) {
+      // Check for rounded="1" — unsupported in Phase 1
+      if (pathNode.attrs.rounded === '1') {
+        if (Array.isArray(notices)) {
+          notices.push(degradation('ExporterUnsupportedStencilFeature',
+            'stencil path with rounded="1" (Bezier-rounded polyline) is not supported in Phase 1', ''));
+        }
+        return null;
+      }
+      var parts = [];
+      for (var i = 0; i < pathNode.children.length; i++) {
+        var cmd = pathNode.children[i];
+        var a = cmd.attrs;
+        switch (cmd.name) {
+          case 'move':
+            parts.push('M ' + fmt(tx(parseFloat(a.x))) + ' ' + fmt(ty(parseFloat(a.y))));
+            break;
+          case 'line':
+            parts.push('L ' + fmt(tx(parseFloat(a.x))) + ' ' + fmt(ty(parseFloat(a.y))));
+            break;
+          case 'curve':
+            parts.push('C ' +
+              fmt(tx(parseFloat(a.x1))) + ' ' + fmt(ty(parseFloat(a.y1))) + ' ' +
+              fmt(tx(parseFloat(a.x2))) + ' ' + fmt(ty(parseFloat(a.y2))) + ' ' +
+              fmt(tx(parseFloat(a.x3))) + ' ' + fmt(ty(parseFloat(a.y3))));
+            break;
+          case 'quad':
+            parts.push('Q ' +
+              fmt(tx(parseFloat(a.x1))) + ' ' + fmt(ty(parseFloat(a.y1))) + ' ' +
+              fmt(tx(parseFloat(a.x2))) + ' ' + fmt(ty(parseFloat(a.y2))));
+            break;
+          case 'arc': {
+            var rx = trx(parseFloat(a.rx));
+            var ry = try_(parseFloat(a.ry));
+            var xrot = parseFloat(a['x-axis-rotation'] || a['xAxisRotation'] || 0) || 0;
+            var laf = parseInt(a['large-arc-flag'] || a['largeArcFlag'] || 0) || 0;
+            var sf = parseInt(a['sweep-flag'] || a['sweepFlag'] || 0) || 0;
+            parts.push('A ' + fmt(rx) + ' ' + fmt(ry) + ' ' + xrot + ' ' + laf + ' ' + sf +
+              ' ' + fmt(tx(parseFloat(a.x))) + ' ' + fmt(ty(parseFloat(a.y))));
+            break;
+          }
+          case 'close':
+            parts.push('Z');
+            break;
+          default:
+            // Unknown path command — silently ignore (draw.io may have extensions)
+            break;
+        }
+      }
+      return parts.join(' ');
+    }
+
+    // Walk <background> or <foreground> children, emitting SVG elements.
+    // Returns array of SVG element strings, or null if unsupported feature found.
+    function walkSection(sectionNode) {
+      var elems = [];
+      var currentPath = null;   // accumulated path d string (or direct element string)
+      var currentIsDirect = false; // true when currentPath is a complete <rect>/<ellipse> string
+
+      for (var i = 0; i < sectionNode.children.length; i++) {
+        var node = sectionNode.children[i];
+        var a = node.attrs;
+
+        switch (node.name) {
+          case 'path': {
+            var d = walkPath(node);
+            if (d === null) return null; // unsupported — caller already got notice
+            currentPath = d;
+            currentIsDirect = false;
+            break;
+          }
+
+          case 'rect': {
+            var rx = parseFloat(a.x) || 0, ry2 = parseFloat(a.y) || 0;
+            var rw = parseFloat(a.w) || 0, rh = parseFloat(a.h) || 0;
+            currentPath = '<rect x="' + fmt(tx(rx)) + '" y="' + fmt(ty(ry2)) +
+              '" width="' + fmt(rw * sw) + '" height="' + fmt(rh * sh) + '"';
+            currentIsDirect = true;
+            break;
+          }
+
+          case 'roundrect': {
+            var rrx = parseFloat(a.x) || 0, rry = parseFloat(a.y) || 0;
+            var rrw = parseFloat(a.w) || 0, rrh = parseFloat(a.h) || 0;
+            var arcsize = parseFloat(a.arcsize) || 0;
+            // mxConstants.RECTANGLE_ROUNDING_FACTOR = 0.15 → default 15% if arcsize=0
+            if (!arcsize) arcsize = 15;
+            var rr = arcsize / 100 * Math.min(rrw * sw, rrh * sh);
+            currentPath = '<rect x="' + fmt(tx(rrx)) + '" y="' + fmt(ty(rry)) +
+              '" width="' + fmt(rrw * sw) + '" height="' + fmt(rrh * sh) +
+              '" rx="' + fmt(rr) + '" ry="' + fmt(rr) + '"';
+            currentIsDirect = true;
+            break;
+          }
+
+          case 'ellipse': {
+            var ex = parseFloat(a.x) || 0, ey = parseFloat(a.y) || 0;
+            var ew = parseFloat(a.w) || 0, eh = parseFloat(a.h) || 0;
+            // x,y is top-left of the ellipse bounding box
+            var ecx = tx(ex + ew / 2);
+            var ecy = ty(ey + eh / 2);
+            var erx = ew / 2 * sw;
+            var ery = eh / 2 * sh;
+            currentPath = '<ellipse cx="' + fmt(ecx) + '" cy="' + fmt(ecy) +
+              '" rx="' + fmt(erx) + '" ry="' + fmt(ery) + '"';
+            currentIsDirect = true;
+            break;
+          }
+
+          // Paint commands
+          case 'fillstroke':
+          case 'fill':
+          case 'stroke': {
+            if (!currentPath) break; // empty accumulator — silently skip (spec §3.4 step 8)
+
+            var fillAttr, strokeAttr;
+            if (node.name === 'fill') {
+              fillAttr = stateFillAttr();
+              strokeAttr = ' stroke="none"';
+            } else if (node.name === 'stroke') {
+              fillAttr = ' fill="none"';
+              strokeAttr = stateStrokeAttrs();
+            } else { // fillstroke
+              fillAttr = stateFillAttr();
+              strokeAttr = stateStrokeAttrs();
+            }
+
+            if (currentIsDirect) {
+              // currentPath is an SVG element string (rect/ellipse) without closing
+              elems.push(currentPath + fillAttr + strokeAttr + '/>');
+            } else {
+              // currentPath is a path d string
+              elems.push('<path d="' + currentPath + '"' + fillAttr + strokeAttr + '/>');
+            }
+            currentPath = null;
+            currentIsDirect = false;
+            break;
+          }
+
+          // State modifiers
+          case 'save':
+            stateStack.push({
+              fillColor: state.fillColor, strokeColor: state.strokeColor,
+              strokeWidth: state.strokeWidth, dashed: state.dashed,
+              dashPattern: state.dashPattern, lineCap: state.lineCap,
+              lineJoin: state.lineJoin, miterLimit: state.miterLimit,
+              alpha: state.alpha, fontColor: state.fontColor,
+              fontSize: state.fontSize, fontFamily: state.fontFamily,
+              fontStyle: state.fontStyle
+            });
+            break;
+          case 'restore':
+            if (stateStack.length > 0) {
+              var saved = stateStack.pop();
+              state.fillColor = saved.fillColor; state.strokeColor = saved.strokeColor;
+              state.strokeWidth = saved.strokeWidth; state.dashed = saved.dashed;
+              state.dashPattern = saved.dashPattern; state.lineCap = saved.lineCap;
+              state.lineJoin = saved.lineJoin; state.miterLimit = saved.miterLimit;
+              state.alpha = saved.alpha; state.fontColor = saved.fontColor;
+              state.fontSize = saved.fontSize; state.fontFamily = saved.fontFamily;
+              state.fontStyle = saved.fontStyle;
+              // Recompute gradient if fill color changed
+              if (isPaintable(state.fillColor) && isPaintable(style.gradientColor) && !gradId) {
+                gradId = stableGradId(state.fillColor, style.gradientColor);
+                gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
+                  '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
+                  '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
+                  '</linearGradient>';
+              }
+            }
+            break;
+          case 'strokecolor':
+            state.strokeColor = a.color || state.strokeColor;
+            break;
+          case 'fillcolor':
+            state.fillColor = a.color || state.fillColor;
+            // Update gradient if fill changed
+            if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
+              gradId = stableGradId(state.fillColor, style.gradientColor);
+              gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
+                '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
+                '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
+                '</linearGradient>';
+            }
+            break;
+          case 'strokewidth': {
+            var w = parseFloat(a.width) || 1;
+            state.strokeWidth = (a.fixed === '1') ? w : w * su;
+            break;
+          }
+          case 'dashed':
+            state.dashed = a.dashed === '1';
+            break;
+          case 'dashpattern':
+            state.dashPattern = a.pattern;
+            break;
+          case 'linecap':
+            state.lineCap = a.cap || 'butt';
+            break;
+          case 'linejoin':
+            state.lineJoin = a.join || 'miter';
+            break;
+          case 'miterlimit':
+            state.miterLimit = parseFloat(a.limit) || 10;
+            break;
+          case 'alpha':
+          case 'fillalpha':
+          case 'strokealpha':
+            // Both fill/stroke alpha map to global alpha in mxGraph stencil engine
+            state.alpha = clamp01(parseFloat(a.alpha) || 1);
+            break;
+          case 'fontcolor':
+            state.fontColor = a.color || state.fontColor;
+            break;
+          case 'fontsize':
+            state.fontSize = (parseFloat(a.size) || 11) * su;
+            break;
+          case 'fontstyle':
+            state.fontStyle = parseInt(a.style || 0) || 0;
+            break;
+          case 'fontfamily':
+            state.fontFamily = a.family || state.fontFamily;
+            break;
+
+          // Unsupported commands — raise notice and abort
+          case 'image':
+            if (Array.isArray(notices)) {
+              notices.push(degradation('ExporterUnsupportedStencilFeature',
+                'stencil uses <image> command (deferred to Phase 3)', ''));
+            }
+            return null;
+          case 'include-shape':
+            if (Array.isArray(notices)) {
+              notices.push(degradation('ExporterUnsupportedStencilFeature',
+                'stencil uses <include-shape> command (deferred to Phase 3)', ''));
+            }
+            return null;
+          case 'text':
+            if (Array.isArray(notices)) {
+              notices.push(degradation('ExporterUnsupportedStencilFeature',
+                'stencil uses <text> command (decorative text, deferred to Phase 3)', ''));
+            }
+            return null;
+
+          default:
+            // Unrecognized command — silently skip (forward-compatibility)
+            break;
+        }
+      }
+      return elems;
+    }
+
+    // Step 5: Walk <background> and <foreground> sections
+    var bgElems = [], fgElems = [];
+    for (var si = 0; si < shapeNode.children.length; si++) {
+      var section = shapeNode.children[si];
+      if (section.name === 'background') {
+        var bg = walkSection(section);
+        if (bg === null) return null;
+        bgElems = bg;
+      } else if (section.name === 'foreground') {
+        var fg = walkSection(section);
+        if (fg === null) return null;
+        fgElems = fg;
+      }
+      // 'connections' and other sections are silently skipped
+    }
+
+    // Step 12: Flip transforms
+    var innerContent = bgElems.join('') + fgElems.join('');
+    if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
+      innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cellW) + ',0)">' + innerContent + '</g>';
+    }
+    if (boolish(style.flipV) || boolish(style.stencilFlipV)) {
+      innerContent = '<g transform="scale(1,-1) translate(0,' + fmt(-cellH) + ')">' + innerContent + '</g>';
+    }
+
+    // Step 3 (direction rotation): wrap in rotation group for north/south/west
+    if (dir === 'north') {
+      // rotate(-90, cx, cy) where cx=cellW/2, cy=cellH/2
+      var dcx = cellW / 2, dcy = cellH / 2;
+      innerContent = '<g transform="rotate(-90 ' + fmt(dcx) + ' ' + fmt(dcy) + ')">' + innerContent + '</g>';
+    } else if (dir === 'south') {
+      var dcx2 = cellW / 2, dcy2 = cellH / 2;
+      innerContent = '<g transform="rotate(90 ' + fmt(dcx2) + ' ' + fmt(dcy2) + ')">' + innerContent + '</g>';
+    } else if (dir === 'west') {
+      var dcx3 = cellW / 2, dcy3 = cellH / 2;
+      innerContent = '<g transform="rotate(180 ' + fmt(dcx3) + ' ' + fmt(dcy3) + ')">' + innerContent + '</g>';
+    }
+
+    // Step 13: Assemble final SVG
+    var defsStr = gradDef ? '<defs>' + gradDef + '</defs>' : '';
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(cellW) +
+      '" height="' + fmt(cellH) + '">' +
+      defsStr + innerContent + '</svg>';
+  }
+
   function number(v, fallback) {
     var n = parseFloat(v);
     return Number.isFinite(n) ? n : fallback;
@@ -354,6 +807,80 @@
       ' C ' + p(x + w * 0.66, y + h * 0.95) + ' ' + p(x + w * 0.38, y + h * 0.95) + ' ' + p(x + w * 0.25, y + h * 0.75) + ' Z';
   }
 
+  // doubleEllipse: outer ellipse + inner ellipse (concentric, inset by 4px each side)
+  function doubleEllipsePath(x, y, w, h) {
+    var margin = Math.min(w, h) * 0.1 + 2;
+    return ellipsePath(x, y, w, h) +
+      ' M ' + p(x + margin + (w - 2 * margin) / 2 - (w - 2 * margin) / 2, y + margin + (h - 2 * margin) / 2) +
+      ellipsePath(x + margin, y + margin, w - 2 * margin, h - 2 * margin).slice(1);
+  }
+
+  // actor: head (top circle) + body (trapezoid from shoulders down)
+  function actorPath(x, y, w, h) {
+    var headR = Math.min(w / 4, h / 4);
+    var headCx = x + w / 2, headCy = y + headR;
+    // Head circle as ellipse path
+    var head = ellipsePath(headCx - headR, headCy - headR, headR * 2, headR * 2);
+    // Body: trapezoid below the head
+    var shoulderY = headCy + headR;
+    var bodyH = h - shoulderY + y;
+    var halfW = w / 2;
+    var halfBodyW = halfW * 0.8;
+    var body = 'M ' + p(x + w / 2 - halfBodyW, shoulderY) +
+      ' L ' + p(x + w / 2 + halfBodyW, shoulderY) +
+      ' L ' + p(x + w, y + h) +
+      ' L ' + p(x, y + h) + ' Z';
+    return head + ' ' + body;
+  }
+
+  // swimlane: rectangle with a horizontal header bar
+  function swimlanePath(x, y, w, h) {
+    var startSize = Math.max(16, h * 0.2);
+    return rectPath(x, y, w, h) +
+      ' M ' + p(x, y + startSize) + ' L ' + p(x + w, y + startSize);
+  }
+
+  // hexagon: 6-sided polygon (flat top, like a hex cell)
+  function hexagonPath(x, y, w, h) {
+    var dx = w / 4;
+    return 'M ' + p(x + dx, y) +
+      ' L ' + p(x + w - dx, y) +
+      ' L ' + p(x + w, y + h / 2) +
+      ' L ' + p(x + w - dx, y + h) +
+      ' L ' + p(x + dx, y + h) +
+      ' L ' + p(x, y + h / 2) + ' Z';
+  }
+
+  // line: simple horizontal/vertical line through cell center
+  function linePath(x, y, w, h) {
+    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
+  }
+
+  // arrow: a right-pointing arrow shape
+  function arrowShapePath(x, y, w, h) {
+    var arrowW = w * 0.6;
+    var arrowH = h * 0.4;
+    var dy = (h - arrowH) / 2;
+    return 'M ' + p(x, y + h * 0.25) +
+      ' L ' + p(x + arrowW, y + h * 0.25) +
+      ' L ' + p(x + arrowW, y) +
+      ' L ' + p(x + w, y + h / 2) +
+      ' L ' + p(x + arrowW, y + h) +
+      ' L ' + p(x + arrowW, y + h * 0.75) +
+      ' L ' + p(x, y + h * 0.75) + ' Z';
+  }
+
+  // arrowConnector: simple arrow with connector visual (diamond + arrow)
+  function arrowConnectorPath(x, y, w, h) {
+    // Similar to arrow shape
+    return arrowShapePath(x, y, w, h);
+  }
+
+  // connector: just a line (edge-like connector used as vertex)
+  function connectorPath(x, y, w, h) {
+    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
+  }
+
   function shapePath(style, x, y, w, h) {
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
@@ -361,10 +888,22 @@
     if (shape === 'triangle') return trianglePath(x, y, w, h, style.direction);
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
+    if (shape === 'hexagon') return hexagonPath(x, y, w, h);
+    if (shape === 'doubleEllipse') return doubleEllipsePath(x, y, w, h);
+    if (shape === 'actor') return actorPath(x, y, w, h);
+    if (shape === 'swimlane') return swimlanePath(x, y, w, h);
+    if (shape === 'line') return linePath(x, y, w, h);
+    if (shape === 'arrow') return arrowShapePath(x, y, w, h);
+    if (shape === 'arrowConnector') return arrowConnectorPath(x, y, w, h);
+    if (shape === 'connector') return connectorPath(x, y, w, h);
     if (shape === 'rectangle' || shape === 'label' || !shape) {
       return boolish(style.rounded)
         ? roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12)
         : rectPath(x, y, w, h);
+    }
+    // group: draw.io's container group — rendered as a plain rectangle
+    if (shape === 'group') {
+      return rectPath(x, y, w, h);
     }
     return null;
   }
@@ -2671,6 +3210,121 @@
     // invisible (fill/stroke are none) and wrongly raised an
     // ExporterUnsupportedShape notice. Skip the body; just lay out the label.
     if (style.shape !== 'text') {
+
+      // --- Stencil registry lookup (covers all mxgraph.* shapes and inline stencil shapes) ---
+      var stencilName = style.shape || '';
+      var stencilNode = null;
+
+      if (stencilName.indexOf('stencil(') === 0 && stencilName.charAt(stencilName.length - 1) === ')') {
+        // Inline base64-encoded stencil XML
+        try {
+          var b64 = stencilName.slice(8, -1);
+          var xmlDecoded = '';
+          if (typeof Buffer !== 'undefined') {
+            xmlDecoded = Buffer.from(b64, 'base64').toString('utf8');
+          } else {
+            // Browser fallback (should not be reached in Node.js context)
+            xmlDecoded = decodeUtf8B64(b64);
+          }
+          var inlineParsed = parseXml(xmlDecoded);
+          if (inlineParsed && inlineParsed.name === 'shape') {
+            stencilNode = inlineParsed;
+          } else if (inlineParsed && inlineParsed.children && inlineParsed.children.length > 0) {
+            // The XML might have the <shape> as a child
+            for (var sc = 0; sc < inlineParsed.children.length; sc++) {
+              if (inlineParsed.children[sc].name === 'shape') {
+                stencilNode = inlineParsed.children[sc];
+                break;
+              }
+            }
+          }
+          if (!stencilNode && inlineParsed) stencilNode = inlineParsed; // use whatever we got
+        } catch (e) {
+          notices.push(degradation('ExporterUnsupportedShape',
+            'inline stencil parse error: ' + e.message, cell.id));
+        }
+      } else if (stencilName && _stencilRegistry) {
+        stencilNode = _stencilRegistry.get(stencilName) || null;
+      }
+
+      if (stencilNode) {
+        var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices);
+        if (stencilSvg) {
+          var rotDegS = number(style.rotation, 0);
+          if (rotDegS) {
+            // Rotated stencil: expand viewport to axis-aligned bbox, rotate content and label
+            var thetaS = rotDegS * Math.PI / 180;
+            var cosThetaS = Math.abs(Math.cos(thetaS));
+            var sinThetaS = Math.abs(Math.sin(thetaS));
+            var expWS = box.w * cosThetaS + box.h * sinThetaS;
+            var expHS = box.w * sinThetaS + box.h * cosThetaS;
+            var offXS = (expWS - box.w) / 2;
+            var offYS = (expHS - box.h) / 2;
+            var rcxS = expWS / 2;
+            var rcyS = expHS / 2;
+            // Re-render the stencil at (offX, offY) offset — re-generate with offset box
+            // Since stencilToSvg renders starting at (0,0), we wrap in a translate group
+            var defsS = '';
+            var gradIdS = '';
+            if (isPaintable(style.gradientColor)) {
+              gradIdS = 'sg' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
+              defsS = '<defs><linearGradient id="' + gradIdS + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
+                '<stop offset="0" stop-color="' + hex(style.fillColor) + '"/>' +
+                '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
+                '</linearGradient></defs>';
+            }
+            var textElS = label !== '' ? textSvgStr(label, rcxS, rcyS, style) : '';
+            // Extract inner content from the stencil SVG (everything between <svg...> and </svg>)
+            var innerS = stencilSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+            // Remove any <defs> already in innerS (we handle gradient separately) — but preserve others
+            // Actually keep the defs from stencil, just add rotation
+            var innerSWithOffset = '<g transform="translate(' + fmt(offXS) + ' ' + fmt(offYS) + ')">' + innerS + '</g>';
+            var rotGroupS = '<g transform="rotate(' + fmt(rotDegS) + ' ' + fmt(rcxS) + ' ' + fmt(rcyS) + ')">' +
+              innerSWithOffset + textElS + '</g>';
+            var svgStrS = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(expWS) +
+              '" height="' + fmt(expHS) + '">' + defsS + rotGroupS + '</svg>';
+            var svgCxS = box.x + box.w / 2;
+            var svgCyS = box.y + box.h / 2;
+            paint.push({
+              kind: 'svg',
+              box: { x: svgCxS - expWS / 2, y: svgCyS - expHS / 2, w: expWS, h: expHS },
+              source: base64(svgStrS),
+              aspect: 'preserve'
+            });
+          } else {
+            // Non-rotated stencil: emit kind:'svg' + separate text node
+            paint.push({
+              kind: 'svg',
+              box: box,
+              source: base64(stencilSvg),
+              aspect: 'preserve'
+            });
+            if (label !== '') {
+              // For non-rotated stencils, emit label as separate text node centered on cell
+              var lblBoxS = box;
+              // Check for external label position overrides
+              var lposS = style.labelPosition, vlposS = style.verticalLabelPosition;
+              if (lposS === 'left') {
+                lblBoxS = { x: box.x - box.w, y: box.y, w: box.w, h: box.h };
+              } else if (lposS === 'right') {
+                lblBoxS = { x: box.x + box.w, y: box.y, w: box.w, h: box.h };
+              }
+              if (vlposS === 'top') {
+                lblBoxS = { x: lblBoxS.x, y: box.y - box.h, w: lblBoxS.w, h: box.h };
+              } else if (vlposS === 'bottom') {
+                lblBoxS = { x: lblBoxS.x, y: box.y + box.h, w: lblBoxS.w, h: box.h };
+              }
+              var slb = labelBoxNode(style, lblBoxS);
+              if (slb) paint.push(slb);
+              paint.push(textNode(graph, cell, state, style, lblBoxS, label, notices));
+            }
+          }
+          return;
+        }
+        // stencilToSvg returned null → notice already pushed; fall through to shapePath
+      }
+      // --- End stencil lookup ---
+
       var d = shapePath(style, box.x, box.y, box.w, box.h);
       if (!d) {
         d = rectPath(box.x, box.y, box.w, box.h);
@@ -2806,7 +3460,8 @@
 
   var api = { buildContract: buildContract, buildResult: buildResult,
     noticeSeverity: noticeSeverity, embedExternalImages: embedExternalImages,
-    _embedImageHrefs: embedImageHrefs };
+    _embedImageHrefs: embedImageHrefs,
+    registerStencils: function(registry) { _stencilRegistry = registry; } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -26,6 +26,7 @@ import { dirname, resolve } from 'node:path';
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { pxContractToUm } from './px-to-um.mjs';
 import { createSvgEnv } from './svg-shim/index.mjs';
+import { loadStencils } from './stencil-loader.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,14 @@ if (!globalThis.XMLSerializer) globalThis.XMLSerializer = _shimEnv.XMLSerializer
 const require = createRequire(import.meta.url);
 const exporterPath = resolve(__dir, '../../src/main/webapp/plugins/nativeprint/exporter.js');
 const exporter = require(exporterPath);
+
+// Load all stencil XML files and register them with the exporter.
+// Top-level await is valid in ES module context (Node.js 14.8+).
+const _stencilDir = resolve(__dir, '../../src/main/webapp/stencils');
+const _stencilRegistry = await loadStencils(_stencilDir);
+if (typeof exporter.registerStencils === 'function') {
+  exporter.registerStencils(_stencilRegistry);
+}
 
 // Bake a single page (internal helper).
 // Returns { pxContract (one-page), notices }.

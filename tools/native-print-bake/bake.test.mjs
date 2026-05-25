@@ -255,10 +255,11 @@ test('C1: bake output matches simple.contract.golden.json', async () => {
 });
 
 test('bake: ExporterUnsupportedShape notice for unknown shape', () => {
+  // Use a shape name that does not exist in any stencil or built-in registry
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
-      <mxCell id="2" vertex="1" value="X" style="shape=mxgraph.aws4.user;fillColor=#ffffff;" parent="1">
+      <mxCell id="2" vertex="1" value="X" style="shape=mxgraph.nonexistent.fakeshape999;fillColor=#ffffff;" parent="1">
         <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
       </mxCell>
     </root>
@@ -457,11 +458,11 @@ test('bake: pages option selects subset of pages', () => {
 });
 
 test('D5: unattended mode throws on degradation notices', () => {
-  // Unknown shape triggers ExporterUnsupportedShape notice
+  // Unknown shape (not in stencil registry or built-ins) triggers ExporterUnsupportedShape notice
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
-      <mxCell id="2" vertex="1" value="" style="shape=mxgraph.aws4.user;" parent="1">
+      <mxCell id="2" vertex="1" value="" style="shape=mxgraph.nonexistent.fakeshape999;" parent="1">
         <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
       </mxCell>
     </root>
@@ -740,11 +741,13 @@ test('WYSIWYG: master-test — rotated shapes produce kind:svg nodes with rotate
   const { contract } = bake(xml);
   const paint = contract.document.pages[0].paint;
   const svgNodes = paint.filter((n) => n.kind === 'svg');
-  assert.ok(svgNodes.length >= 9, `expected ≥9 svg nodes for 9 rotated shapes, got ${svgNodes.length}`);
+  // Filter to only the svg nodes that carry a rotation (stencil shapes without rotation also produce kind:svg)
+  const rotatedSvgNodes = svgNodes.filter((n) => {
+    try { return /transform="rotate/.test(Buffer.from(n.source, 'base64').toString('utf8')); }
+    catch { return false; }
+  });
+  assert.ok(rotatedSvgNodes.length >= 9, `expected ≥9 rotated svg nodes, got ${rotatedSvgNodes.length} (total svg: ${svgNodes.length})`);
   for (const n of svgNodes) {
-    const src = Buffer.from(n.source, 'base64').toString('utf8');
-    assert.ok(/transform="rotate/.test(src),
-      `kind:svg node lacks rotate() transform in source SVG`);
     assert.ok(n.box && n.box.w > 0 && n.box.h > 0,
       `kind:svg node has non-positive box: ${JSON.stringify(n.box)}`);
   }
@@ -786,4 +789,138 @@ test('WYSIWYG: master-test — only GradientDirectionApprox notice expected', as
   const unexpected = notices.filter((n) => n.kind !== 'GradientDirectionApprox');
   assert.equal(unexpected.length, 0,
     `unexpected notices: ${unexpected.map((n) => n.kind).join(', ')}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Stencil renderer tests (Phase 1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: make a simple drawio XML with one stencil-shape cell
+function makeStencilXml(styleExtra, label = '') {
+  return `<mxGraphModel pageWidth="300" pageHeight="200">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${label}" style="${styleExtra}" parent="1">
+        <mxGeometry x="50" y="50" width="120" height="100" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+}
+
+test('stencil: variable-aspect flowchart shape bakes to kind:svg with no notice', () => {
+  const xml = makeStencilXml('shape=mxgraph.flowchart.start_1;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'Start');
+  const { contract, notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape: ${unsupported.map(n => n.detail && n.detail.detail).join('; ')}`);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil shape');
+});
+
+test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', () => {
+  // aws4 shapes use aspect="fixed" — tests computeAspect centering
+  const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
+  const { contract, notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape`);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg node for fixed-aspect stencil');
+});
+
+test('stencil: inline base64 stencil decodes and bakes to kind:svg', () => {
+  // A simple rectangle stencil encoded as base64
+  // <shape name="test" w="100" h="100" aspect="variable">
+  //   <background><path><move x="0" y="0"/><line x="100" y="0"/><line x="100" y="100"/><line x="0" y="100"/><close/></path></background>
+  //   <foreground><fillstroke/></foreground>
+  // </shape>
+  const stencilXml = '<shape name="test" w="100" h="100" aspect="variable"><background><path><move x="0" y="0"/><line x="100" y="0"/><line x="100" y="100"/><line x="0" y="100"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;strokeColor=#6c8ebf;`, 'Inline');
+  const { contract, notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape: ${JSON.stringify(unsupported)}`);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg node for inline stencil');
+  // Verify SVG content has geometry
+  const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
+  assert.ok(/<svg/.test(svgStr), 'SVG node should contain SVG markup');
+});
+
+test('stencil: gradient fill produces linearGradient in SVG defs', () => {
+  const xml = makeStencilXml('shape=mxgraph.flowchart.process;fillColor=#dae8fc;gradientColor=#6c8ebf;strokeColor=#000000;', 'Gradient');
+  const { contract, notices } = bake(xml);
+  // Find kind:svg nodes
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  const pathNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  // Gradient should appear in SVG source or path fill
+  const hasGrad = svgNodes.some((n) => {
+    try { return /linearGradient/.test(Buffer.from(n.source, 'base64').toString('utf8')); }
+    catch { return false; }
+  }) || pathNodes.some((n) => n.fill && (n.fill.type === 'linear' || n.fill.type === 'radial'));
+  assert.ok(hasGrad, 'expected linearGradient in stencil SVG with gradientColor');
+});
+
+test('stencil: rotation produces SVG with rotate() transform', () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Rotated" style="shape=mxgraph.flowchart.card;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=30;" parent="1">
+        <mxGeometry x="50" y="50" width="120" height="100" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const { contract, notices } = bake(xml);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg for rotated stencil');
+  const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
+  assert.ok(/rotate\(30/.test(svgStr), 'SVG should contain rotate(30 transform');
+});
+
+test('stencil: direction=north produces rotation transform', () => {
+  const xml = makeStencilXml('shape=mxgraph.flowchart.start_1;fillColor=#dae8fc;strokeColor=#6c8ebf;direction=north;', 'Dir N');
+  const { contract, notices } = bake(xml);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg for direction=north stencil');
+  const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
+  assert.ok(/rotate/.test(svgStr), 'SVG should contain rotation transform for direction=north');
+});
+
+test('stencil: unsupported <image> command raises ExporterUnsupportedStencilFeature notice', () => {
+  // Manually build a stencil node with an <image> child in foreground
+  const stencilXml = '<shape name="imgtest" w="50" h="50" aspect="variable"><background><path><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><line x="0" y="50"/><close/></path></background><foreground><image x="0" y="0" w="50" h="50" src="data:image/png;base64,abc"/><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
+  const { notices } = bake(xml);
+  const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
+  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for <image> command');
+});
+
+test('stencil: unsupported rounded="1" path raises ExporterUnsupportedStencilFeature', () => {
+  const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
+  const { notices } = bake(xml);
+  const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
+  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for rounded="1" path');
+});
+
+test('stencil: built-in hexagon shape produces no ExporterUnsupportedShape notice', () => {
+  const xml = makeStencilXml('shape=hexagon;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'Hex');
+  const { notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0, 'hexagon should not produce ExporterUnsupportedShape');
+});
+
+test('stencil: label preserved on non-rotated stencil shape', () => {
+  const xml = makeStencilXml('shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'MyLabel');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const textNodes = paint.filter((n) => n.kind === 'text');
+  const svgNodes = paint.filter((n) => n.kind === 'svg');
+  // Label should appear in either text node or embedded in SVG
+  const labelInText = textNodes.some((n) => n.content && n.content.lines && n.content.lines.some((l) => l.includes('MyLabel')));
+  const labelInSvg = svgNodes.some((n) => {
+    try { return /MyLabel/.test(Buffer.from(n.source, 'base64').toString('utf8')); }
+    catch { return false; }
+  });
+  assert.ok(labelInText || labelInSvg, 'label "MyLabel" should appear in contract text or SVG nodes');
 });
