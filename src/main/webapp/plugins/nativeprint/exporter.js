@@ -3351,10 +3351,15 @@
               var lblBoxS = box;
               // Check for external label position overrides
               var lposS = style.labelPosition, vlposS = style.verticalLabelPosition;
+              var lblW = style.labelWidth ? parseFloat(style.labelWidth) : null;
               if (lposS === 'left') {
-                lblBoxS = { x: box.x - box.w, y: box.y, w: box.w, h: box.h };
+                var lw = lblW || box.w;
+                lblBoxS = { x: box.x - lw, y: box.y, w: lw, h: box.h };
               } else if (lposS === 'right') {
-                lblBoxS = { x: box.x + box.w, y: box.y, w: box.w, h: box.h };
+                var lw = lblW || box.w;
+                lblBoxS = { x: box.x + box.w, y: box.y, w: lw, h: box.h };
+              } else if (lblW) {
+                lblBoxS = { x: box.x, y: box.y, w: lblW, h: box.h };
               }
               if (vlposS === 'top') {
                 lblBoxS = { x: lblBoxS.x, y: box.y - box.h, w: lblBoxS.w, h: box.h };

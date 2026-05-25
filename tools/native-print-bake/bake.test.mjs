@@ -826,6 +826,36 @@ test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported noti
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for fixed-aspect stencil');
 });
 
+test('stencil: fixed-aspect centering — SVG geometry is bounded within cell box', () => {
+  // A fixed-aspect stencil with a simple 10×10 native size rendered into a 100×60 cell.
+  // computeAspect: su = min(100/10, 60/10) = 6, ox = (100-10*6)/2 = 20, oy = (60-10*6)/2 = 0.
+  // The shape rectangle at (0,0) 10×10 → rendered at (20,0) with size 60×60.
+  // Verify: the SVG x coordinate of the first path point (M) includes the centering offset (ox=20).
+  const stencilXml = '<shape name="fixtest" w="10" h="10" aspect="fixed"><background><path><move x="0" y="0"/><line x="10" y="0"/><line x="10" y="10"/><line x="0" y="10"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  // Cell 100×60 — fixed aspect with 10×10 native → su=min(10,6)=6, ox=20, oy=0
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="FixedAspect" style="shape=stencil(${b64});fillColor=#dae8fc;strokeColor=#6c8ebf;" parent="1">
+      <mxGeometry x="50" y="50" width="100" height="60" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = bake(xml);
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0, 'fixed-aspect inline stencil should not produce ExporterUnsupportedShape');
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg for fixed-aspect stencil');
+  // Decode SVG and verify the centering offset appears in the path data.
+  // With ox=20 and su=6: first M point should be approximately "M 20 0" (ox + 0*6, oy + 0*6)
+  const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
+  // The path should start with M near x=20 (centering offset), not M 0 0
+  const mMatch = /M\s+([\d.]+)\s+([\d.]+)/.exec(svgStr);
+  assert.ok(mMatch, 'SVG path should contain an M command');
+  const mx = parseFloat(mMatch[1]);
+  // With cell 100×60 native 10×10: su=min(10,6)=6, ox=(100-60)/2=20
+  assert.ok(mx >= 18 && mx <= 22, `expected M x ≈ 20 (centering offset), got ${mx}`);
+});
+
 test('stencil: inline base64 stencil decodes and bakes to kind:svg', () => {
   // A simple rectangle stencil encoded as base64
   // <shape name="test" w="100" h="100" aspect="variable">
@@ -924,6 +954,33 @@ test('stencil: label preserved on non-rotated stencil shape', () => {
   });
   assert.ok(labelInText || labelInSvg, 'label "MyLabel" should appear in contract text or SVG nodes');
 });
+
+// ── C1 + C4 for stencil fixture files ─────────────────────────────────────
+
+const stencilFixtures = [
+  'master-test-flowchart',
+  'master-test-arrows-bpmn',
+  'master-test-aws',
+  'master-test-network',
+  'master-test-style-variants',
+];
+
+for (const name of stencilFixtures) {
+  const drawioPath  = join(fixtureDir, `${name}.drawio`);
+  const goldenPath  = join(fixtureDir, `${name}.contract.golden.json`);
+  test(`C1: bake output matches ${name}.contract.golden.json`, async () => {
+    const xml    = await readFile(drawioPath, 'utf8');
+    const golden = JSON.parse(await readFile(goldenPath, 'utf8'));
+    const { contract } = bake(xml);
+    assert.deepEqual(contract, golden, `${name} bake output diverged from golden`);
+  });
+  test(`C4: ${name}.drawio produces zero degradation notices`, async () => {
+    const xml = await readFile(drawioPath, 'utf8');
+    const { notices } = bake(xml);
+    assert.equal(notices.length, 0,
+      `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+  });
+}
 
 // ── master-test-html-labels and master-test-images (C1 + C4) ──────────────
 

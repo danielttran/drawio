@@ -464,6 +464,47 @@ function compare(drawioXml) {
     );
   }
 
+  // ── 15. Stencil shape cells produce kind:'svg' nodes (§7.3) ──────────────
+  // Stencil shapes (style.shape = "mxgraph.*" or "stencil(...)") must produce
+  // kind:'svg' nodes. An ExporterUnsupportedShape notice means the stencil
+  // renderer silently fell through to a bounding-box placeholder — a spec violation.
+  const stencilVerts = vertices.filter(v => {
+    const s = v.style.shape || '';
+    return s.startsWith('mxgraph.') || (s.startsWith('stencil(') && s.endsWith(')'));
+  });
+  if (stencilVerts.length > 0) {
+    const unsupportedCount = notices.filter(n => n.kind === 'ExporterUnsupportedShape').length;
+    check(
+      'Stencil shape cells → kind:svg nodes (no ExporterUnsupportedShape notices)',
+      unsupportedCount === 0,
+      unsupportedCount === 0
+        ? `${stencilVerts.length} stencil shape(s) rendered faithfully`
+        : `${unsupportedCount} ExporterUnsupportedShape notice(s) from stencil shapes`
+    );
+  }
+
+  // ── 16. Stencil shapes with gradientColor → linearGradient in SVG defs (§7.3) ─
+  const stencilGradVerts = stencilVerts.filter(v =>
+    v.style.gradientColor && v.style.gradientColor !== 'none'
+  );
+  if (stencilGradVerts.length > 0) {
+    const hasStencilGrad = (() => {
+      for (const page of contract.document.pages) {
+        for (const node of page.paint) {
+          if (node.kind === 'svg' && svgNodeHasPattern(node.source, /<linearGradient/)) return true;
+        }
+      }
+      return false;
+    })();
+    check(
+      'Stencil shapes with gradientColor → linearGradient in SVG defs',
+      hasStencilGrad,
+      hasStencilGrad
+        ? `${stencilGradVerts.length} stencil gradient shape(s) produce linearGradient in defs`
+        : `${stencilGradVerts.length} stencil shape(s) with gradientColor but no linearGradient found in SVG defs`
+    );
+  }
+
   return { checks, pass, fail, notices, vertices, edges, contractPaths };
 }
 
