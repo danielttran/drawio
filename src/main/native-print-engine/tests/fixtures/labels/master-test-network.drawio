@@ -1,0 +1,50 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Master Test Network">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="0" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1960" pageHeight="600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Row 0: Network shapes n01-n08 (100x100 px) -->
+        <mxCell id="n01" value="Server" style="shape=mxgraph.networks.server;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n02" value="Router" style="shape=mxgraph.networks.router;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n03" value="Hub" style="shape=mxgraph.networks.hub;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n04" value="Firewall" style="shape=mxgraph.networks.firewall;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n05" value="Laptop" style="shape=mxgraph.networks.laptop;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="980" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n06" value="Desktop PC" style="shape=mxgraph.networks.desktop_pc;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n07" value="Cloud" style="shape=mxgraph.networks.cloud;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=-15;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n08" value="Load Bal" style="shape=mxgraph.networks.load_balancer;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 1: Cisco shapes n09-n12 (100x100 px) -->
+        <mxCell id="n09" value="Cisco Laptop" style="shape=mxgraph.cisco.computers_and_peripherals.laptop;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n10" value="Cisco Router" style="shape=mxgraph.cisco.routers.atm_router;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n11" value="Cisco Switch" style="shape=mxgraph.cisco.switches.atm_switch;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="n12" value="Cisco FW" style="shape=mxgraph.cisco.security.firewall;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=20;" vertex="1" parent="1">
+          <mxGeometry x="760" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

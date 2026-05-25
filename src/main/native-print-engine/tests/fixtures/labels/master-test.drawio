@@ -1,6 +1,6 @@
 <mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
   <diagram id="diag-1" name="Master Test Label">
-    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="920" pageHeight="920" math="0" shadow="0">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="0" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1960" pageHeight="1800" math="0" shadow="0">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
@@ -101,6 +101,66 @@
         <!-- 21. Multi-line bold italic text, 0° -->
         <mxCell id="r22" value="Multi-line&#xa;Bold Italic&#xa;14pt" style="text;html=0;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=14;fontStyle=3;" vertex="1" parent="1">
           <mxGeometry x="550" y="820" width="190" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 5: Basic stencil shapes b01-b08 -->
+        <mxCell id="b01" value="6pt Star" style="shape=mxgraph.basic.6_point_star;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b02" value="4pt Star" style="shape=mxgraph.basic.4_point_star;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=20;" vertex="1" parent="1">
+          <mxGeometry x="320" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b03" value="Cross" style="shape=mxgraph.basic.cross;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b04" value="X Shape" style="shape=mxgraph.basic.x;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b05" value="Moon" style="shape=mxgraph.basic.moon;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=-15;" vertex="1" parent="1">
+          <mxGeometry x="980" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b06" value="Pentagon" style="shape=mxgraph.basic.pentagon;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b07" value="Octagon" style="shape=mxgraph.basic.octagon;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b08" value="Flash" style="shape=mxgraph.basic.flash;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=30;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="1100" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 6: Built-in shapes and style variants b09-b16 -->
+        <mxCell id="b09" value="Built-in Hex" style="shape=hexagon;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b10" value="Dbl Ellipse" style="shape=doubleEllipse;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b11" value="Actor" style="shape=actor;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=10;" vertex="1" parent="1">
+          <mxGeometry x="540" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b12" value="Swimlane" style="shape=swimlane;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b13" value="Star FlipH" style="shape=mxgraph.basic.6_point_star;flipH=1;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b14" value="Cross FlipV" style="shape=mxgraph.basic.cross;flipV=1;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b15" value="Star N" style="shape=mxgraph.basic.6_point_star;direction=north;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b16" value="Gradient X" style="shape=mxgraph.basic.cross;gradientColor=#ff0000;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="1300" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 7: Remaining shapes b17-b18 -->
+        <mxCell id="b17" value="Trapezoid" style="shape=mxgraph.basic.trapezoid;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="b18" value="Arrow Conn" style="shape=arrowConnector;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="1500" width="120" height="100" as="geometry"/>
         </mxCell>
       </root>
     </mxGraphModel>
