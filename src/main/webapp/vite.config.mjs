@@ -28,7 +28,7 @@ import { randomBytes } from 'node:crypto';
 let _headlessBake = null;
 async function headlessBake(xml, opts) {
   if (!_headlessBake) {
-    const m = await import('../../tools/native-print-bake/bake.mjs');
+    const m = await import('../../../tools/native-print-bake/bake.mjs');
     _headlessBake = m.bake;
   }
   return _headlessBake(xml, opts);
