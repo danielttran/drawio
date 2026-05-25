@@ -8,6 +8,7 @@
 #include "engine_services_factory.hpp"
 
 #include "custom_stock.hpp"
+#include "print_engine/contract_loader.hpp"
 #include "print_engine/renderer.hpp"
 #include "svg_rasterizer.hpp"
 
@@ -1225,7 +1226,7 @@ class Win32Services final : public EngineServices {
   Result<PreviewOutput, ContractError> render_preview(
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge, double dpi) override {
-    const RenderTarget target{dpi > 0 ? dpi : 300.0, 96.0};
+    const RenderTarget target{dpi > 0 ? dpi : 300.0, units_per_inch(doc.units)};
     auto rendered = render_to_trace(doc, target, merge, false);
     if (!rendered) {
       return Result<PreviewOutput, ContractError>::err(rendered.error());
@@ -1332,7 +1333,7 @@ class Win32Services final : public EngineServices {
           "could not open printer device"});
     }
     const double dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    const RenderTarget target{dpi > 0 ? dpi : 300.0, 96.0};
+    const RenderTarget target{dpi > 0 ? dpi : 300.0, units_per_inch(doc.units)};
     auto rendered = render_to_trace(doc, target, merge, false);
     if (!rendered) {
       DeleteDC(hdc);

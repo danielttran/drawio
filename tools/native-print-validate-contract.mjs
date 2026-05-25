@@ -5,7 +5,7 @@
 // invariants the operator must rely on before clicking Print:
 //
 //   - schema.major == 1
-//   - document.units == "px"
+//   - document.units == "px" or "um"
 //   - every page has size + at least one tile
 //   - every paint node has a positive-w/h box
 //   - every text node either carries non-empty static lines OR a non-empty
@@ -171,8 +171,8 @@ function validate(contract) {
     bad('$.schema.major', `must be 1, got ${JSON.stringify(contract.schema?.major)}`);
   }
   if (!required(contract, 'document', '$', 'object')) return;
-  if (contract.document?.units !== 'px') {
-    bad('$.document.units', `must be "px", got ${JSON.stringify(contract.document?.units)}`);
+  if (contract.document?.units !== 'px' && contract.document?.units !== 'um') {
+    bad('$.document.units', `must be "px" or "um", got ${JSON.stringify(contract.document?.units)}`);
   }
   if (!Array.isArray(contract.document?.pages) || contract.document.pages.length === 0) {
     bad('$.document.pages', 'must be a non-empty array'); return;

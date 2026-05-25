@@ -5,6 +5,7 @@
 
 using print_engine::ContractErrorCode;
 using print_engine::load_baked_contract;
+using print_engine::units_per_inch;
 using print_engine::fixtures::FixtureBuilder;
 
 TEST_CASE("valid phase-0 fixture loads") {
@@ -102,4 +103,59 @@ TEST_CASE("rich text invalid paragraph alignment is refused") {
   const auto result = load_baked_contract(json);
   REQUIRE_FALSE(result);
   CHECK(result.error().code == ContractErrorCode::ContractEnumError);
+}
+
+// ---------------------------------------------------------------------------
+// D4 physical units (schema 1.1): "um" is accepted; unknown units are refused
+// ---------------------------------------------------------------------------
+
+TEST_CASE("D4: um contract units are accepted (schema 1.1)") {
+  const auto json = FixtureBuilder().schema(1, 1).units("um").empty_page().build();
+  const auto result = load_baked_contract(json);
+
+  REQUIRE(result);
+  CHECK(result.value().units == "um");
+  CHECK_FALSE(result.value().has_degradation_notice);
+}
+
+TEST_CASE("D4: um contract with minor=0 loads but the new engine treats it as supported") {
+  const auto json = FixtureBuilder().schema(1, 0).units("um").empty_page().build();
+  const auto result = load_baked_contract(json);
+
+  REQUIRE(result);
+  CHECK(result.value().units == "um");
+}
+
+TEST_CASE("D4: px contract with minor=1 loads without degradation") {
+  const auto json = FixtureBuilder().schema(1, 1).units("px").empty_page().build();
+  const auto result = load_baked_contract(json);
+
+  REQUIRE(result);
+  CHECK(result.value().units == "px");
+  CHECK_FALSE(result.value().has_degradation_notice);
+}
+
+TEST_CASE("D4: unknown units are refused with enum error") {
+  const auto json = FixtureBuilder().units("inch").empty_page().build();
+  const auto result = load_baked_contract(json);
+
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == ContractErrorCode::ContractEnumError);
+  CHECK(result.error().path == "$.document.units");
+}
+
+TEST_CASE("D4: mm units are refused with enum error") {
+  const auto json = FixtureBuilder().units("mm").empty_page().build();
+  const auto result = load_baked_contract(json);
+
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == ContractErrorCode::ContractEnumError);
+}
+
+TEST_CASE("D4: units_per_inch returns 96 for px") {
+  CHECK(units_per_inch("px") == 96.0);
+}
+
+TEST_CASE("D4: units_per_inch returns 25400 for um") {
+  CHECK(units_per_inch("um") == 25400.0);
 }

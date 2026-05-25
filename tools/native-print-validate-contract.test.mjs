@@ -84,12 +84,19 @@ test('wrong schema major exits 1 with a precise diagnostic', async () => {
   assert.match(r.stdout, /\$\.schema\.major: must be 1/);
 });
 
-test('non-px units exits 1', async () => {
+test('unknown units exits 1 (mm)', async () => {
   const c = minimalValid();
   c.document.units = 'mm';
   const r = await run(c);
   assert.equal(r.code, 1);
-  assert.match(r.stdout, /units: must be "px"/);
+  assert.match(r.stdout, /units: must be "px" or "um"/);
+});
+
+test('um units passes validation', async () => {
+  const c = minimalValid();
+  c.document.units = 'um';
+  const r = await run(c);
+  assert.equal(r.code, 0);
 });
 
 test('empty text content lines exits 1', async () => {

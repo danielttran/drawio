@@ -13,6 +13,11 @@ public:
     return *this;
   }
 
+  FixtureBuilder& units(const std::string& units) {
+    units_ = units;
+    return *this;
+  }
+
   FixtureBuilder& empty_page() {
     page_body_ =
       R"({"id":"page-1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]})";
@@ -31,13 +36,14 @@ public:
   [[nodiscard]] std::string build() const {
     std::ostringstream out;
     out << R"({"schema":{"major":)" << major_ << R"(,"minor":)" << minor_
-        << R"(},"document":{"units":"px","pages":[)" << page_body_ << R"(]}})";
+        << R"(},"document":{"units":")" << units_ << R"(","pages":[)" << page_body_ << R"(]}})";
     return out.str();
   }
 
 private:
   int major_ = 1;
   int minor_ = 0;
+  std::string units_ = "px";
   std::string page_body_ =
     R"({"id":"page-1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]})";
 };
