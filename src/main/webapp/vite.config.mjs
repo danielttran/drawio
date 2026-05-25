@@ -14,10 +14,11 @@
 // ReleaseContract/Released deletion sequence (§6).
 
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 // Phase 3 bake convergence: the broker can bake .drawio XML headlessly before
@@ -25,13 +26,17 @@ import { randomBytes } from 'node:crypto';
 // the unattended service.  The import is lazy so dev startup still works even
 // if the bake tooling is temporarily absent (loud error on the first request
 // that needs it, never a silent wrong contract).
-let _headlessBake = null;
 async function headlessBake(xml, opts) {
-  if (!_headlessBake) {
-    const m = await import('../../../tools/native-print-bake/bake.mjs');
-    _headlessBake = m.bake;
-  }
-  return _headlessBake(xml, opts);
+  // Dev: reload exporter.js + the bake on every request so edits are picked up
+  // WITHOUT restarting the dev server. The broker process otherwise
+  // module-caches them, serving stale bakes via the ?headlessBake=1 print path
+  // (the browser being fresh does not refresh this server-side module).
+  const require = createRequire(import.meta.url);
+  try {
+    delete require.cache[require.resolve(join(HERE, 'plugins/nativeprint/exporter.js'))];
+  } catch (e) { /* ignore */ }
+  const m = await import('../../../tools/native-print-bake/bake.mjs?v=' + Date.now());
+  return m.bake(xml, opts);
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -201,6 +206,29 @@ function nativePrintBroker() {
   return {
     name: 'native-print-broker',
     configureServer(server) {
+      // Serve the Native Print plugin scripts + the service worker FRESH from
+      // disk with no-cache, bypassing Vite's transform cache (these are classic
+      // <script> files, not in Vite's module graph, so edits otherwise need a
+      // server restart) AND the browser HTTP cache. Without this, edits to
+      // exporter.js silently never reach the browser during development.
+      var FRESH = {
+        '/plugins/nativeprint/exporter.js': 1,
+        '/plugins/nativeprint.js': 1,
+        '/service-worker.js': 1
+      };
+      server.middlewares.use(function (req, res, next) {
+        var u = (req.url || '').split('?')[0];
+        if (FRESH[u]) {
+          try {
+            var body = readFileSync(join(HERE, u.replace(/^\//, '')), 'utf8');
+            res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.end(body);
+            return;
+          } catch (e) { /* fall through to Vite */ }
+        }
+        next();
+      });
       server.middlewares.use('/native-print', async (req, res) => {
         // Dev-only network surface: localhost bind (Vite) + Origin check.
         const origin = req.headers.origin;

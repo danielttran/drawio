@@ -821,6 +821,24 @@
         if (r === 'default') { r = def; }
         if (r !== v) { set(k, r); }
       });
+    // In the browser, getCellStyle DELETES keys whose value is "none", so an
+    // explicit strokeColor=none / fillColor=none would be re-forced to a theme
+    // default below (e.g. a black border on a borderless note). Recover the
+    // author's explicit "none" from the raw style string so it stays unpainted.
+    // (Headless parser keeps "none", so graph.getModel().getStyle is absent and
+    // this is a no-op there.)
+    try {
+      var rawStyleStr = (graph && graph.getModel && typeof graph.getModel().getStyle === 'function')
+        ? graph.getModel().getStyle(cell) : null;
+      if (typeof rawStyleStr === 'string') {
+        ['strokeColor', 'fillColor', 'fontColor', 'gradientColor'].forEach(function (key) {
+          if (!(key in out) &&
+              new RegExp('(^|;)\\s*' + key + '\\s*=\\s*none\\s*(;|$)', 'i').test(rawStyleStr)) {
+            set(key, 'none');
+          }
+        });
+      }
+    } catch (e) { /* ignore — fall through to defaults */ }
     // Supply drawio's stylesheet defaults when absent (styles/default.xml
     // defaultVertex: fillColor="default", strokeColor="default", fontColor="default";
     // defaultEdge: strokeColor="default", fontColor="default").
@@ -3976,6 +3994,22 @@
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
 
+    // TEMP DEBUG (remove later): logs the real per-cell resolved style for the
+    // swimlanes/note so the actual browser values are visible without a console
+    // paste. Triggers on the two swimlane labels + the note.
+    try {
+      if (/Layout|this note/.test(String(label || ''))) {
+        var rawDbg = (graph.getModel && typeof graph.getModel().getStyle === 'function')
+          ? graph.getModel().getStyle(cell) : '(no raw)';
+        console.log('[NP-DEBUG]', JSON.stringify({
+          label: String(label).slice(0, 24),
+          shape: style.shape, horizontal: style.horizontal,
+          horizontalType: typeof style.horizontal,
+          strokeColor: style.strokeColor, mode: mode, raw: rawDbg
+        }));
+      }
+    } catch (e) { /* ignore */ }
+
     if (isImageCell(style)) {
       // PRIMARY (live path): transcribe drawio's literal rendered SVG so the
       // image rect, label position and (tight) label background come out exactly
@@ -4660,7 +4694,7 @@
     _embedImageHrefs: embedImageHrefs,
     // Revision marker so it is trivial to confirm in the browser console which
     // build of this file is actually loaded: run `NativePrintExporter.__rev`.
-    __rev: 'hl-2026-05-25-numericfix+notefold+swimlanerot',
+    __rev: 'hl-2026-05-25-dbg1',
     registerStencils: function(registry) { _stencilRegistry = registry; } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
