@@ -439,7 +439,7 @@ AnimatedSvgFrozen notice posture).
 
 ---
 
-## Stencil Shape Coverage (2026-05-25 — Phase 1 complete)
+## Stencil Shape Coverage (2026-05-25 — Phase 1 + audit fixes complete)
 
 **Branch:** `claude/native-print-unattended-5qWWK`
 
@@ -463,11 +463,22 @@ stencil shapes + Phase-2 built-ins are all rendered faithfully without a browser
     line, arrow, arrowConnector, connector
   - `stableGradId(fillColor, gradColor)`: deterministic gradient IDs (no Math.random)
 - `tools/native-print-bake/wysiwyg-compare.mjs`: `--all` batch mode + pre-Gate-1
-  `validateNoExcludedShapes` (image/include-shape commands).
+  `validateNoExcludedShapes` (image/include-shape commands) + checks 11/12 (flip + direction).
+
+**Critical fixes from audit (2026-05-25):**
+- **Direction transform**: `rotate(-90 cx cy)` caused geometry overflow for non-square cells.
+  Fixed: north=`translate(0,cellH) rotate(-90)`, south=`translate(cellW,0) rotate(90)`.
+- **Flip transform**: was using `cellW/cellH` but must use `cw/ch` (dimension-swapped space).
+- **Duplicate gradient def**: removed redundant outer gradient in rotated stencil path.
+- **Spec step 11**: corrected "unrecognized node → notice" to "silently skip" (browser behavior).
+- **labelPosition=right test**: added unit test (test 70).
+- **wysiwyg checks 11+12**: flip (scale(-1)) and direction (translate/rotate) added.
+- **Spec filename**: master-test-basic.drawio → master-test.drawio (actual file name).
 
 **Test status:**
-- 69/69 bake tests pass (10 new stencil-specific tests)
-- 13/13 wysiwyg-compare --all PASS (all master test label files)
+- 70/70 bake tests pass (11 stencil-specific tests)
+- 13/13 wysiwyg-compare --all PASS (all master test label files, up to 12 checks each)
+- 118 shapes one-by-one verified across 6 master label files — 100% match rate
 - Zero `ExporterUnsupportedShape` or `ExporterUnsupportedStencilFeature` notices across all fixtures
 
 **Deferred to Phase 3 (raise `ExporterUnsupportedStencilFeature` notice):**
