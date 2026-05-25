@@ -1,0 +1,109 @@
+{
+  "schema": {
+    "major": 1,
+    "minor": 1
+  },
+  "document": {
+    "units": "um",
+    "pages": [
+      {
+        "id": "page-1",
+        "size": {
+          "w": 52916.666667,
+          "h": 26458.333333
+        },
+        "tiles": [
+          {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "size": {
+              "w": 52916.666667,
+              "h": 26458.333333
+            }
+          }
+        ],
+        "paint": [
+          {
+            "kind": "path",
+            "d": "M 952.5 0 L 20214.166667 0 A 952.5 952.5 0 0 1 21166.666667 952.5 L 21166.666667 6985 A 952.5 952.5 0 0 1 20214.166667 7937.5 L 952.5 7937.5 A 952.5 952.5 0 0 1 0 6985 L 0 952.5 A 952.5 952.5 0 0 1 952.5 0 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#dae8fc",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#6c8ebf",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "round",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Hello"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 11906.25,
+              "w": 21166.666667,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "center",
+              "v": "middle"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "World"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
