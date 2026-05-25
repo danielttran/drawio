@@ -25,8 +25,17 @@ import { dirname, resolve } from 'node:path';
 
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { pxContractToUm } from './px-to-um.mjs';
+import { createSvgEnv } from './svg-shim/index.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
+
+// Inject the SVG serialization shim into globalThis BEFORE requiring the exporter.
+// The exporter IIFE (line 2697) captures `root = globalThis` at require-time, so
+// document + XMLSerializer must be present or the exporter's SVG serialization and
+// DOM-creation paths will silently take wrong branches (§0 browser-free requirement).
+const _shimEnv = createSvgEnv();
+if (!globalThis.document) globalThis.document = _shimEnv.document;
+if (!globalThis.XMLSerializer) globalThis.XMLSerializer = _shimEnv.XMLSerializer;
 
 // Load the exporter as a CommonJS module (it self-registers on module.exports).
 const require = createRequire(import.meta.url);
