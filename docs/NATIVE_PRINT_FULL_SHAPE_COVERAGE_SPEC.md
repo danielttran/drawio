@@ -496,11 +496,381 @@ No new C++ tests needed. Existing tests must pass unchanged.
 
 ## 10. Implementation Order
 
-1. **Phase 1a** — Stencil loader in `bake.mjs`: read XML, build registry with correct key formula; inline stencil base64 decoder in `emitVertex`.
-2. **Phase 1b** — `computeAspect` and `stencilToSvg` in `exporter.js`: `<path>` with `<move>/<line>/<curve>/<quad>/<arc>/<close>`, `<rect>/<roundrect>/<ellipse>`, state modifiers, fill/stroke/fillstroke paint commands, gradient support, direction/flip wrappers. Wire into `emitVertex`.
-3. **Phase 1c** — Tests: unit tests per §7.1, golden contract update, wysiwyg-compare extension.
-4. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests.
-5. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`; `<include-shape>` recursion.
+**TEST LABELS FIRST.** No implementation code may be written until all master test label
+`.drawio` files described in §11 exist on disk and are committed. This is a hard gate.
+
+1. **Gate 0 — Create all master test labels** (§11): create each `.drawio` file with the
+   shapes specified, commit to `src/main/native-print-engine/tests/fixtures/labels/`.
+   Verify each file opens correctly in draw.io (visual inspection at this stage only; bake
+   will fail until implementation exists — that is expected and acceptable at this gate).
+
+2. **Phase 1a** — Stencil loader in `bake.mjs`: read XML, build registry with correct key
+   formula (§3.2); inline stencil base64 decoder in `emitVertex`.
+
+3. **Phase 1b** — `computeAspect` and `stencilToSvg` in `exporter.js`: `<path>` with
+   `<move>/<line>/<curve>/<quad>/<arc>/<close>`, `<rect>/<roundrect>/<ellipse>`, state
+   modifiers, fill/stroke/fillstroke paint commands, gradient support, direction/flip wrappers.
+   Wire into `emitVertex`.
+
+4. **Phase 1c** — Bake all master test labels, verify zero `ExporterUnsupportedShape` notices
+   across all files (§13 Gate 1). Generate and commit golden contracts for all files.
+
+5. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests; re-run §13 Gate 1.
+
+6. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`;
+   `<include-shape>` recursion; re-run §13 Gate 1.
+
+7. **Done Gate** — All §13 acceptance criteria pass. Only then is the implementation complete.
+
+---
+
+## 11. Master Test Label Suite (Test-First Mandate)
+
+### 11.1 Mandate
+
+**Master test labels must be created and committed BEFORE any implementation code is written.**
+The test labels define the target; the implementation must satisfy them — not the other way around.
+
+Each label file is a `.drawio` diagram containing shapes arranged on a grid, evenly spaced so
+no two shapes overlap, with varied rotation angles. Every cell carries a text label that names
+the shape, enabling the WYSIWYG checker to verify label preservation.
+
+Grid layout rule: shapes are placed on a grid with 20 px gutters. Each cell is 120 × 100 px
+unless the shape has a natural aspect ratio (aspect="fixed"), in which case use 100 × 100 px.
+Rows wrap every 8 shapes. Canvas width is auto-sized to fit all shapes; `pageWidth` and
+`pageHeight` in `mxGraphModel` are set to the canvas extent.
+
+Rotation rule: within each file, apply a mix of 0°, 15°, 30°, 45°, −20°, and −35° rotations
+spread across cells so that every rotation-sensitive code path is exercised at least once per
+file.
+
+### 11.2 Test Label Files
+
+All files live in `src/main/native-print-engine/tests/fixtures/labels/`.
+
+---
+
+#### `master-test-basic.drawio` *(already exists — extend)*
+
+**Purpose:** Basic and built-in shapes, style variants.  
+**Add to existing file:** shapes from `basic.xml` stencil and the built-in JS shapes.
+
+New cells to add (on top of existing 22 cells):
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| b01 | `shape=mxgraph.basic.star` | `Star` | 0° |
+| b02 | `shape=mxgraph.basic.4_point_star` | `4pt Star` | 20° |
+| b03 | `shape=mxgraph.basic.cross` | `Cross` | 0° |
+| b04 | `shape=mxgraph.basic.x` | `X Shape` | 15° |
+| b05 | `shape=mxgraph.basic.hexagon` | `Hex Stencil` | 0° |
+| b06 | `shape=mxgraph.basic.pentagon` | `Pentagon` | −15° |
+| b07 | `shape=mxgraph.basic.octagon` | `Octagon` | 0° |
+| b08 | `shape=mxgraph.basic.arrow` | `Arrow` | 30° |
+| b09 | `shape=hexagon` | `Built-in Hex` | 0° |
+| b10 | `shape=doubleEllipse` | `Dbl Ellipse` | 0° |
+| b11 | `shape=parallelogram` | `Parallelogram` | 10° |
+| b12 | `shape=trapezoid` | `Trapezoid` | 0° |
+| b13 | `shape=mxgraph.basic.star;flipH=1` | `Star FlipH` | 0° |
+| b14 | `shape=mxgraph.basic.arrow;flipV=1` | `Arrow FlipV` | 0° |
+| b15 | `shape=mxgraph.basic.star;direction=north` | `Star North` | 0° |
+| b16 | `shape=mxgraph.basic.arrow;gradientColor=#ff0000` | `Gradient Arrow` | 0° |
+
+---
+
+#### `master-test-flowchart.drawio` *(new)*
+
+**Purpose:** Covers `flowchart.xml` — the most commonly used stencil family.  
+All shapes are `aspect="variable"` (non-icon, stretch to cell size).
+
+Cells (8 per row, 120×100 px each):
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| f01 | `shape=mxgraph.flowchart.start_1` | `Start` | 0° |
+| f02 | `shape=mxgraph.flowchart.start_2` | `Start 2` | 0° |
+| f03 | `shape=mxgraph.flowchart.process` | `Process` | 0° |
+| f04 | `shape=mxgraph.flowchart.decision` | `Decision` | 15° |
+| f05 | `shape=mxgraph.flowchart.data` | `Data` | 0° |
+| f06 | `shape=mxgraph.flowchart.predefined_process` | `Predefined` | 0° |
+| f07 | `shape=mxgraph.flowchart.stored_data` | `Stored Data` | −15° |
+| f08 | `shape=mxgraph.flowchart.internal_storage` | `Int Storage` | 0° |
+| f09 | `shape=mxgraph.flowchart.sequential_data` | `Seq Data` | 0° |
+| f10 | `shape=mxgraph.flowchart.direct_data` | `Direct Data` | 20° |
+| f11 | `shape=mxgraph.flowchart.manual_input` | `Manual In` | 0° |
+| f12 | `shape=mxgraph.flowchart.manual_operation` | `Manual Op` | 0° |
+| f13 | `shape=mxgraph.flowchart.card` | `Card` | 30° |
+| f14 | `shape=mxgraph.flowchart.punched_tape` | `Tape` | 0° |
+| f15 | `shape=mxgraph.flowchart.connector` | `Connector` | 0° |
+| f16 | `shape=mxgraph.flowchart.summing_junction` | `Sum Junct` | 0° |
+| f17 | `shape=mxgraph.flowchart.or` | `Or` | 0° |
+| f18 | `shape=mxgraph.flowchart.collate` | `Collate` | 0° |
+| f19 | `shape=mxgraph.flowchart.sort` | `Sort` | −20° |
+| f20 | `shape=mxgraph.flowchart.extract` | `Extract` | 0° |
+| f21 | `shape=mxgraph.flowchart.merge` | `Merge` | 0° |
+| f22 | `shape=mxgraph.flowchart.delay` | `Delay` | 0° |
+| f23 | `shape=mxgraph.flowchart.display` | `Display` | 0° |
+| f24 | `shape=mxgraph.flowchart.annotation_1` | `Annotation` | 0° |
+
+---
+
+#### `master-test-arrows-bpmn.drawio` *(new)*
+
+**Purpose:** Covers `arrows.xml` and `bpmn.xml`. Exercises a mix of `aspect="variable"` and
+`aspect="fixed"` shapes, and path commands including arc and curve.
+
+Arrows section (120×80 px, first two rows):
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| a01 | `shape=mxgraph.arrows2.arrow` | `Arrow` | 0° |
+| a02 | `shape=mxgraph.arrows2.arrow;direction=west` | `Arrow W` | 0° |
+| a03 | `shape=mxgraph.arrows2.arrow;direction=north` | `Arrow N` | 0° |
+| a04 | `shape=mxgraph.arrows2.arrow;direction=south` | `Arrow S` | 0° |
+| a05 | `shape=mxgraph.arrows2.arrow;flipH=1` | `Arrow FH` | 0° |
+| a06 | `shape=mxgraph.arrows2.arrow;rotation=45` | `Arrow 45` | 45° |
+| a07 | `shape=mxgraph.arrows2.bent_arrow` | `Bent Arrow` | 0° |
+| a08 | `shape=mxgraph.arrows2.bent_arrow;rotation=-30` | `Bent −30` | −30° |
+
+BPMN section (100×100 px, next rows):
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| p01 | `shape=mxgraph.bpmn.shape;perimeter=mxPerimeter.ellipsePerimeter;symbol=terminate` | `BPMN End` | 0° |
+| p02 | `shape=mxgraph.bpmn.shape;perimeter=mxPerimeter.ellipsePerimeter;symbol=general` | `BPMN Start` | 0° |
+| p03 | `shape=mxgraph.bpmn.shape;symbol=terminate;isLooping=1` | `BPMN Loop` | 0° |
+| p04 | `shape=mxgraph.bpmn.shape;symbol=gateway_complex` | `Gateway X` | 0° |
+| p05 | `shape=mxgraph.bpmn.shape;symbol=gateway_parallel` | `Gateway +` | 0° |
+| p06 | `shape=mxgraph.bpmn.shape;symbol=task_call_activity` | `Task Call` | 0° |
+| p07 | `shape=mxgraph.bpmn.shape;symbol=subprocess_call_activity` | `SubProc` | 15° |
+| p08 | `shape=mxgraph.bpmn.shape;symbol=data_object` | `Data Obj` | 0° |
+
+---
+
+#### `master-test-aws.drawio` *(new)*
+
+**Purpose:** Covers `aws4.xml` and representative shapes from `aws2/` subdirectory.
+Most AWS shapes are `aspect="fixed"` (icon shapes) — this file primarily tests the
+`computeAspect` centering path with square cells (100×100 px).
+
+All cells: 100×100 px, `fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff`.
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| w01 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda` | `Lambda` | 0° |
+| w02 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3` | `S3` | 0° |
+| w03 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2` | `EC2` | 0° |
+| w04 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.rds` | `RDS` | 0° |
+| w05 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb` | `DynamoDB` | 15° |
+| w06 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sqs` | `SQS` | 0° |
+| w07 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns` | `SNS` | −15° |
+| w08 | `shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch` | `CloudWatch` | 0° |
+| w09 | `shape=mxgraph.aws4.group` | `Group` | 0° |
+| w10 | `shape=mxgraph.aws4.traditional_server` | `Server` | 0° |
+| w11 | `shape=mxgraph.aws4.user` | `User` | 0° |
+| w12 | `shape=mxgraph.aws4.generic_saml_idp` | `SAML IdP` | 30° |
+
+---
+
+#### `master-test-network.drawio` *(new)*
+
+**Purpose:** Covers `networks.xml`, `networks2.xml`, and representative Cisco shapes.
+Mix of `aspect="fixed"` and `aspect="variable"`. Cells: 100×100 px.
+
+| Cell ID | Shape style | Label | Rotation |
+|---|---|---|---|
+| n01 | `shape=mxgraph.network.server` | `Server` | 0° |
+| n02 | `shape=mxgraph.network.router` | `Router` | 0° |
+| n03 | `shape=mxgraph.network.switch` | `Switch` | 0° |
+| n04 | `shape=mxgraph.network.firewall` | `Firewall` | 0° |
+| n05 | `shape=mxgraph.network.wireless_access_point` | `WAP` | 15° |
+| n06 | `shape=mxgraph.network.laptop` | `Laptop` | 0° |
+| n07 | `shape=mxgraph.network.workstation` | `Workstation` | 0° |
+| n08 | `shape=mxgraph.network.cloud` | `Cloud` | −15° |
+| n09 | `shape=mxgraph.cisco.computers_and_peripherals.pc` | `Cisco PC` | 0° |
+| n10 | `shape=mxgraph.cisco.routers.router` | `Cisco Router` | 0° |
+| n11 | `shape=mxgraph.cisco.switches.workgroup_switch` | `Cisco Switch` | 0° |
+| n12 | `shape=mxgraph.cisco.firewalls.firewall` | `Cisco FW` | 20° |
+
+---
+
+#### `master-test-style-variants.drawio` *(new)*
+
+**Purpose:** Cross-cutting style properties — gradient, dashed, thick stroke, flipH, flipV,
+`direction=north/south/west`, labelPosition outside cell, and `stencil(base64...)` inline
+shape. Uses the same `mxgraph.flowchart.process` shape as base to isolate style rendering
+from shape geometry.
+
+Cells: 120×100 px each.
+
+| Cell ID | Shape / Style override | Label | Purpose |
+|---|---|---|---|
+| s01 | `shape=mxgraph.flowchart.process;fillColor=#dae8fc;gradientColor=#6c8ebf` | `Gradient` | Gradient fill |
+| s02 | `shape=mxgraph.flowchart.process;dashed=1` | `Dashed` | Dashed stroke |
+| s03 | `shape=mxgraph.flowchart.process;strokeWidth=4` | `Thick` | Thick stroke |
+| s04 | `shape=mxgraph.flowchart.process;opacity=50` | `Opacity 50` | Shape opacity |
+| s05 | `shape=mxgraph.flowchart.data;flipH=1` | `Flip H` | Horizontal flip |
+| s06 | `shape=mxgraph.flowchart.data;flipV=1` | `Flip V` | Vertical flip |
+| s07 | `shape=mxgraph.flowchart.data;flipH=1;flipV=1` | `Flip HV` | Both flips |
+| s08 | `shape=mxgraph.flowchart.data;direction=north` | `Dir N` | Direction north |
+| s09 | `shape=mxgraph.flowchart.data;direction=south` | `Dir S` | Direction south |
+| s10 | `shape=mxgraph.flowchart.data;direction=west` | `Dir W` | Direction west |
+| s11 | `shape=mxgraph.flowchart.process;rotation=45;gradientColor=#ff8000` | `Rot+Grad` | Rotation + gradient |
+| s12 | `shape=mxgraph.flowchart.process;rotation=-30;dashed=1` | `Rot+Dash` | Rotation + dashed |
+| s13 | `shape=mxgraph.flowchart.process;labelPosition=right;align=left` | `Label Right` | Label outside cell |
+| s14 | `shape=mxgraph.flowchart.process;verticalLabelPosition=bottom;verticalAlign=top` | `Label Below` | Label below cell |
+| s15 | `shape=stencil(PHNoYXBlIG5hbWU9InRlc3QiIHc9IjEwMCIgaD0iMTAwIiBhc3BlY3Q9InZhcmlhYmxlIj48YmFja2dyb3VuZD48cGF0aD48bW92ZSB4PSIwIiB5PSIwIi8+PGxpbmUgeD0iMTAwIiB5PSIwIi8+PGxpbmUgeD0iMTAwIiB5PSIxMDAiLz48bGluZSB4PSIwIiB5PSIxMDAiLz48Y2xvc2UvPjwvcGF0aD48L2JhY2tncm91bmQ+PGZvcmVncm91bmQ+PGZpbGxzdHJva2UvPjwvZm9yZWdyb3VuZD48L3NoYXBlPg==)` | `Inline Stencil` | Inline base64 shape |
+
+The `stencil(...)` value in s15 is a base64-encoded simple rectangle stencil XML, pre-computed
+and hardcoded in the .drawio file.
+
+---
+
+### 11.3 Test Label Creation Rules
+
+1. All `.drawio` files use `host="bake-test"` and `modified="2026-05-25T00:00:00.000Z"` to
+   produce deterministic bake output.
+2. All cells use `fontFamily=Arial;fontSize=11` for consistent text rendering.
+3. No two cells overlap. Minimum 20 px gap between any two cell bounding boxes (including
+   the expanded bounding box for rotated cells).
+4. Every cell carries a non-empty `value` attribute (the label). The label names the shape.
+5. Stencil shapes that are known to use `<image>` or `<include-shape>` internally are
+   intentionally excluded from Phase 1 test labels — they would produce expected notices and
+   are tracked separately in §11.4.
+6. After creating each file, run `node tools/native-print-bake/bake.mjs <file>` to confirm the
+   file parses as valid XML. Before implementation, bake will fail with notices — that is
+   expected. The files are correct if they parse without XML errors.
+
+### 11.4 Shapes Intentionally Excluded (Phase 1)
+
+These shapes are known to use stencil features deferred to Phase 3. Including them in Phase 1
+test labels would produce legitimate notices and mask real failures. They are tracked here so
+they can be added to a `master-test-phase3.drawio` file when Phase 3 is implemented.
+
+- Any shape from `mxgraph.aws4.resourceIcon` group that uses `<include-shape>` internally.
+- Shapes with `<image>` stencil commands (identified by grepping the stencil XML for `<image`).
+- Shapes with `<path rounded="1">` (identified by grepping for `rounded="1"`).
+
+---
+
+## 12. WYSIWYG Verification and Done Criteria
+
+### 12.1 Verification Approach
+
+WYSIWYG is guaranteed **by construction**, not by pixel comparison (which is forbidden by
+`docs/CLAUDE.md §2`). The stencil XML defines exactly what draw.io renders; the headless
+renderer uses the same XML. There is nothing to "compare against a browser" — the source of
+truth is the stencil XML itself.
+
+Verification is therefore **structural and deterministic**:
+
+1. **Structural check**: every vertex cell in the `.drawio` file maps to a `kind:'svg'` (or
+   `kind:'path'`) node in the bake output. No cell is silently missing.
+2. **Label check**: every cell with a non-empty `value` has its label text preserved verbatim
+   in the contract (in a `kind:'text'` node or embedded in the `kind:'svg'` source).
+3. **Notice check**: zero `ExporterUnsupportedShape` notices in the bake output for any cell
+   using a shape that Phase 1/2/3 is expected to support.
+4. **Gradient check**: cells with `gradientColor` produce `kind:'svg'` nodes whose `source`
+   (base64-decoded) contains a `<linearGradient` element in the SVG defs.
+5. **Rotation check**: cells with `rotation != 0` produce `kind:'svg'` nodes whose SVG source
+   contains a `transform="rotate(` attribute.
+6. **Flip check**: cells with `flipH=1` or `flipV=1` produce SVG source containing
+   `scale(-1` or `scale(1,-1`.
+7. **Direction check**: cells with `direction=north/south/west` produce SVG source containing
+   a rotation transform.
+8. **Golden contract**: baking the same `.drawio` file twice produces byte-identical contract
+   JSON (determinism check). The golden is committed at
+   `src/main/native-print-engine/tests/fixtures/labels/<filename>.contract.golden.json`.
+9. **Cell count**: the number of paint nodes in the contract equals the number of vertex cells
+   in the `.drawio` file (connectors/edges are separate).
+
+### 12.2 `wysiwyg-compare.mjs` Extension
+
+Extend `compare(drawioXml)` in `tools/native-print-bake/wysiwyg-compare.mjs` to run all 9
+checks above. The function already exists; add the new checks as named assertions. Each
+check reports pass/fail with the specific cell ID and failure reason.
+
+Add a CLI batch mode:
+```
+node wysiwyg-compare.mjs --all
+```
+which runs `compare()` on every `.drawio` file in the fixtures labels directory and exits 0
+only if all files pass all checks.
+
+### 12.3 Gate 1: Zero Unsupported Shape Notices
+
+**Gate 1 is the primary passing criterion for Phase 1/2.**
+
+After Phase 1b and Phase 2 are implemented, running:
+```
+node tools/native-print-bake/wysiwyg-compare.mjs --all
+```
+must produce zero `ExporterUnsupportedShape` notices across all master test label files
+(excluding Phase 1 intentionally excluded shapes from §11.4).
+
+Gate 1 failure blocks "done" declaration. No exceptions.
+
+### 12.4 Gate 2: Golden Contract Match
+
+For each master test label file, a golden contract is generated after Gate 1 passes and
+committed to the repository. Subsequent runs of `node --test` include a C1-style test for
+each golden file:
+
+```javascript
+test('C1 master-test-<name>: bake output matches golden', async () => {
+  const xml = readFileSync(join(fixtureDir, 'master-test-<name>.drawio'), 'utf8');
+  const result = await bake(xml);
+  const golden = JSON.parse(readFileSync(join(fixtureDir, 'master-test-<name>.contract.golden.json'), 'utf8'));
+  assert.deepStrictEqual(result, golden);
+});
+```
+
+This enforces determinism: the renderer produces exactly the same output on every run.
+Golden contracts are regenerated only when the stencil XML or renderer logic intentionally
+changes, and the diff is reviewed in the PR.
+
+### 12.5 Done Declaration
+
+The implementation is **done** when ALL of the following are true:
+
+| Check | Command | Requirement |
+|---|---|---|
+| All unit tests pass | `node --test tools/native-print-bake/bake.test.mjs` | 0 failures |
+| Gate 1: zero unsupported shapes | `node wysiwyg-compare.mjs --all` | 0 `ExporterUnsupportedShape` notices |
+| Gate 2: golden contracts match | `node --test tools/native-print-bake/bake.test.mjs` (C1 tests) | All golden tests pass |
+| Engine tests pass | `ctest` in `src/main/native-print-engine/build/` | 0 failures |
+| All 9 structural checks pass | `node wysiwyg-compare.mjs --all` | All checks pass for all files |
+| Bake is deterministic | Run bake twice on each file, compare output | Byte-identical |
+
+---
+
+## 10. Implementation Order (updated)
+
+**TEST LABELS FIRST.** No implementation code may be written until all master test label
+`.drawio` files described in §11 exist on disk and are committed. This is a hard gate.
+
+1. **Gate 0 — Create all master test labels** (§11): create each `.drawio` file with the
+   shapes specified, commit to `src/main/native-print-engine/tests/fixtures/labels/`.
+   Verify each file opens correctly in draw.io (visual inspection at this stage only; bake
+   will fail until implementation exists — that is expected and acceptable at this gate).
+
+2. **Phase 1a** — Stencil loader in `bake.mjs`: read XML, build registry with correct key
+   formula (§3.2); inline stencil base64 decoder in `emitVertex`.
+
+3. **Phase 1b** — `computeAspect` and `stencilToSvg` in `exporter.js`: `<path>` with
+   `<move>/<line>/<curve>/<quad>/<arc>/<close>`, `<rect>/<roundrect>/<ellipse>`, state
+   modifiers, fill/stroke/fillstroke paint commands, gradient support, direction/flip wrappers.
+   Wire into `emitVertex`.
+
+4. **Phase 1c** — Bake all master test labels, verify zero `ExporterUnsupportedShape` notices
+   across all files (§13 Gate 1). Generate and commit golden contracts for all files.
+
+5. **Phase 2** — Extend `shapePath` for ~20 built-in JS shapes; unit tests; re-run §13 Gate 1.
+
+6. **Phase 3** — `<path rounded="1">` Bezier rounding; `<image>` via `embedExternalImages`;
+   `<include-shape>` recursion; re-run §13 Gate 1.
+
+7. **Done Gate** — All §13 acceptance criteria pass. Only then is the implementation complete.
 
 ---
 
