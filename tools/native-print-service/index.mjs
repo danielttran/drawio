@@ -153,7 +153,7 @@ export class PrintService {
       return badRequest(res, 'BAD_REQUEST', err.message);
     }
 
-    const { source, printerId, stockId, copies = 1, data = {}, pages } = body;
+    const { source, printerId, stockId, copies = 1, data = {}, pages, options = {} } = body;
 
     if (!source || !printerId || !stockId) {
       return badRequest(res, 'BAD_REQUEST',
@@ -164,7 +164,7 @@ export class PrintService {
     let result;
     try {
       result = await this._queue.enqueue(() =>
-        this._runJob(source, printerId, stockId, copies, data, pages)
+        this._runJob(source, printerId, stockId, copies, data, pages, options)
       );
     } catch (err) {
       if (err.code === 'BAKE_NOTICES') {
@@ -187,7 +187,7 @@ export class PrintService {
     sendJson(res, 200, result);
   }
 
-  async _runJob(source, printerId, stockId, copies, data, pages) {
+  async _runJob(source, printerId, stockId, copies, data, pages, options = {}) {
     await loadDeps();
 
     let contract;
@@ -220,9 +220,9 @@ export class PrintService {
       _assertFontsAvailable(contract, this._availableFonts);
     }
 
-    // Send to engine
+    // Send to engine (D6 AA control: pass options.aa through to Print op)
     const { jobId, notices: engineNotices, jobLog } =
-      await this._client.print(contract, printerId, stockId, copies, data);
+      await this._client.print(contract, printerId, stockId, copies, data, options);
 
     // D5: any engine notice → refuse (job not printed)
     if (engineNotices.length > 0) {

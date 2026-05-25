@@ -644,11 +644,20 @@ std::string text_to_svg(const EmittedCommand& c, ISvgRasterizer* sr) {
 // `svg_rasterizer` may be null (no backend installed); when null OR the
 // backend fails for any reason, the SVG branch falls back to the existing
 // loud crosshatch stub — never silent.
+// D6 AA control: edge_crisp=true disables anti-aliasing (threshold mode) for
+// T-Barcode/thermal use; false (default) keeps SmoothingModeAntiAlias.
 Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                                              const RenderTrace& trace,
-                                             ISvgRasterizer* svg_rasterizer) {
-  g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-  g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+                                             ISvgRasterizer* svg_rasterizer,
+                                             bool edge_crisp = false) {
+  if (edge_crisp) {
+    g.SetSmoothingMode(Gdiplus::SmoothingModeHighSpeed);
+    g.SetTextRenderingHint(
+        Gdiplus::TextRenderingHintSingleBitPerPixelGridFit);
+  } else {
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+  }
   Gdiplus::SolidBrush black(Gdiplus::Color(255, 0, 0, 0));
   Gdiplus::Pen black_pen(Gdiplus::Color(255, 0, 0, 0), 1.0f);
   DrawResult result;
@@ -1482,7 +1491,7 @@ class Win32Services final : public EngineServices {
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge,
       const std::string& printer_id, const std::string& stock_id,
-      int copies) override {
+      int copies, PrintRenderOptions opts = {}) override {
     const std::wstring wname = widen(printer_id);
     const int n_copies = std::max(1, copies);
     auto devmode_buffer = merged_devmode_for(wname, stock_id);
@@ -1503,6 +1512,14 @@ class Win32Services final : public EngineServices {
     if (!rendered) {
       DeleteDC(hdc);
       return Result<PrintOutput, ContractError>::err(rendered.error());
+    }
+
+    // §3.4 D6: Collect referenced font faces for jobLog traceability.
+    std::set<std::string> referenced_font_set;
+    for (const auto& cmd : rendered.value().commands) {
+      if (cmd.kind == EmittedKind::Text && !cmd.font_family.empty()) {
+        referenced_font_set.insert(cmd.font_family);
+      }
     }
 
     DOCINFOW di{};
@@ -1561,7 +1578,8 @@ class Win32Services final : public EngineServices {
             // Shift the world origin so page row band_y maps to band row 0.
             gb.TranslateTransform(
                 0.0f, static_cast<Gdiplus::REAL>(-band_y));
-            auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get());
+            auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get(),
+                                    opts.edge_crisp);
             if (!drawn) {
               aborted = true;
               fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +
@@ -1615,6 +1633,10 @@ class Win32Services final : public EngineServices {
         Json::str(svg_rasterizer_ && svg_rasterizer_->available()
                       ? svg_rasterizer_->backend_id()
                       : std::string("none")));
+    // §3.4 D6: resolved font faces for determinism auditing.
+    Json fonts = Json::array();
+    for (const auto& f : referenced_font_set) fonts.push_back(Json::str(f));
+    job.job_log.set("resolvedFonts", std::move(fonts));
     // Merged values are redaction-gated (default off, §7): keys only.
     Json keys = Json::array();
     for (const auto& kv : merge) keys.push_back(Json::str(kv.first));

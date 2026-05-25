@@ -588,3 +588,123 @@ test('C5: shapes.drawio — rect/ellipse/diamond/rounded produce non-empty path 
       `C5: shape path node has trivially empty d: ${JSON.stringify(node.d)}`);
   }
 });
+
+// --- Expanded corpus (§9.1): connector, gradient, multitext, groups, multipage ---
+
+const connectorDrawio   = join(fixtureDir, 'connector.drawio');
+const connectorGolden   = join(fixtureDir, 'connector.contract.golden.json');
+const gradientDrawio    = join(fixtureDir, 'gradient.drawio');
+const gradientGolden    = join(fixtureDir, 'gradient.contract.golden.json');
+const multitextDrawio   = join(fixtureDir, 'multitext.drawio');
+const multitextGolden   = join(fixtureDir, 'multitext.contract.golden.json');
+const groupsDrawio      = join(fixtureDir, 'groups.drawio');
+const groupsGolden      = join(fixtureDir, 'groups.contract.golden.json');
+const multipageDrawio   = join(fixtureDir, 'multipage.drawio');
+const multipageGolden   = join(fixtureDir, 'multipage.contract.golden.json');
+
+// C1: golden match
+
+test('C1: bake output matches connector.contract.golden.json', async () => {
+  const xml    = await readFile(connectorDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(connectorGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'connector bake output diverged from golden');
+});
+
+test('C1: bake output matches gradient.contract.golden.json', async () => {
+  const xml    = await readFile(gradientDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(gradientGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'gradient bake output diverged from golden');
+});
+
+test('C1: bake output matches multitext.contract.golden.json', async () => {
+  const xml    = await readFile(multitextDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(multitextGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'multitext bake output diverged from golden');
+});
+
+test('C1: bake output matches groups.contract.golden.json', async () => {
+  const xml    = await readFile(groupsDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(groupsGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'groups bake output diverged from golden');
+});
+
+test('C1: bake output matches multipage.contract.golden.json', async () => {
+  const xml    = await readFile(multipageDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(multipageGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'multipage bake output diverged from golden');
+});
+
+// C4: zero-notice gate for supported-vocabulary samples
+// (gradient and groups produce expected notices and are excluded from C4)
+
+test('C4: connector.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(connectorDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
+test('C4: multitext.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(multitextDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
+test('C4: multipage.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(multipageDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
+// C5: vocabulary coverage — connector, gradient, groups all produce non-empty output
+
+test('C5: connector.drawio — path nodes from edge and vertices are non-empty', async () => {
+  const xml = await readFile(connectorDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  assert.ok(paint.length > 0, 'C5: no paint nodes for connector.drawio');
+  const paths = paint.filter((n) => n.kind === 'path');
+  assert.ok(paths.length >= 2, `C5: expected ≥2 path nodes (2 boxes + edge), got ${paths.length}`);
+  for (const p of paths) {
+    assert.ok(p.d && p.d.trim().length > 1, `C5: path has trivially empty d`);
+  }
+});
+
+test('C5: gradient.drawio — gradient fills produce non-empty path nodes', async () => {
+  const xml = await readFile(gradientDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const paths = paint.filter((n) => n.kind === 'path');
+  assert.ok(paths.length >= 3, `C5: expected ≥3 path nodes for 3 shapes, got ${paths.length}`);
+  for (const p of paths) {
+    assert.ok(p.d && p.d.trim().length > 1, `C5: gradient path has trivially empty d`);
+  }
+});
+
+test('C5: multipage.drawio — two pages each have paint nodes', async () => {
+  const xml = await readFile(multipageDrawio, 'utf8');
+  const { contract } = bake(xml);
+  assert.equal(contract.document.pages.length, 2, 'C5: expected 2 pages');
+  for (const page of contract.document.pages) {
+    assert.ok(page.paint.length > 0, `C5: page ${page.id} has no paint nodes`);
+  }
+});
+
+test('C5: multitext.drawio — all text nodes have non-zero-area boxes', async () => {
+  const xml = await readFile(multitextDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const texts = paint.filter((n) => n.kind === 'text');
+  assert.ok(texts.length >= 4, `C5: expected ≥4 text nodes, got ${texts.length}`);
+  for (const t of texts) {
+    assert.ok(t.box && t.box.w > 0 && t.box.h > 0,
+      `C5: text node has zero-area box: ${JSON.stringify(t.box)}`);
+  }
+});

@@ -12,6 +12,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using print_engine::ContractErrorCode;
@@ -626,4 +629,122 @@ TEST_CASE("Empty page renders to start/clip/end-tile with no paint commands") {
   CHECK(clip == 1);
   CHECK(end_tile == 1);
   CHECK(path == 0);
+}
+
+// ===========================================================================
+// C2: Corpus golden contracts render deterministically (engine→engine,
+// §6/§9.3). Loads each golden JSON from the labels fixtures directory and
+// verifies that render_to_trace produces byte-identical traces on two
+// consecutive calls — the engine-level proof of "same contract = same output".
+// This is the C2 pixel-equivalence guarantee expressed in terms of the trace
+// (cross-platform; the GDI+ compositor is Windows-only so full pixel comparison
+// is deferred to the Windows CI that builds the Rust rasterizer cdylib).
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] std::string read_all_file(const std::filesystem::path& p) {
+  std::ifstream in(p);
+  if (!in) return {};
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+}  // namespace
+
+TEST_CASE("C2: simple.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  const std::filesystem::path golden =
+      std::filesystem::path(PRINT_ENGINE_SOURCE_ROOT) /
+      "tests" / "fixtures" / "labels" / "simple.contract.golden.json";
+  const std::string json = read_all_file(golden);
+  if (json.empty()) {
+    SKIP("simple.contract.golden.json not found — run bake to generate corpus");
+  }
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const RenderTarget t{300.0, units_per_inch(loaded.value().units)};
+  const auto a = render_to_trace(loaded.value(), t);
+  const auto b = render_to_trace(loaded.value(), t);
+  REQUIRE(a);
+  REQUIRE(b);
+  REQUIRE(a.value().commands.size() == b.value().commands.size());
+  for (std::size_t i = 0; i < a.value().commands.size(); ++i) {
+    INFO("command index " << i);
+    CHECK(a.value().commands[i].kind == b.value().commands[i].kind);
+    CHECK(a.value().commands[i].label == b.value().commands[i].label);
+    CHECK(nearly_equal(a.value().commands[i].device_box.x,
+                       b.value().commands[i].device_box.x, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.y,
+                       b.value().commands[i].device_box.y, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.w,
+                       b.value().commands[i].device_box.w, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.h,
+                       b.value().commands[i].device_box.h, 1e-9));
+  }
+}
+
+// Reusable helper: load, render twice, compare trace for determinism.
+namespace {
+void check_corpus_determinism(const char* fixture_name) {
+  const std::filesystem::path golden =
+      std::filesystem::path(PRINT_ENGINE_SOURCE_ROOT) /
+      "tests" / "fixtures" / "labels" / fixture_name;
+  const std::string json = read_all_file(golden);
+  if (json.empty()) {
+    SKIP("golden not found — run bake to generate corpus: " << fixture_name);
+  }
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const RenderTarget t{300.0, units_per_inch(loaded.value().units)};
+  const auto a = render_to_trace(loaded.value(), t);
+  const auto b = render_to_trace(loaded.value(), t);
+  REQUIRE(a);
+  REQUIRE(b);
+  REQUIRE(a.value().commands.size() == b.value().commands.size());
+  for (std::size_t i = 0; i < a.value().commands.size(); ++i) {
+    INFO("command index " << i);
+    CHECK(a.value().commands[i].kind == b.value().commands[i].kind);
+    CHECK(a.value().commands[i].label == b.value().commands[i].label);
+    CHECK(nearly_equal(a.value().commands[i].device_box.x,
+                       b.value().commands[i].device_box.x, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.y,
+                       b.value().commands[i].device_box.y, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.w,
+                       b.value().commands[i].device_box.w, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.h,
+                       b.value().commands[i].device_box.h, 1e-9));
+  }
+}
+}  // namespace
+
+TEST_CASE("C2: shapes.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("shapes.contract.golden.json");
+}
+
+TEST_CASE("C2: connector.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("connector.contract.golden.json");
+}
+
+TEST_CASE("C2: gradient.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("gradient.contract.golden.json");
+}
+
+TEST_CASE("C2: multitext.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("multitext.contract.golden.json");
+}
+
+TEST_CASE("C2: groups.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("groups.contract.golden.json");
+}
+
+TEST_CASE("C2: multipage.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("multipage.contract.golden.json");
 }

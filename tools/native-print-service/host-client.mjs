@@ -63,18 +63,22 @@ export class HostClient {
   }
 
   // Send a Print command. Returns { jobId, notices, jobLog }.
-  async print(contractJson, printerId, stockId, copies = 1, merge = {}) {
+  // opts.aa: 'on' (default, AA on) | 'crisp' (edge-crisp, D6 AA control)
+  async print(contractJson, printerId, stockId, copies = 1, merge = {}, opts = {}) {
     if (!this._connected) throw new Error('not connected; call connect() first');
     if (this._closed) throw new HostClientError('HOST_CLOSED', 'host process closed');
 
-    const reply = await this._sendAndWait({
+    const msg = {
       op: 'Print',
       contractRef: { inline: JSON.stringify(contractJson) },
       printerId,
       stockId,
       copies,
       mergeData: merge
-    });
+    };
+    if (opts.aa === 'crisp') msg.aa = 'crisp';
+
+    const reply = await this._sendAndWait(msg);
 
     if (reply.result === 'Error') {
       throw new HostClientError(reply.error || 'PRINT_FAILED',

@@ -327,10 +327,14 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
           request.get("stockId") ? request.get("stockId")->as_string() : "";
       const int copies = static_cast<int>(
           request.get("copies") ? request.get("copies")->as_number(1.0) : 1.0);
+      PrintRenderOptions opts;
+      if (const Json* aa = request.get("aa")) {
+        opts.edge_crisp = (aa->as_string() == "crisp");
+      }
 
       print_in_flight_ = true;
       auto out = services_.print(loaded.value(), read_merge(request),
-                                 printer_id, stock_id, copies);
+                                 printer_id, stock_id, copies, opts);
       print_in_flight_ = false;
       if (!out.has_value()) {
         return error_reply(request, map_contract_error(out.error().code),

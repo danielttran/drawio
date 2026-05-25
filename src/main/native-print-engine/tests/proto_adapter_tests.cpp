@@ -49,6 +49,7 @@ Json inline_ref(const std::string& contract_json) {
 class FakeServices : public proto::EngineServices {
  public:
   std::function<void()> on_print;
+  proto::PrintRenderOptions last_opts;  // captured for D6 AA control tests
 
   std::vector<proto::PrinterInfo> enumerate_printers() override {
     proto::StockInfo s{"stock-4x6", "4x6 label", 101600, 152400, 300.0, 300.0};
@@ -74,7 +75,9 @@ class FakeServices : public proto::EngineServices {
 
   Result<proto::PrintOutput, ContractError> print(
       const BakedDocument&, const std::map<std::string, std::string>&,
-      const std::string&, const std::string&, int) override {
+      const std::string&, const std::string&, int,
+      proto::PrintRenderOptions opts = {}) override {
+    last_opts = opts;
     if (on_print) on_print();
     proto::PrintOutput job;
     job.job_id = "job-7";
@@ -221,6 +224,38 @@ TEST_CASE("Print returns a typed job result with a job log",
   CHECK(r.control.get("jobId")->as_string() == "job-7");
   CHECK(r.control.get("jobLog")->get("engineVersion")->as_string() ==
         "native-print-engine");
+}
+
+TEST_CASE("D6: Print with aa:crisp sets edge_crisp on PrintRenderOptions",
+          "[adapter][d6][aa]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  Json m = req("Print");
+  m.set("contractRef",
+        inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  m.set("printerId", Json::str("printer-1"));
+  m.set("stockId", Json::str("stock-4x6"));
+  m.set("aa", Json::str("crisp"));
+  auto r = d.handle(m);
+  CHECK(r.control.get("result")->as_string() == "PrintResult");
+  CHECK(svc.last_opts.edge_crisp == true);
+}
+
+TEST_CASE("D6: Print with aa:on (default) keeps edge_crisp false",
+          "[adapter][d6][aa]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  Json m = req("Print");
+  m.set("contractRef",
+        inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  m.set("printerId", Json::str("printer-1"));
+  m.set("stockId", Json::str("stock-4x6"));
+  // No "aa" field — default must be AA on (edge_crisp = false)
+  auto r = d.handle(m);
+  CHECK(r.control.get("result")->as_string() == "PrintResult");
+  CHECK(svc.last_opts.edge_crisp == false);
 }
 
 TEST_CASE("Phase 5 device-side SvgArtworkRasterized notice round-trips through"

@@ -54,7 +54,7 @@ class StubServices final : public EngineServices {
   Result<PrintOutput, ContractError> print(
       const BakedDocument&, const std::map<std::string, std::string>&,
       const std::string& printer_id, const std::string& stock_id,
-      int copies) override {
+      int copies, PrintRenderOptions /*opts*/ = {}) override {
     PrintOutput job;
     job.job_id = "stub-job";
     job.job_log = Json::object();
