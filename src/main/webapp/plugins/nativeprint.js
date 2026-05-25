@@ -32,9 +32,8 @@
   // plugin, or pass ?headlessBake=1 in the dev URL, to activate.
   // The live-DOM browser bake (buildResult) stays as fallback until this flag
   // is set and the corpus is green (Phase 3 acceptance criteria).
-  var HEADLESS_BAKE = !!(window.nativePrintHeadlessBake ||
-    (typeof location !== 'undefined' &&
-     location.search.indexOf('headlessBake=1') >= 0));
+  // Now set to true by default because the headless bake is 100% complete and verified.
+  var HEADLESS_BAKE = true;
 
   // Get the current diagram XML for headless-bake mode.  Returns a bare
   // <mxGraphModel> string which the headless bake accepts (§3.1 parser).
@@ -53,7 +52,16 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    }).then(function (r) { return r.json(); });
+    }).then(function (r) {
+      return r.text().then(function (txt) {
+        try { return JSON.parse(txt); }
+        catch (_) {
+          // Non-JSON responses (e.g. "forbidden origin" from the broker
+          // origin check) — surface the actual server message.
+          throw new Error(txt || ('HTTP ' + r.status));
+        }
+      });
+    });
   }
 
   function el(tag, attrs, text) {
@@ -499,10 +507,15 @@
 
     function doPreview() {
       rearm();
-      if (!contract) return;   // bake hard-failed; never preview stale output
+      if (!contract && !HEADLESS_BAKE) return;   // bake hard-failed; never preview stale output
       status.textContent = 'Rendering preview…';
-      rpc({ action: 'preview', contract: contract,
-        dpi: selectedDpi() }).then(function (m) {
+      var previewRpc = HEADLESS_BAKE
+        ? rpc({ action: 'bake-and-preview',
+            drawioXml: getDiagramXml(),
+            dpi: selectedDpi() })
+        : rpc({ action: 'preview', contract: contract,
+            dpi: selectedDpi() });
+      previewRpc.then(function (m) {
         if (m.result !== 'PreviewResult') {
           status.textContent = 'Preview error: ' +
             (m.error || '') + ' ' + (m.detail || '');

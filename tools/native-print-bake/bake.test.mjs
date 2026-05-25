@@ -546,7 +546,7 @@ test('referencedFonts: collects font families from text nodes', async () => {
   const { contract } = await bake(xml);
   const fonts = referencedFonts(contract);
   assert.ok(fonts.size > 0, 'expected at least one font family');
-  assert.ok(fonts.has('Arial'), 'expected Arial (draw.io default)');
+  assert.ok(fonts.has('Helvetica'), 'expected Helvetica (draw.io default)');
 });
 
 test('referencedFonts: collects rich-run fontFamily', () => {
@@ -586,7 +586,7 @@ test('assertFontsAvailable: throws MISSING_FONTS when font absent', async () => 
   const xml = await readFile(simpleDrawio, 'utf8');
   const { contract } = await bake(xml);
   assert.throws(
-    () => assertFontsAvailable(contract, new Set(['Helvetica'])),
+    () => assertFontsAvailable(contract, new Set(['Arial'])),
     (err) => err.code === 'MISSING_FONTS' && Array.isArray(err.missingFonts)
   );
 });

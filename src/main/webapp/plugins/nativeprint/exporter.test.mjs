@@ -365,7 +365,6 @@ const SUPPORTED_SHAPES = [
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
   ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
-  ['note', { shape: 'note' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
   ['switch', { shape: 'switch' }, /^M 0 0 C [\d.]+ [\d.]+ [\d.]+ [\d.]+ 80 0 C /],
   ['default (no shape)', {}, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/]
 ];
@@ -379,6 +378,16 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
     assertSchemaValid(r.contract, name);
   });
 }
+
+test('supported shape faithfully baked: note', () => {
+  const r = oneVertex({ shape: 'note', fillColor: '#112233', strokeColor: '#445566' });
+  const node = r.contract.document.pages[0].paint[0];
+  assert.equal(r.notices.length, 0, 'note must NOT degrade');
+  assert.equal(node.kind, 'svg');
+  const svgText = Buffer.from(node.source, 'base64').toString('utf8');
+  assert.ok(svgText.includes('<svg'), 'should contain svg source');
+  assertSchemaValid(r.contract, 'note');
+});
 
 // ---- Every UNSUPPORTED stencil is loudly flagged (never silent) ----------
 // Note: hexagon, actor, process, umlActor are now implemented (moved to SUPPORTED /

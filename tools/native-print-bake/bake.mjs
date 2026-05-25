@@ -104,6 +104,9 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
 //   unattended  {boolean} — D5: throw BakeNoticeError if any notice is produced
 //   pages       {number[]} — 0-based page indices to include (default: all)
 //   fetchFn     {function} — injectable fetch implementation (for tests / Node)
+//   keepPx      {boolean}  — if true, skip px-to-um conversion and return a
+//                             px-unit contract (schema 1.0). Useful when the
+//                             engine binary predates um-unit support.
 //   exporterOpts — passed through to exporter.buildResult()
 //
 // Returns Promise<{ contract, notices }> where:
@@ -150,15 +153,15 @@ export async function bake(drawioXml, options) {
     throw err;
   }
 
-  // Build combined px contract, then convert to um
+  // Build combined px contract, then convert to um (unless keepPx requested)
   const pxContract = {
     schema: { major: 1, minor: 0 },
     document: { units: 'px', pages: pxPages }
   };
   if (bakeMeta) pxContract.meta = bakeMeta;
-  const umContract = pxContractToUm(pxContract);
+  const contract = opts.keepPx ? pxContract : pxContractToUm(pxContract);
 
-  return { contract: umContract, notices: allNotices };
+  return { contract, notices: allNotices };
 }
 
 // CLI entry point

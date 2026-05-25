@@ -32,11 +32,13 @@ async function headlessBake(xml, opts) {
   // module-caches them, serving stale bakes via the ?headlessBake=1 print path
   // (the browser being fresh does not refresh this server-side module).
   const require = createRequire(import.meta.url);
+  const currentDir = dirname(fileURLToPath(import.meta.url));
   try {
-    delete require.cache[require.resolve(join(HERE, 'plugins/nativeprint/exporter.js'))];
+    delete require.cache[require.resolve(join(currentDir, 'plugins/nativeprint/exporter.js'))];
   } catch (e) { /* ignore */ }
-  const m = await import('../../../tools/native-print-bake/bake.mjs?v=' + Date.now());
-  return m.bake(xml, opts);
+  const bakePath = join(currentDir, '..', '..', '..', 'tools', 'native-print-bake', 'bake.mjs');
+  const m = await import('file://' + bakePath.replace(/\\/g, '/') + '?v=' + Date.now());
+  return m.bake(xml, { ...opts, keepPx: true });
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -44,9 +46,17 @@ const ENGINE_EXE = join(
   HERE, '..', 'native-print-engine', 'build', 'Debug',
   'print_engine_host.exe');
 const PROTO = { major: 1, minor: 0 };
-const ALLOWED_ORIGINS = new Set([
-  'http://localhost:3000', 'http://127.0.0.1:3000'
-]);
+// Accept any localhost / 127.0.0.1 origin regardless of port — Vite may
+// bind a different port if the configured one is already in use.
+function isAllowedOrigin(origin) {
+  if (!origin) return true;           // same-origin requests omit Origin
+  try {
+    const u = new URL(origin);
+    return (u.hostname === 'localhost' || u.hostname === '127.0.0.1' ||
+            u.hostname === '::1' || u.hostname === '[::1]') &&
+           u.protocol === 'http:';
+  } catch (_) { return false; }
+}
 
 // ---- frozen frame codec (JS mirror of include/print_engine/proto.hpp) ----
 function encodeFrame(type, streamId, payload) {
@@ -232,7 +242,7 @@ function nativePrintBroker() {
       server.middlewares.use('/native-print', async (req, res) => {
         // Dev-only network surface: localhost bind (Vite) + Origin check.
         const origin = req.headers.origin;
-        if (origin && !ALLOWED_ORIGINS.has(origin)) {
+        if (!isAllowedOrigin(origin)) {
           res.statusCode = 403; res.end('forbidden origin'); return;
         }
         try {
@@ -297,6 +307,32 @@ async function handleRpc(body) {
         op: 'Print', contractRef: { path: file },
         mergeData: body.mergeData || {}, printerId: body.printerId,
         stockId: body.stockId, copies: body.copies || 1 });
+      return msg;
+    });
+  }
+
+  if (body.action === 'bake-and-preview') {
+    const { drawioXml, dpi, mergeData } = body;
+    if (!drawioXml) {
+      return { result: 'Error', error: 'BrokerError', detail: 'missing drawioXml' };
+    }
+    let contract;
+    try {
+      const result = await headlessBake(drawioXml, { unattended: false });
+      contract = result.contract;
+    } catch (e) {
+      return { result: 'Error', error: 'BakeError', detail: String(e.message || e) };
+    }
+    return withContractFile(contract, async (file) => {
+      const { msg, blob } = await engine.request({
+        op: 'RenderPreview', contractRef: { path: file },
+        mergeData: mergeData || {}, dpi: dpi || 150 });
+      if (msg.result === 'PreviewResult' && blob) {
+        const token = randomBytes(8).toString('hex');
+        previews.set(token, blob);
+        if (previews.size > 8) previews.delete(previews.keys().next().value);
+        msg.previewUrl = '/native-print/preview?token=' + token;
+      }
       return msg;
     });
   }

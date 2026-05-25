@@ -241,6 +241,12 @@
             "aspect": "preserve"
           },
           {
+            "kind": "path",
+            "d": "M 111125 95250 L 161395.833333 95250 L 161395.833333 137583.333333 L 111125 137583.333333 Z",
+            "fill": null,
+            "stroke": null
+          },
+          {
             "kind": "svg",
             "box": {
               "x": 111125,
@@ -253,7 +259,7 @@
           },
           {
             "kind": "path",
-            "d": "M 166687.5 95250 L 216958.333333 95250 L 216958.333333 137583.333333 L 166687.5 137583.333333 Z",
+            "d": "M 171767.5 95250 L 211878.333333 95250 A 5080 5080 0 0 1 216958.333333 100330 L 216958.333333 132503.333333 A 5080 5080 0 0 1 211878.333333 137583.333333 L 171767.5 137583.333333 A 5080 5080 0 0 1 166687.5 132503.333333 L 166687.5 100330 A 5080 5080 0 0 1 171767.5 95250 Z",
             "fill": {
               "type": "solid",
               "color": "#fff2cc",
@@ -267,7 +273,7 @@
               },
               "width": 264.583333,
               "cap": "butt",
-              "join": "miter",
+              "join": "round",
               "miterLimit": 10,
               "dash": null
             }
@@ -280,7 +286,7 @@
               "w": 50270.833333,
               "h": 42333.333333
             },
-            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTAiIGhlaWdodD0iMTYwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHIxMiI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjE5MCIgaGVpZ2h0PSIxNjAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0cjEyKSI+PHRleHQgeD0iOTUiIHk9IjczLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+TGFiZWwgU2hhcGU8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxOTAiIGhlaWdodD0iMTYwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHIxMiI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjE5MCIgaGVpZ2h0PSIxNjAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0cjEyKSI+PHRleHQgeD0iMiIgeT0iNzMuMjkiIGZvbnQtZmFtaWx5PSJBcmlhbCwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJzdGFydCIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPkxhYmVsIFNoYXBlPC90ZXh0PjwvZz48L3N2Zz4=",
             "aspect": "preserve"
           },
           {
@@ -461,6 +467,12 @@
               "miterLimit": 10,
               "dash": null
             }
+          },
+          {
+            "kind": "path",
+            "d": "M 140229.166667 211666.666667 L 190500 211666.666667 L 190500 232833.333333 L 140229.166667 232833.333333 Z",
+            "fill": null,
+            "stroke": null
           },
           {
             "kind": "svg",

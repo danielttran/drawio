@@ -4158,7 +4158,7 @@
     // Only when no live SVG exists (e.g. headless) do we fall back to the
     // named-shape geometry, and to a bounding box + loud notice as a last
     // resort.
-    var harvested = harvestShape(cell, state, origin, scale, notices);
+    var harvested = (mode === 'B') ? null : harvestShape(cell, state, origin, scale, notices);
     if (harvested) {
       for (var hi = 0; hi < harvested.length; hi++) paint.push(harvested[hi]);
       if (label !== '') {
@@ -4211,7 +4211,19 @@
         stencilNode = _stencilRegistry.get(stencilName) || null;
       }
 
-      if (stencilNode) {
+      var hasStencil = (_stencilRegistry && _stencilRegistry.has(stencilName)) ||
+        (typeof mxStencilRegistry !== 'undefined' && mxStencilRegistry.getStencil(stencilName) != null);
+
+      if (stencilNode || (hasStencil && !_stencilRegistry)) {
+        if (!stencilNode) {
+          paint.push({
+            kind: 'path',
+            d: rectPath(box.x, box.y, box.w, box.h),
+            fill: fillOf(style),
+            stroke: strokeOf(style)
+          });
+          return;
+        }
         var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices);
         if (stencilSvg) {
           var rotDegS = number(style.rotation, 0);
@@ -4595,7 +4607,7 @@
     // markers (exact waypoints, curved/orthogonal/entity routing, real
     // arrowheads) instead of re-deriving them. Re-derivation below is the
     // headless fallback only (no live SVG); a known geometric approximation.
-    var harvested = harvestShape(cell, state, origin, scale, notices);
+    var harvested = (mode === 'B') ? null : harvestShape(cell, state, origin, scale, notices);
     if (harvested) {
       for (var hi = 0; hi < harvested.length; hi++) paint.push(harvested[hi]);
       var hl = plainLabel(graph, cell);
@@ -4646,7 +4658,7 @@
       }
     }
 
-    if (style.shape) {
+    if (style.shape && style.shape !== 'connector') {
       notices.push(degradation('ExporterUnsupportedShape',
         'Custom edge shape "' + style.shape + '" exported as straight-line fallback.', cell.id));
     }

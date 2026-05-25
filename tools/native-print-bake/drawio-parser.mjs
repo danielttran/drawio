@@ -5,6 +5,11 @@
 // Pure Node.js (no jsdom, no browser); uses node:zlib for decompression.
 
 import { inflateRawSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dir = dirname(fileURLToPath(import.meta.url));
 
 // --- attribute parsing ---
 
@@ -28,14 +33,55 @@ function parseAttrs(str) {
   return attrs;
 }
 
-// Parse draw.io style string → object.
-// "ellipse;fillColor=#ff0000;strokeColor=#0000ff;" → { shape:'ellipse', fillColor:'#ff0000', ... }
-// "rounded=1;whiteSpace=wrap;" → { rounded:'1', whiteSpace:'wrap' }
-// data: URI values (e.g. image=data:image/png;base64,...) are kept atomic.
-function parseStyle(s) {
-  if (!s) return {};
-  const style = {};
-  // Split on ';' but preserve data: URI values intact (they contain ';base64,').
+function cloneStyle(style) {
+  return { ...(style || {}) };
+}
+
+function loadDefaultStylesheet() {
+  const xml = readFileSync(resolve(__dir, '../../src/main/webapp/styles/default.xml'), 'utf8');
+  const raw = {};
+  const addRe = /<add\b([^>]*)>([\s\S]*?)<\/add>/gi;
+  let m;
+  while ((m = addRe.exec(xml)) !== null) {
+    const attrs = parseAttrs(m[1]);
+    const name = attrs.as;
+    if (!name) continue;
+    const style = {};
+    const childRe = /<add\b([^>]*?)\/>/gi;
+    let c;
+    while ((c = childRe.exec(m[2])) !== null) {
+      const ca = parseAttrs(c[1]);
+      if (ca.as) style[ca.as] = ca.value != null ? ca.value : '';
+    }
+    raw[name] = { extend: attrs.extend || null, style };
+  }
+
+  const resolved = {};
+  const resolveStyle = (name, seen = new Set()) => {
+    if (resolved[name]) return resolved[name];
+    const entry = raw[name];
+    if (!entry) return {};
+    if (seen.has(name)) return cloneStyle(entry.style);
+    seen.add(name);
+    resolved[name] = {
+      ...(entry.extend ? resolveStyle(entry.extend, seen) : {}),
+      ...entry.style
+    };
+    return resolved[name];
+  };
+
+  Object.keys(raw).forEach((name) => resolveStyle(name));
+  return {
+    defaultVertex: resolved.defaultVertex || {},
+    defaultEdge: resolved.defaultEdge || {},
+    named: resolved
+  };
+}
+
+const DEFAULT_STYLESHEET = loadDefaultStylesheet();
+
+function splitStyleTokens(s) {
+  if (!s) return [];
   const parts = [];
   let cur = '';
   let inDataUri = false;
@@ -52,10 +98,17 @@ function parseStyle(s) {
     }
   }
   if (cur) parts.push(cur);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
 
-  for (const part of parts) {
-    const tok = part.trim();
-    if (!tok) continue;
+// Parse draw.io style string → object.
+// "ellipse;fillColor=#ff0000;strokeColor=#0000ff;" → { shape:'ellipse', fillColor:'#ff0000', ... }
+// "rounded=1;whiteSpace=wrap;" → { rounded:'1', whiteSpace:'wrap' }
+// data: URI values (e.g. image=data:image/png;base64,...) are kept atomic.
+function parseStyle(s) {
+  if (!s) return {};
+  const style = {};
+  for (const tok of splitStyleTokens(s)) {
     const eq = tok.indexOf('=');
     if (eq < 0) {
       if (tok) style.shape = tok;
@@ -67,6 +120,39 @@ function parseStyle(s) {
       // where exporter.js does `style.x === '0'` (passes on a string, fails on
       // the number the browser actually provides). isNumeric mirrors mxUtils.
       if (k) style[k] = isStyleNumeric(v) ? parseFloat(v) : v;
+    }
+  }
+  return style;
+}
+
+// Browser-faithful mxGraph.getCellStyle for the offline harness:
+// clone(defaultVertex/defaultEdge), then mxStylesheet.getCellStyle semantics.
+function faithfulCellStyle(rawStyle, isEdge) {
+  const style = (rawStyle && rawStyle.trim().startsWith(';'))
+    ? {}
+    : cloneStyle(isEdge ? DEFAULT_STYLESHEET.defaultEdge : DEFAULT_STYLESHEET.defaultVertex);
+  if (!rawStyle) return style;
+
+  for (const tok of splitStyleTokens(rawStyle)) {
+    const eq = tok.indexOf('=');
+    if (eq >= 0) {
+      const key = tok.slice(0, eq).trim();
+      const value = tok.slice(eq + 1).trim();
+      if (!key) continue;
+      if (value === 'none') {
+        delete style[key];
+      } else {
+        style[key] = isStyleNumeric(value) ? parseFloat(value) : value;
+      }
+    } else {
+      const named = DEFAULT_STYLESHEET.named[tok];
+      if (named) {
+        Object.assign(style, named);
+      } else if (tok) {
+        // drawio registers some shapes/styles at runtime outside default.xml.
+        // Preserve the token as a shape so the harness remains shape-complete.
+        style.shape = tok;
+      }
     }
   }
   return style;
@@ -138,7 +224,9 @@ function parseCells(xml) {
       parent:   attrs.parent || null,
       source:   attrs.source || null,
       target:   attrs.target || null,
+      rawStyle: attrs.style || '',
       style:    parseStyle(attrs.style || ''),
+      resolvedStyle: faithfulCellStyle(attrs.style || '', attrs.edge === '1'),
       geometry: null,
       children: []
     };
@@ -418,7 +506,8 @@ export function buildGraph(cells, paper) {
   const model = {
     cells,
     isVertex: (c) => !!(c && c.vertex),
-    isEdge:   (c) => !!(c && c.edge)
+    isEdge:   (c) => !!(c && c.edge),
+    getStyle: (c) => (c && c.rawStyle) || ''
   };
 
   return {
@@ -434,7 +523,7 @@ export function buildGraph(cells, paper) {
       width:  allBounds.width,
       height: allBounds.height
     }),
-    getCellStyle: (cell) => (cell && cell.style) || {},
+    getCellStyle: (cell) => (cell && cell.resolvedStyle) ? cloneStyle(cell.resolvedStyle) : {},
     getLabel:     (cell) => (cell && cell.value != null ? String(cell.value) : ''),
     isHtmlLabel:  (cell) => !!(cell && cell.style && cell.style.html === '1'),
     nativePrintOptions: null
