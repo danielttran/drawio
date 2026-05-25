@@ -88,7 +88,7 @@ function scaleTile(t) {
 
 export function pxContractToUm(contract) {
   const doc = contract.document;
-  return {
+  const out = {
     schema: { major: contract.schema.major, minor: 1 },
     document: {
       units: 'um',
@@ -99,6 +99,9 @@ export function pxContractToUm(contract) {
       }))
     }
   };
+  // Pass through meta (e.g. bakePath provenance stamp) if present.
+  if (contract.meta) out.meta = contract.meta;
+  return out;
 }
 
 export { SCALE };

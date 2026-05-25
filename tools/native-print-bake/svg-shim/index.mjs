@@ -17,6 +17,128 @@
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+// ── HTML fragment parser ────────────────────────────────────────────────────
+// Parses the draw.io HTML label vocabulary into a ShimElement tree.
+// Handles: <b>, <i>, <u>, <s>, <strike>, <strong>, <em>, <font>, <span>,
+//          <p>, <div>, <br>, <br/>, text nodes, and HTML entities.
+// Used by ShimElement.innerHTML setter so that richContent() and plainLabel()
+// work correctly headlessly.
+
+function decodeHtmlEntities(s) {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+function parseHtmlAttrs(str) {
+  const attrs = {};
+  const re = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([\S]*))/g;
+  let m;
+  while ((m = re.exec(str)) !== null) {
+    attrs[m[1].toLowerCase()] = decodeHtmlEntities(m[2] != null ? m[2] : m[3] != null ? m[3] : m[4] || '');
+  }
+  return attrs;
+}
+
+function parseHtmlFrag(html, doc) {
+  if (!html) return [];
+  const nodes = [];
+  const stack = [{ children: nodes }]; // stack of {children, el}
+
+  const re = /(<\/?([\w]+)(\s[^>]*)?\s*\/?>|<!--[\s\S]*?-->)/g;
+  let lastIdx = 0;
+  let m;
+
+  while ((m = re.exec(html)) !== null) {
+    // Text before this tag
+    if (m.index > lastIdx) {
+      const text = decodeHtmlEntities(html.slice(lastIdx, m.index));
+      if (text) {
+        const tn = doc ? doc.createTextNode(text) : new ShimTextNode(text);
+        stack[stack.length - 1].children.push(tn);
+      }
+    }
+    lastIdx = m.index + m[0].length;
+
+    const full = m[1];
+    if (full.startsWith('<!--')) { continue; } // skip comments
+
+    const closing = full[1] === '/';
+    const tagName = (m[2] || '').toLowerCase();
+    const attrsStr = m[3] || '';
+    const selfClose = full.endsWith('/>') || tagName === 'br';
+
+    if (closing) {
+      // Pop stack back to matching open tag
+      for (let k = stack.length - 1; k >= 1; k--) {
+        if (stack[k].tag === tagName) {
+          stack.length = k;
+          break;
+        }
+      }
+      continue;
+    }
+
+    // Create element
+    const el = doc
+      ? doc.createElement(tagName)
+      : new ShimElement(SVG_NS, tagName, null);
+    const attrs = parseHtmlAttrs(attrsStr);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'style') {
+        el.setAttribute('style', v);
+        if (el._style) el._style.cssText = v;
+      } else {
+        el.setAttribute(k, v);
+      }
+    }
+
+    stack[stack.length - 1].children.push(el);
+    if (!selfClose) {
+      stack.push({ tag: tagName, children: el.childNodes, el });
+    }
+  }
+
+  // Trailing text
+  if (lastIdx < html.length) {
+    const text = decodeHtmlEntities(html.slice(lastIdx));
+    if (text) {
+      const tn = doc ? doc.createTextNode(text) : new ShimTextNode(text);
+      stack[stack.length - 1].children.push(tn);
+    }
+  }
+
+  return nodes;
+}
+
+// ── getComputedStyle shim ───────────────────────────────────────────────────
+// Returns inline style + semantic-tag overrides. Covers the draw.io label
+// vocabulary used by richContent() (bold, italic, underline, strikethrough,
+// font-size, color, background-color, font-family).
+function shimGetComputedStyle(el) {
+  if (!el || el.nodeType !== 1) return { getPropertyValue: () => '' };
+  const props = {};
+  const styleVal = (el.getAttribute && el.getAttribute('style')) || '';
+  for (const part of styleVal.split(';')) {
+    const col = part.indexOf(':');
+    if (col < 0) continue;
+    props[part.slice(0, col).trim().toLowerCase()] = part.slice(col + 1).trim();
+  }
+  const tag = (el.tagName || '').toLowerCase();
+  if ((tag === 'b' || tag === 'strong') && !props['font-weight']) props['font-weight'] = 'bold';
+  if ((tag === 'i' || tag === 'em') && !props['font-style']) props['font-style'] = 'italic';
+  if (tag === 'u' && !props['text-decoration']) props['text-decoration'] = 'underline';
+  if ((tag === 's' || tag === 'strike') && !props['text-decoration']) props['text-decoration'] = 'line-through';
+  // <font color="..."> / <font face="...">
+  const color = el.getAttribute && el.getAttribute('color');
+  if (color && !props['color']) props['color'] = color;
+  const face = el.getAttribute && el.getAttribute('face');
+  if (face && !props['font-family']) props['font-family'] = face;
+  return { getPropertyValue: (k) => props[k] || '', ...props };
+}
+
 // Identity 2×3 matrix (same shape as SVGMatrix).
 function identityMatrix() {
   return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
@@ -155,8 +277,12 @@ export class ShimElement {
 
   get innerHTML() { return serializeChildren(this); }
   set innerHTML(html) {
-    // Best-effort: clear children; real HTML parsing is not implemented.
     this.childNodes = [];
+    const doc = this.ownerDocument || globalThis.document;
+    for (const child of parseHtmlFrag(html, doc)) {
+      child.parentNode = this;
+      this.childNodes.push(child);
+    }
   }
 
   get outerHTML() { return serializeElement(this); }
@@ -264,7 +390,8 @@ export class ShimDocument {
 export function createSvgEnv() {
   const doc = new ShimDocument();
   return {
-    document:      doc,
-    XMLSerializer: ShimXMLSerializer,
+    document:         doc,
+    XMLSerializer:    ShimXMLSerializer,
+    getComputedStyle: shimGetComputedStyle,
   };
 }

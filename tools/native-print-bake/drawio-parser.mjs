@@ -31,10 +31,29 @@ function parseAttrs(str) {
 // Parse draw.io style string → object.
 // "ellipse;fillColor=#ff0000;strokeColor=#0000ff;" → { shape:'ellipse', fillColor:'#ff0000', ... }
 // "rounded=1;whiteSpace=wrap;" → { rounded:'1', whiteSpace:'wrap' }
+// data: URI values (e.g. image=data:image/png;base64,...) are kept atomic.
 function parseStyle(s) {
   if (!s) return {};
   const style = {};
-  for (const part of s.split(';')) {
+  // Split on ';' but preserve data: URI values intact (they contain ';base64,').
+  const parts = [];
+  let cur = '';
+  let inDataUri = false;
+  for (let i = 0; i < s.length; i++) {
+    if (!inDataUri && s.slice(i, i + 5).toLowerCase() === 'data:') {
+      inDataUri = true;
+    }
+    if (s[i] === ';' && !inDataUri) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      if (inDataUri && s[i] === ',') inDataUri = false;
+      cur += s[i];
+    }
+  }
+  if (cur) parts.push(cur);
+
+  for (const part of parts) {
     const tok = part.trim();
     if (!tok) continue;
     const eq = tok.indexOf('=');

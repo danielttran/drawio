@@ -925,6 +925,41 @@ test('stencil: label preserved on non-rotated stencil shape', () => {
   assert.ok(labelInText || labelInSvg, 'label "MyLabel" should appear in contract text or SVG nodes');
 });
 
+// ── master-test-html-labels and master-test-images (C1 + C4) ──────────────
+
+const htmlLabelsDrawio = join(fixtureDir, 'master-test-html-labels.drawio');
+const htmlLabelsGolden = join(fixtureDir, 'master-test-html-labels.contract.golden.json');
+const imagesDrawio     = join(fixtureDir, 'master-test-images.drawio');
+const imagesGolden     = join(fixtureDir, 'master-test-images.contract.golden.json');
+
+test('C1: bake output matches master-test-html-labels.contract.golden.json', async () => {
+  const xml    = await readFile(htmlLabelsDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(htmlLabelsGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'html-labels bake output diverged from golden');
+});
+
+test('C4: master-test-html-labels.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(htmlLabelsDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
+test('C1: bake output matches master-test-images.contract.golden.json', async () => {
+  const xml    = await readFile(imagesDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(imagesGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'images bake output diverged from golden');
+});
+
+test('C4: master-test-images.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(imagesDrawio, 'utf8');
+  const { notices } = bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
 // GAP 3: labelPosition=right — text node x coordinate must exceed cell right edge
 test('stencil: labelPosition=right places text node beyond cell right edge', () => {
   // Cell at x=100, w=120: right edge = 220; with labelPosition=right the text box x should be >= 220

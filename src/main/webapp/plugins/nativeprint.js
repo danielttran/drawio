@@ -70,19 +70,8 @@
       ui.showError('Native Print', 'Exporter not loaded.', 'OK');
       return;
     }
-    var contract;
+    var contract = null;
     var exporterNotices = [];
-    try {
-      var baked = window.NativePrintExporter.buildResult
-        ? window.NativePrintExporter.buildResult(ui.editor.graph)
-        : { contract: window.NativePrintExporter.buildContract(ui.editor.graph),
-            notices: [] };
-      contract = baked.contract;
-      exporterNotices = baked.notices || [];
-    } catch (e) {
-      ui.showError('Native Print', 'Bake failed: ' + e.message, 'OK');
-      return;
-    }
 
     var root = el('div', { style:
       'padding:10px;font-family:Helvetica,Arial;font-size:13px;width:720px;' +
@@ -152,6 +141,75 @@
       style: 'width:60px' });
     cRow.appendChild(copies);
     root.appendChild(cRow);
+
+    // ── Print Engine selector (Path B = Unattended default; Path A = legacy) ──
+    var modeRow = el('div', { style: rowStyle + ';align-items:flex-start;flex-wrap:wrap' });
+    modeRow.appendChild(el('label', { style: 'width:70px;padding-top:2px' }, 'Engine'));
+    var modeOptions = el('div', { style: 'display:flex;flex-direction:column;gap:4px' });
+
+    var rdB = el('input', { type: 'radio', name: 'nativePrintMode', value: 'B', id: 'npmB' });
+    rdB.checked = true;
+    var lbB = el('label', { 'for': 'npmB', style: 'margin-left:4px;cursor:pointer' },
+      'Unattended (Path B) — recommended, no browser needed');
+    var rBRow = el('div'); rBRow.appendChild(rdB); rBRow.appendChild(lbB);
+    modeOptions.appendChild(rBRow);
+
+    var rdA = el('input', { type: 'radio', name: 'nativePrintMode', value: 'A', id: 'npmA' });
+    var lbA = el('label', { 'for': 'npmA', style: 'margin-left:4px;cursor:pointer' },
+      'Browser (Path A) — legacy, uses live DOM');
+    var rARow = el('div'); rARow.appendChild(rdA); rARow.appendChild(lbA);
+    modeOptions.appendChild(rARow);
+
+    modeRow.appendChild(modeOptions);
+    root.appendChild(modeRow);
+
+    // Path B status panel: shows notices from a probe bake (zero notices = all green).
+    var pathBStatus = el('div', { style:
+      'margin:4px 0 8px 74px;padding:5px 8px;border-radius:3px;font-size:11px;' +
+      'background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7' });
+    pathBStatus.textContent = 'Path B: checking…';
+    root.appendChild(pathBStatus);
+
+    function selectedMode() { return rdA.checked ? 'A' : 'B'; }
+
+    function runPathBProbe() {
+      var ex = window.NativePrintExporter;
+      if (!ex || !ex.buildResult) { pathBStatus.textContent = 'Path B: exporter not loaded.'; return; }
+      try {
+        var probeResult = ex.buildResult(ui.editor.graph, paperPx(), { mode: 'B' });
+        var pn = (probeResult.notices || []).filter(function (n) {
+          return n.kind !== 'GradientDirectionApprox';
+        });
+        if (pn.length === 0) {
+          pathBStatus.style.background = '#e8f5e9'; pathBStatus.style.borderColor = '#a5d6a7';
+          pathBStatus.style.color = '#2e7d32';
+          pathBStatus.textContent = 'Path B: all features supported — no limitations.';
+        } else {
+          pathBStatus.style.background = '#fff8e1'; pathBStatus.style.borderColor = '#ffe082';
+          pathBStatus.style.color = '#e65100';
+          pathBStatus.textContent = 'Path B: ' + pn.length + ' cell(s) have unsupported features:';
+          var ul = el('ul', { style: 'margin:4px 0 0;padding-left:16px' });
+          pn.forEach(function (n) {
+            var li = el('li');
+            li.textContent = n.kind + (n.detail && n.detail.cellId
+              ? ' (cell ' + n.detail.cellId + ')' : '');
+            ul.appendChild(li);
+          });
+          pathBStatus.appendChild(ul);
+        }
+      } catch (e) {
+        pathBStatus.style.background = '#fce4ec'; pathBStatus.style.borderColor = '#ef9a9a';
+        pathBStatus.style.color = '#c62828';
+        pathBStatus.textContent = 'Path B probe failed: ' + e.message;
+      }
+    }
+
+    [rdA, rdB].forEach(function (rd) {
+      rd.addEventListener('change', function () {
+        rearm();
+        rebake().then(function (ok) { if (ok) doPreview(); });
+      });
+    });
 
     root.appendChild(el('div', { style:
       'margin:8px 0 4px;font-weight:bold' }, 'Preview (exactly what prints)'));
@@ -237,15 +295,19 @@
     function rebake() {
       var ex = window.NativePrintExporter;
       if (!ex || !ex.buildResult) return Promise.resolve(true);
-      var resolve = ex.embedExternalImages
+      var mode = selectedMode();
+      // Path A (browser): embed external images via canvas before baking.
+      // Path B (unattended): skip canvas embed — headless fetch handles images.
+      var resolve = (mode === 'A' && ex.embedExternalImages)
         ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
         : Promise.resolve({});
       return resolve.then(function (resolvedImages) {
         try {
           var r = ex.buildResult(ui.editor.graph, paperPx(),
-            { resolvedImages: resolvedImages });
+            { resolvedImages: resolvedImages, mode: mode });
           contract = r.contract;
           exporterNotices = r.notices || [];
+          if (mode === 'B') runPathBProbe();
           return true;
         } catch (e) {
           contract = null;
@@ -429,6 +491,8 @@
     });
 
     ui.showDialog(root, 760, 620, true, false);
+    // Run the Path B probe immediately so the status panel shows before printers load.
+    runPathBProbe();
 
     status.textContent = 'Querying printers…';
     rpc({ action: 'capabilities' }).then(function (m) {

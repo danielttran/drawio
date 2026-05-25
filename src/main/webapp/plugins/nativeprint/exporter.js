@@ -1581,7 +1581,13 @@
         host = doc.createElement('div');
         host.innerHTML = String(s);
         useFallback = true;
-        if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rich text live DOM not available; using detached parser', cell.id));
+        // Only emit the notice when getComputedStyle is unavailable — when the
+        // shim provides it (Path B headless), the detached parse is faithful for
+        // draw.io's HTML label vocabulary (all properties set explicitly via
+        // inline styles, semantic tags, and font attributes; no CSS cascade).
+        if (typeof root.getComputedStyle !== 'function') {
+          if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rich text live DOM not available; using detached parser', cell.id));
+        }
       } else {
         return null;
       }
@@ -1699,9 +1705,12 @@
         .replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre)\s*>/gi, '\n')
         .replace(/<(p|div|li|tr|h[1-6]|blockquote|pre)(\s[^>]*)?>/gi, '\n')
         .replace(/<[^>]+>/g, '');
-      var d = (root.document && root.document.createElement)
-        ? root.document.createElement('div') : null;
-      if (d) { d.innerHTML = s; s = d.textContent || d.innerText || ''; }
+      // Decode HTML entities without DOM dependency (shim innerHTML doesn't
+      // support textContent extraction reliably headlessly).
+      s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+           .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+           .replace(/&#(\d+);/g, function(_, n) { return String.fromCharCode(+n); })
+           .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)); });
       s = s.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     }
     return s;
@@ -2998,6 +3007,10 @@
   }
 
   function buildResult(graph, paper, opts) {
+    // 'A' = legacy (uses live browser DOM via svgCellNode); 'B' = unattended
+    // (headless fallback only, no svgCellNode). Default 'A' for backwards compat;
+    // bake.mjs always passes 'B'.
+    var mode = (opts && opts.mode) || 'A';
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
@@ -3049,7 +3062,7 @@
         emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);
         return;
       }
-      emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved);
+      emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved, mode);
     });
 
     // LOUD-OR-FAITHFUL: the v1 contract carries gradient stops + type but
@@ -3069,6 +3082,7 @@
     return {
       contract: {
         schema: { major: 1, minor: 0 },
+        meta: { bakePath: mode },
         document: {
           units: 'px',
           pages: [{
@@ -3106,7 +3120,7 @@
     }
   }
 
-  function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved) {
+  function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved, mode) {
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
 
@@ -3118,7 +3132,8 @@
       // neighbour shape) and mis-placed the label. Embed the external <image>
       // href first (resvg can't fetch relative/cross-origin URLs). Falls through
       // to the manual path headless / if transcription fails.
-      var isvg = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
+      // Mode B: skip svgCellNode entirely — force headless fallback path.
+      var isvg = (mode === 'B') ? null : svgCellNode(graph, cell, state, origin, scale, notices, resolved);
       if (isvg && isvg.kind === 'svg') {
         try {
           var dec = decodeUtf8B64(isvg.source);
@@ -3135,7 +3150,49 @@
       var img = parseImage(imgSrc);
       var mime = embeddableImageMime(img);
       if (img && img.format === 'png') {
-        paint.push(imageNode(style, box, img));        // faithful — WYSIWYG
+        var imgRotDeg = number(style.rotation, 0);
+        if (imgRotDeg) {
+          // Rotated PNG: wrap in an SVG so the rotation transform is carried
+          // faithfully (kind:'image' has no rotation field in the schema).
+          var imgTheta = imgRotDeg * Math.PI / 180;
+          var imgCosT = Math.abs(Math.cos(imgTheta));
+          var imgSinT = Math.abs(Math.sin(imgTheta));
+          var imgExpW = box.w * imgCosT + box.h * imgSinT;
+          var imgExpH = box.w * imgSinT + box.h * imgCosT;
+          var imgOffX = (imgExpW - box.w) / 2;
+          var imgOffY = (imgExpH - box.h) / 2;
+          var imgRcx = imgExpW / 2;
+          var imgRcy = imgExpH / 2;
+          var imgFit = String(style.imageAspect) === '0' ? 'none' : 'xMidYMid meet';
+          var imgFlipSx = (boolish(style.imageFlipH) || boolish(style.flipH)) ? -1 : 1;
+          var imgFlipSy = (boolish(style.imageFlipV) || boolish(style.flipV)) ? -1 : 1;
+          var imgFlipTx = imgFlipSx === -1 ? box.w : 0;
+          var imgFlipTy = imgFlipSy === -1 ? box.h : 0;
+          var imgFlipAttr = (imgFlipSx !== 1 || imgFlipSy !== 1)
+            ? ' transform="translate(' + fmt(imgFlipTx) + ' ' + fmt(imgFlipTy) +
+              ') scale(' + imgFlipSx + ',' + imgFlipSy + ')"'
+            : '';
+          var imgEl = '<image x="' + fmt(imgOffX) + '" y="' + fmt(imgOffY) + '"' +
+            ' width="' + fmt(box.w) + '" height="' + fmt(box.h) + '"' +
+            ' preserveAspectRatio="' + imgFit + '"' +
+            imgFlipAttr +
+            ' xlink:href="data:image/png;base64,' + img.data + '"/>';
+          var imgRotGroup = '<g transform="rotate(' + fmt(imgRotDeg) + ' ' +
+            fmt(imgRcx) + ' ' + fmt(imgRcy) + ')">' + imgEl + '</g>';
+          var imgSvgStr = '<svg xmlns="http://www.w3.org/2000/svg"' +
+            ' xmlns:xlink="http://www.w3.org/1999/xlink"' +
+            ' width="' + fmt(imgExpW) + '" height="' + fmt(imgExpH) + '">' +
+            imgRotGroup + '</svg>';
+          paint.push({
+            kind: 'svg',
+            box: { x: box.x + box.w / 2 - imgExpW / 2, y: box.y + box.h / 2 - imgExpH / 2,
+                   w: imgExpW, h: imgExpH },
+            source: base64(imgSvgStr),
+            aspect: 'preserve'
+          });
+        } else {
+          paint.push(imageNode(style, box, img));      // faithful — WYSIWYG
+        }
       } else if (mime) {
         // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
         // -> build the SVG <image> from the bytes (no live-DOM dependency, so
@@ -3185,7 +3242,8 @@
     // label together) so EVERY object type prints exactly as drawn, text
     // included. Falls through only with no live DOM (headless) or if
     // serialization fails.
-    var svgNode = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
+    // Mode B: skip svgCellNode — force headless fallback path.
+    var svgNode = (mode === 'B') ? null : svgCellNode(graph, cell, state, origin, scale, notices, resolved);
     if (svgNode) { paint.push(svgNode); return; }
 
     // Vector fallback: transcribe drawio's own rendered SVG so EVERY shape —

@@ -364,8 +364,9 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
 }
 
 // ---- Every UNSUPPORTED stencil is loudly flagged (never silent) ----------
+// Note: hexagon and actor were here but are now implemented in shapePath().
 const UNSUPPORTED = [
-  'hexagon', 'step', 'process', 'parallelogram', 'actor', 'callout',
+  'step', 'process', 'parallelogram', 'callout',
   'mxgraph.flowchart.decision', 'mxgraph.azure.vm', 'mxgraph.aws4.lambda',
   'mxgraph.bpmn.task', 'tape', 'card', 'umlActor', 'note', 'cube'
 ];

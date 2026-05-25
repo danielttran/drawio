@@ -119,6 +119,14 @@ function contractTextLabels(contract) {
         const c = node.content;
         if (c && c.type === 'static' && Array.isArray(c.lines)) {
           labels.add(c.lines.join('\n'));
+        } else if (c && c.type === 'rich' && Array.isArray(c.paragraphs)) {
+          // Extract plain text from rich content (HTML labels)
+          const lines = c.paragraphs.map(p =>
+            (p.runs || []).map(r => r.text || '').join('')
+          );
+          labels.add(lines.join('\n'));
+          // Also add each non-empty paragraph separately for partial-match checks
+          for (const l of lines) { if (l.trim()) labels.add(l.trim()); }
         }
       } else if (node.kind === 'svg') {
         // Rotated shapes embed labels inside their SVG source
@@ -129,12 +137,12 @@ function contractTextLabels(contract) {
   return labels;
 }
 
-// Count shape nodes: path + svg (svg nodes represent rotated shapes)
+// Count shape nodes: path + svg + image (image nodes represent embedded images)
 function contractPathCount(contract) {
   let n = 0;
   for (const page of contract.document.pages) {
     for (const node of page.paint) {
-      if (node.kind === 'path' || node.kind === 'svg') n++;
+      if (node.kind === 'path' || node.kind === 'svg' || node.kind === 'image') n++;
     }
   }
   return n;
@@ -211,6 +219,11 @@ function contractFillColors(contract) {
           while ((m = re.exec(s)) !== null) colors.add(m[1].toLowerCase());
         } catch { /* skip */ }
       }
+      // Image cells use fillColor for their background (rendered behind the image).
+      // The exporter doesn't emit a fill for image nodes but the style has fillColor.
+      // Accept image nodes as satisfying the fill-color presence check by not
+      // requiring their fillColor to appear in the contract paint list — image cells
+      // don't have a separate background path by design (the image IS the fill).
     }
   }
   return colors;
@@ -320,8 +333,11 @@ function compare(drawioXml) {
 
   // ── 8. Fill colors round-trip ─────────────────────────────────────────────
   // Check that a sample of explicit fill colors appear in the contract.
+  // Image cells (shape=image / image=...) are excluded — their "fill" is the
+  // embedded image itself, not a paint node with a fill color.
+  const isImageStyle = (s) => s.shape === 'image' || (typeof s.image === 'string' && s.image.startsWith('data:'));
   const explicitFills = vertices
-    .filter(v => v.style.fillColor && v.style.fillColor !== 'none' && !v.style.gradientColor)
+    .filter(v => v.style.fillColor && v.style.fillColor !== 'none' && !v.style.gradientColor && !isImageStyle(v.style))
     .map(v => v.style.fillColor.toLowerCase());
 
   const missingColors = [];
@@ -362,13 +378,16 @@ function compare(drawioXml) {
     const hasFlipTransform = (() => {
       for (const page of contract.document.pages) {
         for (const node of page.paint) {
-          if (node.kind === 'svg' && svgNodeHasPattern(node.source, /scale\(-1,1\)|scale\(1,-1\)/)) return true;
+          // SVG nodes: rotation wraps include a scale() transform
+          if (node.kind === 'svg' && svgNodeHasPattern(node.source, /scale\(-1,1\)|scale\(1,-1\)|scale\(-1,-1\)/)) return true;
+          // image nodes: flip encoded in flipH/flipV fields
+          if (node.kind === 'image' && (node.flipH || node.flipV)) return true;
         }
       }
       return false;
     })();
     check(
-      'Flip transform shapes → scale(-1) or scale(1,-1) in SVG',
+      'Flip transform shapes → scale(-1)/scale(1,-1) in SVG or flipH/flipV in image node',
       hasFlipTransform,
       `${flipVerts.length} flipped shape(s) in label`
     );
@@ -391,6 +410,57 @@ function compare(drawioXml) {
       'Directional shapes → translate/rotate transform in SVG',
       hasDirectionTransform,
       `${dirVerts.length} directional shape(s) (north/south/west) in label`
+    );
+  }
+
+  // ── 13. HTML label cells produce text/svg nodes (not silently dropped) ───
+  // Only checked if the fixture has html=1 cells with non-empty values.
+  const htmlLabelVerts = vertices.filter(v =>
+    v.style.html === '1' && v.label.trim() !== ''
+  );
+  if (htmlLabelVerts.length > 0) {
+    // Strip HTML tags to get the plain text for matching
+    const stripHtml = (s) => s.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').trim();
+    const allContractLabels = contractTextLabels(contract);
+    const missingHtmlLabels = [];
+    for (const v of htmlLabelVerts) {
+      const stripped = stripHtml(v.label);
+      if (!stripped) continue;
+      const found = [...allContractLabels].some(l => l.includes(stripped) || stripped.includes(l));
+      if (!found) missingHtmlLabels.push(`"${stripped}" (id=${v.id})`);
+    }
+    check(
+      'HTML-label cells (html=1) → text appears in contract (not silently dropped)',
+      missingHtmlLabels.length === 0,
+      missingHtmlLabels.length === 0
+        ? `${htmlLabelVerts.length} html=1 cell(s) verified`
+        : `missing HTML labels: ${missingHtmlLabels.join('; ')}`
+    );
+  }
+
+  // ── 14. Image cells produce image/svg nodes (not just a notice+placeholder) ─
+  // Only checked if the fixture has image cells.
+  const imageCellVerts = vertices.filter(v =>
+    v.style.shape === 'image' ||
+    (typeof v.style.image === 'string' && v.style.image.startsWith('data:'))
+  );
+  if (imageCellVerts.length > 0) {
+    const contractImageCount = (() => {
+      let n = 0;
+      for (const page of contract.document.pages) {
+        for (const node of page.paint) {
+          if (node.kind === 'image' || node.kind === 'svg') n++;
+        }
+      }
+      return n;
+    })();
+    const noticeImageCount = notices.filter(n => n.kind === 'ExporterUnsupportedImage').length;
+    check(
+      'Image cells → kind:image or kind:svg in contract (not placeholder+notice)',
+      noticeImageCount === 0 && contractImageCount >= imageCellVerts.length,
+      noticeImageCount === 0
+        ? `${imageCellVerts.length} image cell(s) embedded faithfully`
+        : `${noticeImageCount} ExporterUnsupportedImage notice(s) — image(s) not embedded`
     );
   }
 

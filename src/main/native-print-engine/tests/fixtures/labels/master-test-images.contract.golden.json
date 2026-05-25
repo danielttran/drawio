@@ -1,0 +1,359 @@
+{
+  "schema": {
+    "major": 1,
+    "minor": 1
+  },
+  "document": {
+    "units": "um",
+    "pages": [
+      {
+        "id": "page-1",
+        "size": {
+          "w": 518583.333333,
+          "h": 238125
+        },
+        "tiles": [
+          {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "size": {
+              "w": 518583.333333,
+              "h": 238125
+            }
+          }
+        ],
+        "paint": [
+          {
+            "kind": "image",
+            "box": {
+              "x": 0,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "format": "png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=",
+            "aspect": "preserve",
+            "flipH": false,
+            "flipV": false
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "PNG"
+              ]
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 58208.333333,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEwMCI+PGltYWdlIHg9IjAiIHk9IjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIiBwcmVzZXJ2ZUFzcGVjdFJhdGlvPSJ4TWlkWU1pZCBtZWV0IiB4bGluazpocmVmPSJkYXRhOmltYWdlL2pwZWc7YmFzZTY0LC85ai80QUFRU2taSlJnQUJBUUVBU0FCSUFBRC8yd0JEQUFNQ0FnTUNBZ01EQXdNRUF3TUVCUWdGQlFRRUJRb0g3Z1lMRFF3TUN3c0xEUTRTRUE4T0VRNExDeEFXRUJFU0ZCVVZGUXdQRnhnV0ZCZ1NGQlVVL3dBQVJDQUFCQUFFREFTSUFBaEVCQXhFQi84UUFGZ0FCQVFFQUFBQUFBQUFBQUFBQUFBQUFCd1lJLzhRQUZCQUJBQUFBQUFBQUFBQUFBQUFBQUFBQUFQL0VBQllCQVFFQkFBQUFBQUFBQUFBQUFBQUFBQU1DQWYvRUFCUVJBUUFBQUFBQUFBQUFBQUFBQUFBQUFBRC8yZ0FNQXdFQUFoRURFUUEvQUtKZ0FCbi8yUT09Ii8+PC9zdmc+",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 58208.333333,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "JPEG"
+              ]
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 116416.666667,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEwMCI+PGltYWdlIHg9IjAiIHk9IjAiIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIiBwcmVzZXJ2ZUFzcGVjdFJhdGlvPSJ4TWlkWU1pZCBtZWV0IiB4bGluazpocmVmPSJkYXRhOmltYWdlL3N2Zyt4bWw7YmFzZTY0LFBITjJaeUI0Yld4dWN6MGlhSFIwY0RvdkwzZDNkeTUzTXk1dmNtY3ZNakF3TUM5emRtY2lJSGRwWkhSb1BTSXhNQ0lnYUdWcFoyaDBQU0l4TUNJK1BHTnBjbU5zWlNCamVEMGlOU0lnWTNrOUlqVWlJSEk5SWpRaUlHWnBiR3c5SW5KbFpDSXZQand2YzNablBnPT0iLz48L3N2Zz4=",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 116416.666667,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "SVG"
+              ]
+            }
+          },
+          {
+            "kind": "image",
+            "box": {
+              "x": 174625,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "format": "png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=",
+            "aspect": "preserve",
+            "flipH": true,
+            "flipV": false
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 174625,
+              "y": 0,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Flip"
+              ]
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": -4487.736618,
+              "y": 46751.538929,
+              "w": 40725.473237,
+              "h": 38788.588808
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTUzLjkyMyIgaGVpZ2h0PSIxNDYuNjAzIj48ZyB0cmFuc2Zvcm09InJvdGF0ZSgzMCA3Ni45NjIgNzMuMzAxKSI+PGltYWdlIHg9IjE2Ljk2MiIgeT0iMjMuMzAxIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEwMCIgcHJlc2VydmVBc3BlY3RSYXRpbz0ieE1pZFlNaWQgbWVldCIgeGxpbms6aHJlZj0iZGF0YTppbWFnZS9wbmc7YmFzZTY0LGlWQk9SdzBLR2dvQUFBQU5TVWhFVWdBQUFBRUFBQUFCQ0FZQUFBQWZGY1NKQUFBQUMwbEVRVlFJMTJOZ0FBSUFCUUFBQmpFK2liWUFBQUFBU1VWT1JLNUNZSUk9Ii8+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Rot"
+              ]
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 58208.333333,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEwMCIgcng9IjYiIHJ5PSI2IiBmaWxsPSIjZGFlOGZjIiBzdHJva2U9IiM2YzhlYmYiIHN0cm9rZS13aWR0aD0iMSIgc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz48L3N2Zz4=",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 58208.333333,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Stencil"
+              ]
+            }
+          },
+          {
+            "kind": "image",
+            "box": {
+              "x": 116416.666667,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "format": "png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=",
+            "aspect": "preserve",
+            "flipH": false,
+            "flipV": false
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 116416.666667,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "ImgProp"
+              ]
+            }
+          },
+          {
+            "kind": "image",
+            "box": {
+              "x": 174625,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "format": "png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=",
+            "aspect": "preserve",
+            "flipH": false,
+            "flipV": false
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 174625,
+              "y": 52916.666667,
+              "w": 31750,
+              "h": 26458.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Labeled"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "bakePath": "B"
+  }
+}

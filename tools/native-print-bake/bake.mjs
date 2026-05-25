@@ -37,6 +37,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const _shimEnv = createSvgEnv();
 if (!globalThis.document) globalThis.document = _shimEnv.document;
 if (!globalThis.XMLSerializer) globalThis.XMLSerializer = _shimEnv.XMLSerializer;
+if (!globalThis.getComputedStyle) globalThis.getComputedStyle = _shimEnv.getComputedStyle;
 
 // Load the exporter as a CommonJS module (it self-registers on module.exports).
 const require = createRequire(import.meta.url);
@@ -85,14 +86,17 @@ export function bake(drawioXml, options) {
 
   const allNotices = [];
   const pxPages = [];
+  let bakeMeta = null;
 
   pagesToBake.forEach((pageData, idx) => {
-    const result = bakePage(pageData, opts.exporterOpts || null);
+    const result = bakePage(pageData, { ...(opts.exporterOpts || {}), mode: 'B' });
     allNotices.push(...result.notices);
     // Take the single page the exporter produced, tag with ordinal id
     const page = result.contract.document.pages[0];
     page.id = `page-${idx + 1}`;
     pxPages.push(page);
+    // Capture meta from first page (all pages share the same bake mode).
+    if (!bakeMeta && result.contract.meta) bakeMeta = result.contract.meta;
   });
 
   // D5: fail loudly if unattended and any notice was raised
@@ -109,6 +113,7 @@ export function bake(drawioXml, options) {
     schema: { major: 1, minor: 0 },
     document: { units: 'px', pages: pxPages }
   };
+  if (bakeMeta) pxContract.meta = bakeMeta;
   const umContract = pxContractToUm(pxContract);
 
   return { contract: umContract, notices: allNotices };
