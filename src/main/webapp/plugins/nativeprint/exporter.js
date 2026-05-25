@@ -216,21 +216,26 @@
       return parts.join(' ');
     }
 
-    // Walk <background> or <foreground> children, emitting SVG elements.
-    // Returns array of SVG element strings, or null if unsupported feature found.
-    function walkSection(sectionNode) {
-      var elems = [];
-      var currentPath = null;   // accumulated path d string (or direct element string)
-      var currentIsDirect = false; // true when currentPath is a complete <rect>/<ellipse> string
+    // Walk stencil command nodes, emitting SVG elements into shared `elems` array.
+    // The path accumulator is shared across background and foreground sections,
+    // matching mxStencil.drawChildren() canvas-stateful behaviour:
+    //   background: defines geometry path (no paint commands)
+    //   foreground: first paint command (fillstroke/fill/stroke) applies to the
+    //               background path, then additional geometry+paint for decorations.
+    // Returns false if an unsupported feature found (notice already pushed), true otherwise.
+    var elems = [];
+    var currentPath = null;   // accumulated path d string (or direct element string)
+    var currentIsDirect = false; // true when currentPath is a complete <rect>/<ellipse> string
 
-      for (var i = 0; i < sectionNode.children.length; i++) {
-        var node = sectionNode.children[i];
+    function walkNodes(nodeList) {
+      for (var i = 0; i < nodeList.length; i++) {
+        var node = nodeList[i];
         var a = node.attrs;
 
         switch (node.name) {
           case 'path': {
             var d = walkPath(node);
-            if (d === null) return null; // unsupported — caller already got notice
+            if (d === null) return false; // unsupported — caller already got notice
             currentPath = d;
             currentIsDirect = false;
             break;
@@ -394,46 +399,40 @@
               notices.push(degradation('ExporterUnsupportedStencilFeature',
                 'stencil uses <image> command (deferred to Phase 3)', ''));
             }
-            return null;
+            return false;
           case 'include-shape':
             if (Array.isArray(notices)) {
               notices.push(degradation('ExporterUnsupportedStencilFeature',
                 'stencil uses <include-shape> command (deferred to Phase 3)', ''));
             }
-            return null;
+            return false;
           case 'text':
             if (Array.isArray(notices)) {
               notices.push(degradation('ExporterUnsupportedStencilFeature',
                 'stencil uses <text> command (decorative text, deferred to Phase 3)', ''));
             }
-            return null;
+            return false;
 
           default:
             // Unrecognized command — silently skip (forward-compatibility)
             break;
         }
       }
-      return elems;
+      return true;
     }
 
-    // Step 5: Walk <background> and <foreground> sections
-    var bgElems = [], fgElems = [];
+    // Step 5: Walk <background> and <foreground> sections with shared path accumulator.
+    // Per draw.io stencil spec: background defines geometry, foreground first command paints it.
     for (var si = 0; si < shapeNode.children.length; si++) {
       var section = shapeNode.children[si];
-      if (section.name === 'background') {
-        var bg = walkSection(section);
-        if (bg === null) return null;
-        bgElems = bg;
-      } else if (section.name === 'foreground') {
-        var fg = walkSection(section);
-        if (fg === null) return null;
-        fgElems = fg;
+      if (section.name === 'background' || section.name === 'foreground') {
+        if (!walkNodes(section.children)) return null;
       }
       // 'connections' and other sections are silently skipped
     }
 
     // Step 12: Flip transforms
-    var innerContent = bgElems.join('') + fgElems.join('');
+    var innerContent = elems.join('');
     if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
       innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cellW) + ',0)">' + innerContent + '</g>';
     }
