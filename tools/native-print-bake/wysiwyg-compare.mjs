@@ -356,6 +356,44 @@ function compare(drawioXml) {
       : `UNEXPECTED: ${unexpectedNotices.map(n => n.kind).join(', ')}`
   );
 
+  // ── 11. Flip transforms (§3.4 step 12) ───────────────────────────────────
+  const flipVerts = vertices.filter(v => v.style.flipH === '1' || v.style.flipV === '1');
+  if (flipVerts.length > 0) {
+    const hasFlipTransform = (() => {
+      for (const page of contract.document.pages) {
+        for (const node of page.paint) {
+          if (node.kind === 'svg' && svgNodeHasPattern(node.source, /scale\(-1,1\)|scale\(1,-1\)/)) return true;
+        }
+      }
+      return false;
+    })();
+    check(
+      'Flip transform shapes → scale(-1) or scale(1,-1) in SVG',
+      hasFlipTransform,
+      `${flipVerts.length} flipped shape(s) in label`
+    );
+  }
+
+  // ── 12. Direction transforms (§3.3) ───────────────────────────────────────
+  const dirVerts = vertices.filter(v =>
+    v.style.direction === 'north' || v.style.direction === 'south' || v.style.direction === 'west'
+  );
+  if (dirVerts.length > 0) {
+    const hasDirectionTransform = (() => {
+      for (const page of contract.document.pages) {
+        for (const node of page.paint) {
+          if (node.kind === 'svg' && svgNodeHasPattern(node.source, /translate\(|rotate\(/)) return true;
+        }
+      }
+      return false;
+    })();
+    check(
+      'Directional shapes → translate/rotate transform in SVG',
+      hasDirectionTransform,
+      `${dirVerts.length} directional shape(s) (north/south/west) in label`
+    );
+  }
+
   return { checks, pass, fail, notices, vertices, edges, contractPaths };
 }
 

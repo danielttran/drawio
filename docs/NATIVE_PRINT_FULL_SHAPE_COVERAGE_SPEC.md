@@ -161,16 +161,28 @@ Arc radii: `rx_scaled = rx * su`, `ry_scaled = ry * su` (same factor for both �
 Applying the transform to a coordinate: `xOut = ox + x * sw`, `yOut = oy + y * sh`.
 
 **`direction` style property**: If the cell style has `direction=north` or `direction=south`,
-width and height are swapped when computing the aspect transform:
+width and height are swapped when computing the aspect transform. After building the path in the
+`(cw × ch)` = `(cellH × cellW)` coordinate space, a transform is applied that maps this space onto
+the outer `(cellW × cellH)` display viewport **without clipping**:
+
 ```
 if direction == "north" or "south":
-    swap(cellW, cellH) when calling computeAspect
-    then wrap the resulting SVG in <g transform="rotate(-90, cx, cy)"> or <g transform="rotate(90, cx, cy)">
+    cw = cellH  (use swapped dimensions for computeAspect)
+    ch = cellW
+    then wrap in <g transform="translate(0, cellH) rotate(-90)">   (for north)
+              or <g transform="translate(cellW, 0) rotate(90)">    (for south)
 ```
-For `direction=north`: rotate −90°, pivot at `(cellW/2, cellH/2)`.  
-For `direction=south`: rotate +90°, pivot at `(cellW/2, cellH/2)`.  
-For `direction=west`: rotate 180°.  
-`direction=east` is the default (no rotation).
+
+Mathematical proof (north, cell 120×100, cw=100, ch=120):
+- `translate(0,100) rotate(-90)` maps `(0,0)→(0,100)`, `(100,0)→(0,0)`, `(0,120)→(120,100)`,
+  `(100,120)→(120,0)` — all corners within `[0,120]×[0,100]`. ✓
+
+**Note**: Using `rotate(-90, cellW/2, cellH/2)` instead would rotate around the center of the
+DISPLAY space, not the stencil space, causing geometry to overflow the SVG viewport for non-square
+cells. The `translate + rotate` form is correct.
+
+For `direction=west`: rotate 180° around cell center — `rotate(180 cellW/2 cellH/2)`.
+`direction=east` is the default (no rotation, cw=cellW, ch=cellH).
 
 ### 3.4 `stencilToSvg(shapeNode, cellW, cellH, style)` — Full Algorithm
 
@@ -294,13 +306,19 @@ If `state.fillColor` is paintable AND `style.gradientColor` is paintable, emit a
 - `<include-shape>`: recursive stencil composition — defer to Phase 3.
 - `<text>`: label-within-shape decorative text — defer to Phase 3.
 - `<path rounded="1">`: Bezier-rounded polylines — defer to Phase 3.
-- Any unrecognized node type: raise `ExporterUnsupportedStencilFeature` notice and return `null`.
+- Any unrecognized node type: **silently skip** (matches mxStencil.js browser behaviour — the engine's
+  drawNode loop has no `else` clause for unknown tags). Do NOT raise a notice. This permits forward
+  compatibility when new XML elements are introduced in future stencil versions (e.g. `fillstrokecolor`
+  in `ibm_cloud.xml` is silently skipped by the browser and must be silently skipped here too).
 
 **Step 12 — Flip transforms:**
 
-After building the inner SVG, check cell style:
-- `style.flipH == "1"` → wrap inner content in `<g transform="scale(-1,1) translate(-cellW, 0)">`.
-- `style.flipV == "1"` → wrap in `<g transform="scale(1,-1) translate(0, -cellH)">`.
+After building the inner SVG, check cell style. Flips are applied in the **same coordinate space as the
+path** — i.e. using `cw`/`ch` (the dimension-swapped dimensions used for `computeAspect`), NOT the
+raw `cellW`/`cellH` that are the outer display dimensions. For `direction=east` (default), `cw=cellW`
+and `ch=cellH` so there is no difference; for `direction=north/south`, `cw=cellH` and `ch=cellW`.
+- `style.flipH == "1"` → wrap inner content in `<g transform="scale(-1,1) translate(-cw, 0)">`.
+- `style.flipV == "1"` → wrap in `<g transform="scale(1,-1) translate(0, -ch)">`.
 - `style.stencilFlipH` / `style.stencilFlipV`: same treatment (stencil-specific override).
 
 **Step 13 — Assemble SVG:**
@@ -587,15 +605,17 @@ All files live in `src/main/native-print-engine/tests/fixtures/labels/`.
 
 ---
 
-#### `master-test-basic.drawio` *(already exists — extend)*
+#### `master-test.drawio` *(already exists — extend)*
 
 **Purpose:** Basic and built-in shapes, style variants.  
 **Add to existing file:** shapes from `basic.xml` stencil and the built-in JS shapes.
 
 New cells to add (on top of existing 22 cells):
 
-**Corrected shape names** (verified against `basic.xml`): `star`, `hexagon`, `arrow` do not exist
-in `mxgraph.basic`. Actual shapes: `6_point_star`, `moon`, `flash`.
+**Verified shape names** (checked against `basic.xml`): `mxgraph.basic.hexagon` and
+`mxgraph.basic.arrow` do NOT exist in the stencil registry. `mxgraph.basic.star` (5-pointed star)
+DOES exist, as do `mxgraph.basic.6_point_star`, `mxgraph.basic.4_point_star`, `mxgraph.basic.moon`,
+`mxgraph.basic.flash`, etc. The b-series cells below use verified-existing shape names.
 
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|

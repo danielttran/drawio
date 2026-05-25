@@ -924,3 +924,22 @@ test('stencil: label preserved on non-rotated stencil shape', () => {
   });
   assert.ok(labelInText || labelInSvg, 'label "MyLabel" should appear in contract text or SVG nodes');
 });
+
+// GAP 3: labelPosition=right — text node x coordinate must exceed cell right edge
+test('stencil: labelPosition=right places text node beyond cell right edge', () => {
+  // Cell at x=100, w=120: right edge = 220; with labelPosition=right the text box x should be >= 220
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" value="Right" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;labelPosition=right;align=left;" vertex="1" parent="1">
+      <mxGeometry x="100" y="50" width="120" height="80" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const textNodes = paint.filter((n) => n.kind === 'text');
+  assert.ok(textNodes.length >= 1, 'expected at least one text node for labelPosition=right cell');
+  // Cell right edge in px = 100 + 120 = 220; text box x should be at or beyond that
+  const rightEdgePx = 100 + 120;
+  const textBeyondRight = textNodes.some((n) => n.box && n.box.x >= rightEdgePx);
+  assert.ok(textBeyondRight, 'text node x should be >= cell right edge (labelPosition=right)');
+});

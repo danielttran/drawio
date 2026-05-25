@@ -431,23 +431,23 @@
       // 'connections' and other sections are silently skipped
     }
 
-    // Step 12: Flip transforms
+    // Step 12: Flip transforms — must use cw/ch (the dimension-swapped space the path was built in)
     var innerContent = elems.join('');
     if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
-      innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cellW) + ',0)">' + innerContent + '</g>';
+      innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cw) + ',0)">' + innerContent + '</g>';
     }
     if (boolish(style.flipV) || boolish(style.stencilFlipV)) {
-      innerContent = '<g transform="scale(1,-1) translate(0,' + fmt(-cellH) + ')">' + innerContent + '</g>';
+      innerContent = '<g transform="scale(1,-1) translate(0,' + fmt(-ch) + ')">' + innerContent + '</g>';
     }
 
-    // Step 3 (direction rotation): wrap in rotation group for north/south/west
+    // Step 3 (direction rotation): map the cw×ch path space onto the cellW×cellH display viewport.
+    // For north/south: path was built in (cw=cellH, ch=cellW) space; rotate to fit (cellW×cellH).
+    // translate(0,cellH)  rotate(-90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
+    // translate(cellW,0)  rotate(+90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
     if (dir === 'north') {
-      // rotate(-90, cx, cy) where cx=cellW/2, cy=cellH/2
-      var dcx = cellW / 2, dcy = cellH / 2;
-      innerContent = '<g transform="rotate(-90 ' + fmt(dcx) + ' ' + fmt(dcy) + ')">' + innerContent + '</g>';
+      innerContent = '<g transform="translate(0,' + fmt(cellH) + ') rotate(-90)">' + innerContent + '</g>';
     } else if (dir === 'south') {
-      var dcx2 = cellW / 2, dcy2 = cellH / 2;
-      innerContent = '<g transform="rotate(90 ' + fmt(dcx2) + ' ' + fmt(dcy2) + ')">' + innerContent + '</g>';
+      innerContent = '<g transform="translate(' + fmt(cellW) + ',0) rotate(90)">' + innerContent + '</g>';
     } else if (dir === 'west') {
       var dcx3 = cellW / 2, dcy3 = cellH / 2;
       innerContent = '<g transform="rotate(180 ' + fmt(dcx3) + ' ' + fmt(dcy3) + ')">' + innerContent + '</g>';
@@ -3263,25 +3263,15 @@
             var rcyS = expHS / 2;
             // Re-render the stencil at (offX, offY) offset — re-generate with offset box
             // Since stencilToSvg renders starting at (0,0), we wrap in a translate group
-            var defsS = '';
-            var gradIdS = '';
-            if (isPaintable(style.gradientColor)) {
-              gradIdS = 'sg' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-              defsS = '<defs><linearGradient id="' + gradIdS + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
-                '<stop offset="0" stop-color="' + hex(style.fillColor) + '"/>' +
-                '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
-                '</linearGradient></defs>';
-            }
             var textElS = label !== '' ? textSvgStr(label, rcxS, rcyS, style) : '';
-            // Extract inner content from the stencil SVG (everything between <svg...> and </svg>)
+            // Extract inner content from stencil SVG (between <svg...> and </svg>).
+            // stencilToSvg already includes <defs> with gradient inside innerS — do not add a second.
             var innerS = stencilSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
-            // Remove any <defs> already in innerS (we handle gradient separately) — but preserve others
-            // Actually keep the defs from stencil, just add rotation
             var innerSWithOffset = '<g transform="translate(' + fmt(offXS) + ' ' + fmt(offYS) + ')">' + innerS + '</g>';
             var rotGroupS = '<g transform="rotate(' + fmt(rotDegS) + ' ' + fmt(rcxS) + ' ' + fmt(rcyS) + ')">' +
               innerSWithOffset + textElS + '</g>';
             var svgStrS = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(expWS) +
-              '" height="' + fmt(expHS) + '">' + defsS + rotGroupS + '</svg>';
+              '" height="' + fmt(expHS) + '">' + rotGroupS + '</svg>';
             var svgCxS = box.x + box.w / 2;
             var svgCyS = box.y + box.h / 2;
             paint.push({
