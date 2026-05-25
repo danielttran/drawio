@@ -1,0 +1,67 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-html" name="Master Test HTML Labels">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="0" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1960" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Row 0: Basic inline formatting (h01-h04) -->
+        <mxCell id="h01" value="&lt;b&gt;Bold&lt;/b&gt;" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h02" value="&lt;i&gt;Italic&lt;/i&gt;" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h03" value="&lt;u&gt;Underline&lt;/u&gt;" style="whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h04" value="&lt;s&gt;Strike&lt;/s&gt;" style="whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 1: Font attributes (h05-h08) -->
+        <mxCell id="h05" value="&lt;font color=&quot;#ff0000&quot;&gt;Red&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h06" value="&lt;font face=&quot;Times New Roman&quot;&gt;Times&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h07" value="&lt;font style=&quot;font-size:16px;&quot;&gt;Large&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h08" value="&lt;b&gt;Bold&lt;/b&gt; and &lt;i&gt;italic&lt;/i&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 2: Combinations and multiline (h09-h12) -->
+        <mxCell id="h09" value="&lt;b&gt;&lt;font color=&quot;#0000ff&quot;&gt;Bold Blue&lt;/font&gt;&lt;/b&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="100" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h10" value="Line1&lt;br&gt;Line2" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h11" value="Line1&lt;br&gt;Line2&lt;br&gt;Line3" style="whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h12" value="&lt;font style=&quot;background-color:#ffffcc;&quot;&gt;Hi&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 3: Edge cases and plain baseline (h13-h16) -->
+        <mxCell id="h13" value="&lt;font color=&quot;#ffffff&quot; style=&quot;background-color:#333333;&quot;&gt;Inv&lt;/font&gt;" style="whiteSpace=wrap;html=1;fillColor=#333333;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="700" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h14" value="&lt;b&gt;Bold&lt;/b&gt;&lt;br&gt;&lt;i&gt;Italic below&lt;/i&gt;" style="whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="700" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h15" value="PlainTxt" style="whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="700" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="h16" value="&lt;span style=&quot;font-size:11px;font-family:Arial;&quot;&gt;Span&lt;/span&gt;" style="whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontFamily=Arial;fontSize=11;rotation=20;" vertex="1" parent="1">
+          <mxGeometry x="760" y="700" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
