@@ -678,15 +678,18 @@ test('C5: connector.drawio — path nodes from edge and vertices are non-empty',
   }
 });
 
-test('C5: gradient.drawio — gradient fills produce non-empty path nodes', async () => {
+test('C5: gradient.drawio — gradient cells produce svg nodes with linearGradient in mode B', async () => {
   const xml = await readFile(gradientDrawio, 'utf8');
   const { contract } = bake(xml);
   const paint = contract.document.pages[0].paint;
-  const paths = paint.filter((n) => n.kind === 'path');
-  assert.ok(paths.length >= 3, `C5: expected ≥3 path nodes for 3 shapes, got ${paths.length}`);
-  for (const p of paths) {
-    assert.ok(p.d && p.d.trim().length > 1, `C5: gradient path has trivially empty d`);
-  }
+  // In mode B, gradient-filled non-rotated cells emit kind:'svg' (direction encoded inline).
+  const svgNodes = paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, `C5: expected ≥1 svg node for gradient shapes, got ${svgNodes.length}`);
+  const hasGrad = svgNodes.some((n) => {
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    return s.includes('linearGradient');
+  });
+  assert.ok(hasGrad, 'C5: expected at least one svg node to contain a linearGradient def');
 });
 
 test('C5: multipage.drawio — two pages each have paint nodes', async () => {
@@ -914,23 +917,39 @@ test('stencil: direction=north produces rotation transform', () => {
   assert.ok(/rotate/.test(svgStr), 'SVG should contain rotation transform for direction=north');
 });
 
-test('stencil: unsupported <image> command raises ExporterUnsupportedStencilFeature notice', () => {
-  // Manually build a stencil node with an <image> child in foreground
+test('stencil: <image> with data URI src embeds inline (no notice)', () => {
+  // data: URI src is already embedded — should emit SVG <image> element, no notice.
   const stencilXml = '<shape name="imgtest" w="50" h="50" aspect="variable"><background><path><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><line x="0" y="50"/><close/></path></background><foreground><image x="0" y="0" w="50" h="50" src="data:image/png;base64,abc"/><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
-  const { notices } = bake(xml);
+  const { contract, notices } = bake(xml);
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
-  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for <image> command');
+  assert.ok(stencilNotices.length === 0, 'expected no notice for data-URI <image> in stencil');
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil with data-URI image');
 });
 
-test('stencil: unsupported rounded="1" path raises ExporterUnsupportedStencilFeature', () => {
-  const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+test('stencil: <image> with external URL raises ExporterUnsupportedStencilFeature notice', () => {
+  const stencilXml = '<shape name="exturltest" w="50" h="50" aspect="variable"><foreground><image x="0" y="0" w="50" h="50" src="https://example.com/img.png"/><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
   const { notices } = bake(xml);
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
-  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for rounded="1" path');
+  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for external-URL <image>');
+});
+
+test('stencil: <path rounded="1"> renders as Bezier path (no notice)', () => {
+  const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
+  const { contract, notices } = bake(xml);
+  const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
+  assert.ok(stencilNotices.length === 0, 'expected no notice for rounded="1" path');
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 1, 'expected kind:svg node for rounded stencil path');
+  const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
+  // Bezier rounded path uses Q (quadratic) commands
+  assert.ok(/Q /.test(svgStr), 'expected Q (quadratic Bezier) command in rounded path SVG');
 });
 
 test('stencil: built-in hexagon shape produces no ExporterUnsupportedShape notice', () => {

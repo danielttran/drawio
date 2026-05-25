@@ -160,6 +160,8 @@
         'Gradient direction may differ slightly from screen (headless limitation)',
       'RichApproximate':
         'Rich-text layout is approximated (word-wrap requires font metrics)',
+      'RichApproximateAlpha':
+        'Text color uses rgba transparency — alpha dropped (print is opaque)',
       'NativePrintFatal':
         'Fatal rendering error — diagram cannot be printed',
     };
@@ -391,9 +393,11 @@
       var ex = window.NativePrintExporter;
       if (!ex || !ex.buildResult) return Promise.resolve(true);
       var mode = selectedMode();
-      // Path A (browser): embed external images via canvas before baking.
-      // Path B (unattended): skip canvas embed — headless fetch handles images.
-      var resolve = (mode === 'A' && ex.embedExternalImages)
+      // Both modes pre-fetch external image URLs so cells with http(s):// style.image
+      // are embedded as data URIs before baking. Path A also transcodes WebP/BMP via
+      // canvas; Path B skips the canvas transcode (no canvas headlessly) but still
+      // resolves plain PNG/JPEG/GIF external URLs via fetch.
+      var resolve = ex.embedExternalImages
         ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
         : Promise.resolve({});
       return resolve.then(function (resolvedImages) {

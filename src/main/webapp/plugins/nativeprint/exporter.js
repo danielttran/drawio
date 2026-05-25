@@ -21,6 +21,27 @@
     return 'sg' + h.toString(36);
   }
 
+  // Map style.gradientDirection to SVG linearGradient x1/y1/x2/y2 (objectBoundingBox units).
+  // draw.io default (unset / 'none' / 'south') is top-to-bottom.
+  function gradientVector(dir) {
+    switch ((dir || 'south').toLowerCase()) {
+      case 'north': return { x1: 0, y1: 1, x2: 0, y2: 0 };
+      case 'east':  return { x1: 0, y1: 0, x2: 1, y2: 0 };
+      case 'west':  return { x1: 1, y1: 0, x2: 0, y2: 0 };
+      default:      return { x1: 0, y1: 0, x2: 0, y2: 1 }; // south / none
+    }
+  }
+
+  // Build a <linearGradient> definition string with correct direction.
+  function linearGradDef(id, c1, c2, dir) {
+    var v = gradientVector(dir);
+    return '<linearGradient id="' + id + '" x1="' + v.x1 + '" y1="' + v.y1 +
+      '" x2="' + v.x2 + '" y2="' + v.y2 + '" gradientUnits="objectBoundingBox">' +
+      '<stop offset="0" stop-color="' + c1 + '"/>' +
+      '<stop offset="1" stop-color="' + c2 + '"/>' +
+      '</linearGradient>';
+  }
+
   // ---------------------------------------------------------------------------
   // Pure-JS XML parser for stencil XML (no DOMParser needed).
   // Returns { name, attrs:{}, children:[] } or null.
@@ -119,10 +140,7 @@
     var gradDef = '';
     if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
       gradId = stableGradId(state.fillColor, style.gradientColor);
-      gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
-        '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
-        '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
-        '</linearGradient>';
+      gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
     }
 
     // Helper: fill SVG attr using current state
@@ -165,13 +183,41 @@
     // Walk a <path> block's children, building an SVG path d string.
     // Returns d string, or null if unsupported command encountered.
     function walkPath(pathNode) {
-      // Check for rounded="1" — unsupported in Phase 1
+      // Bezier corner-rounding for <path rounded="1">.
+      // Algorithm mirrors mxShape.prototype.addPoints(): quadratic Bezier at each corner.
       if (pathNode.attrs.rounded === '1') {
-        if (Array.isArray(notices)) {
-          notices.push(degradation('ExporterUnsupportedStencilFeature',
-            'stencil path with rounded="1" (Bezier-rounded polyline) is not supported in Phase 1', ''));
+        var arcSizePx = (parseFloat(pathNode.attrs.arcsize) || 10) * su;
+        var rpts = [], rclosed = false;
+        for (var rci = 0; rci < pathNode.children.length; rci++) {
+          var rcc = pathNode.children[rci];
+          if (rcc.name === 'move' || rcc.name === 'line') {
+            rpts.push({ x: tx(parseFloat(rcc.attrs.x) || 0), y: ty(parseFloat(rcc.attrs.y) || 0) });
+          } else if (rcc.name === 'close') {
+            rclosed = true;
+          } else {
+            rpts = null; break; // curve/arc/quad present — fall through to regular parse
+          }
         }
-        return null;
+        if (rpts && rpts.length >= 2) {
+          var rn = rpts.length;
+          function rpt(ri) { return rclosed ? rpts[((ri % rn) + rn) % rn] : rpts[Math.max(0, Math.min(rn - 1, ri))]; }
+          var rp = ['M ' + fmt(rpts[0].x) + ' ' + fmt(rpts[0].y)];
+          for (var rj = (rclosed ? 0 : 1); rj < (rclosed ? rn : rn - 1); rj++) {
+            var rv = rpt(rj - 1), rc = rpt(rj), rne = rpt(rj + 1);
+            var dpx = rv.x - rc.x, dpy = rv.y - rc.y;
+            var dnx = rne.x - rc.x, dny = rne.y - rc.y;
+            var dp = Math.sqrt(dpx * dpx + dpy * dpy) || 1;
+            var dn = Math.sqrt(dnx * dnx + dny * dny) || 1;
+            var r = Math.min(arcSizePx, dp / 2, dn / 2);
+            rp.push('L ' + fmt(rc.x + dpx / dp * r) + ' ' + fmt(rc.y + dpy / dp * r) +
+              ' Q ' + fmt(rc.x) + ' ' + fmt(rc.y) +
+              ' ' + fmt(rc.x + dnx / dn * r) + ' ' + fmt(rc.y + dny / dn * r));
+          }
+          if (!rclosed) rp.push('L ' + fmt(rpts[rn - 1].x) + ' ' + fmt(rpts[rn - 1].y));
+          if (rclosed)  rp.push('Z');
+          return rp.join(' ');
+        }
+        // Mixed path (curve/arc/quad with rounded="1") — fall through to regular parse.
       }
       var parts = [];
       for (var i = 0; i < pathNode.children.length; i++) {
@@ -333,10 +379,7 @@
               // Recompute gradient if fill color changed
               if (isPaintable(state.fillColor) && isPaintable(style.gradientColor) && !gradId) {
                 gradId = stableGradId(state.fillColor, style.gradientColor);
-                gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
-                  '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
-                  '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
-                  '</linearGradient>';
+                gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
               }
             }
             break;
@@ -348,10 +391,7 @@
             // Update gradient if fill changed
             if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
               gradId = stableGradId(state.fillColor, style.gradientColor);
-              gradDef = '<linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">' +
-                '<stop offset="0" stop-color="' + hex(state.fillColor) + '"/>' +
-                '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
-                '</linearGradient>';
+              gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
             }
             break;
           case 'strokewidth': {
@@ -393,25 +433,65 @@
             state.fontFamily = a.family || state.fontFamily;
             break;
 
-          // Unsupported commands — raise notice and abort
-          case 'image':
-            if (Array.isArray(notices)) {
-              notices.push(degradation('ExporterUnsupportedStencilFeature',
-                'stencil uses <image> command (deferred to Phase 3)', ''));
+          // image: emit inline if src is already a data URI; otherwise loud notice.
+          // Uses break (not return) so subsequent siblings (fillstroke etc.) still run.
+          case 'image': {
+            var imgSrc = a.src || '';
+            if (imgSrc.indexOf('data:') === 0) {
+              var imgPar = a.aspect === 'fixed' ? 'xMidYMid meet' : 'none';
+              elems.push('<image href="' + imgSrc + '"' +
+                ' x="' + fmt(tx(parseFloat(a.x) || 0)) + '"' +
+                ' y="' + fmt(ty(parseFloat(a.y) || 0)) + '"' +
+                ' width="' + fmt(trx(parseFloat(a.w) || 0)) + '"' +
+                ' height="' + fmt(try_(parseFloat(a.h) || 0)) + '"' +
+                ' preserveAspectRatio="' + imgPar + '"/>');
+            } else {
+              if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedStencilFeature',
+                'stencil uses <image> with external URL (cannot embed headlessly)', ''));
             }
-            return false;
-          case 'include-shape':
-            if (Array.isArray(notices)) {
-              notices.push(degradation('ExporterUnsupportedStencilFeature',
-                'stencil uses <include-shape> command (deferred to Phase 3)', ''));
+            break;
+          }
+          case 'include-shape': {
+            var isName = (a.name || '').toLowerCase();
+            var isX = parseFloat(a.x) || 0, isY = parseFloat(a.y) || 0;
+            var isW = parseFloat(a.w) || 0, isH = parseFloat(a.h) || 0;
+            if (!isName || isW <= 0 || isH <= 0) break;
+            var isNode = _stencilRegistry && _stencilRegistry.get(isName);
+            if (!isNode) {
+              if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedStencilFeature',
+                'include-shape "' + isName + '" not found in stencil registry', ''));
+              break;
             }
-            return false;
-          case 'text':
-            if (Array.isArray(notices)) {
-              notices.push(degradation('ExporterUnsupportedStencilFeature',
-                'stencil uses <text> command (decorative text, deferred to Phase 3)', ''));
+            // stencilToSvg() creates fresh state/elems — parent state is never mutated.
+            var isSvg = stencilToSvg(isNode, isW * sw, isH * sh, style, notices);
+            if (isSvg) {
+              // stencilToSvg() never emits nested <svg>, so this regex is safe.
+              var isM = /^<svg[^>]*>([\s\S]*)<\/svg>\s*$/.exec(isSvg);
+              var isInner = isM ? isM[1] : '';
+              if (isInner) {
+                elems.push('<g transform="translate(' + fmt(tx(isX)) + ',' + fmt(ty(isY)) + ')">' +
+                  isInner + '</g>');
+              }
             }
-            return false;
+            break;
+          }
+          case 'text': {
+            var tStr = a.str || '';
+            if (tStr) {
+              var ttx = tx(parseFloat(a.x) || 0);
+              var tty = ty(parseFloat(a.y) || 0);
+              var tAnchor = a.align === 'left' ? 'start' : a.align === 'right' ? 'end' : 'middle';
+              var tBase = a.valign === 'top' ? 'hanging' : a.valign === 'bottom' ? 'auto' : 'central';
+              var tFs = (parseFloat(a.fontsize) || state.fontSize || 11) * su;
+              var tFf = a.fontfamily || state.fontFamily || 'Arial';
+              var tFc = state.fontColor || '#000000';
+              elems.push('<text x="' + fmt(ttx) + '" y="' + fmt(tty) + '"' +
+                ' text-anchor="' + tAnchor + '" dominant-baseline="' + tBase + '"' +
+                ' font-family="' + escXml(tFf) + '" font-size="' + fmt(tFs) + '"' +
+                ' fill="' + tFc + '">' + escXml(tStr) + '</text>');
+            }
+            break;
+          }
 
           default:
             // Unrecognized command — silently skip (forward-compatibility)
@@ -1629,7 +1709,7 @@
       var rgb = rgbToHex(cs.color || '');
       if (rgb) next.color = rgb;
       if (!alphaNotice && typeof cs.color === 'string' && cs.color.toLowerCase().indexOf('rgba(') === 0 && notices) {
-        if (Array.isArray(notices)) notices.push(degradation('RichApproximate', 'rgba text color alpha dropped for rich text run', cell.id));
+        if (Array.isArray(notices)) notices.push(degradation('RichApproximateAlpha', 'rgba text color alpha dropped for rich text run (print is opaque)', cell.id));
         alphaNotice = true;
       }
       return next;
@@ -1796,7 +1876,11 @@
     HardwareMarginClip: true,
     // Additive forward-compatible version skew (peer/schema minor ahead).
     SchemaMinorAhead: true,
-    ProtoMinorAhead: true
+    ProtoMinorAhead: true,
+    // rgba text color alpha is dropped to hex in the contract (print is opaque
+    // by design). The text still appears; only the transparency is lost. This
+    // is cosmetic and does not warrant a blocking acknowledgment gate.
+    RichApproximateAlpha: true
   };
 
   function noticeSeverity(kind) {
@@ -3410,10 +3494,7 @@
         var gradId = '';
         if (isPaintable(style.gradientColor)) {
           gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          defs = '<defs><linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0">' +
-            '<stop offset="0" stop-color="' + hex(style.fillColor) + '"/>' +
-            '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
-            '</linearGradient></defs>';
+          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
@@ -3434,12 +3515,27 @@
         return;  // label is embedded in the SVG; no separate text node needed
       }
 
-      paint.push({
-        kind: 'path',
-        d: d,
-        fill: fillOf(style),
-        stroke: strokeOf(style)
-      });
+      // In mode B, gradient cells must carry direction inline (v1 contract has no direction
+      // field in the structural fill object). Emit kind:'svg' with an embedded linearGradient
+      // so the C++ engine renders the correct direction via resvg.
+      if (mode === 'B' && isPaintable(style.gradientColor)) {
+        var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
+        var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
+          hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        var relD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
+        var gsvg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
+          '" height="' + fmt(box.h) + '">' + gdefs +
+          '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/></svg>';
+        paint.push({ kind: 'svg', box: { x: box.x, y: box.y, w: box.w, h: box.h },
+          source: base64(gsvg), aspect: 'preserve' });
+      } else {
+        paint.push({
+          kind: 'path',
+          d: d,
+          fill: fillOf(style),
+          stroke: strokeOf(style)
+        });
+      }
     }
 
     if (label !== '') {
