@@ -338,7 +338,7 @@ async function compare(drawioXml) {
   // embedded image itself, not a paint node with a fill color.
   const isImageStyle = (s) => s.shape === 'image' || (typeof s.image === 'string' && s.image.startsWith('data:'));
   const explicitFills = vertices
-    .filter(v => v.style.fillColor && v.style.fillColor !== 'none' && !v.style.gradientColor && !isImageStyle(v.style))
+    .filter(v => v.style.fillColor && v.style.fillColor !== 'none' && v.style.fillColor !== 'inherit' && !v.style.gradientColor && !isImageStyle(v.style))
     .map(v => v.style.fillColor.toLowerCase());
 
   const missingColors = [];

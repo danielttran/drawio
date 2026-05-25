@@ -150,10 +150,10 @@
       'ExporterUnsupportedImage'];
     var NOTICE_HUMAN = {
       'ExporterUnsupportedShape':
-        'Shape not yet supported in headless mode — switch to Live canvas',
+        'Shape not yet supported in headless mode',
       'ExporterUnsupportedStencilFeature':
         'Shape uses a rendering feature not supported headlessly (rounded paths, ' +
-        'embedded images, or shape composition) — switch to Live canvas',
+        'embedded images, or shape composition)',
       'ExporterUnsupportedImage':
         'Image references an external URL that could not be embedded',
       'GradientDirectionApprox':
@@ -187,16 +187,20 @@
     }
 
     var bOpt = modeOptionRow('npmB', 'B',
-      'Headless (recommended)',
+      'Headless',
       'Renders every shape from its stencil XML definition — no browser required, ' +
       'deterministic, and the fastest path to print.');
+    // Live canvas (Path A) is intentionally disabled in the UI to avoid confusion:
+    // the native print pipeline is headless-only. The option object is still built
+    // (so selectedMode/probe code references stay valid) but never shown, and the
+    // mode is forced to 'B'.
     var aOpt = modeOptionRow('npmA', 'A',
       'Live canvas',
-      'Captures shapes directly from the active drawing canvas. ' +
-      'Handles every shape type but requires the diagram to be fully rendered.');
+      'Captures shapes directly from the active drawing canvas.');
     var rdB = bOpt.rd;
     rdB.checked = true;
     var rdA = aOpt.rd;
+    rdA.checked = false;
 
     // Headless compatibility panel — shows per-diagram shape support status
     var compatPanel = el('div', { style:
@@ -206,10 +210,10 @@
     bOpt.row.appendChild(compatPanel);
 
     modeSection.appendChild(bOpt.row);
-    modeSection.appendChild(aOpt.row);
+    // Live-canvas option deliberately NOT appended — headless-only UI.
     root.appendChild(modeSection);
 
-    function selectedMode() { return rdA.checked ? 'A' : 'B'; }
+    function selectedMode() { return 'B'; }
 
     // Count shape-producing vertices in the live graph model (text-only cells excluded).
     function countShapeVerts() {
@@ -277,22 +281,10 @@
           var supported = total != null ? (total - blocking.length) : null;
           hdr.textContent = '⚠ ' + blocking.length + ' of ' + totalStr +
             (supported != null ? ' (' + supported + ' render headlessly' : '') +
-            (supported != null ? ', ' + blocking.length + ' need live canvas)' : ' need live canvas') + ':';
+            (supported != null ? ', ' + blocking.length + ' not supported)' : ' not supported') + ':';
           compatPanel.innerHTML = '';
           compatPanel.appendChild(hdr);
           compatPanel.appendChild(ul);
-          // Quick-switch link
-          var sw = el('div', { style: 'margin-top:5px' });
-          var swLink = el('a', { href: '#',
-            style: 'color:#1565c0;text-decoration:underline;font-size:11px' },
-            'Switch to Live canvas instead');
-          swLink.addEventListener('click', function (e) {
-            e.preventDefault();
-            rdA.checked = true;
-            rdA.dispatchEvent(new Event('change'));
-          });
-          sw.appendChild(swLink);
-          compatPanel.appendChild(sw);
         }
       } catch (e) {
         compatPanel.style.background = '#fce4ec'; compatPanel.style.borderColor = '#ef9a9a';
@@ -301,7 +293,7 @@
       }
     }
 
-    [rdA, rdB].forEach(function (rd) {
+    [rdB].forEach(function (rd) {
       rd.addEventListener('change', function () {
         rearm();
         rebake().then(function (ok) { if (ok) doPreview(); });

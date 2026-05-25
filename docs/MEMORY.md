@@ -498,6 +498,97 @@ stencil shapes + Phase-2 built-ins are all rendered faithfully without a browser
 
 ---
 
+## Headless Style Inheritance Fix (2026-05-25)
+
+- **Problem solved:** Headless print (`mode === 'B'`) failed to resolve parent style inheritance for `'inherit'` values (such as `fillColor=inherit` and `strokeColor=inherit` on the alternating table cells and grid borders in `test.drawio`). This resulted in transparent background fills and missing grid borders, making the headless render look visually incomplete compared to the live browser print.
+- **Fix:** Implemented recursive style inheritance resolution in `resolveThemeDefaults(style, graph, isVertex, cell)` inside `exporter.js`. If a style value is `'inherit'`, it walks up the cell parent chain via `graph.getModel().cells` and `getCellStyle()` to find the nearest non-inherit value.
+- **Verification:** Updated `wysiwyg-compare.mjs` to exclude `'inherit'` from the explicit fills list (since the contract correctly contains the resolved hex colors instead of the CSS keyword). 18/18 fixtures now PASS in `wysiwyg-compare.mjs --all`, and all 92 bake tests + 173 exporter tests run fully green. Visual verification via `render-one.mjs` confirms that all alternating table row colors and green table borders render beautifully with zero notices.
+
+---
+
+## Headless label/shape visual-parity fixes (2026-05-25, test.drawio object-by-object)
+
+Goal: headless render of `test.drawio` (mode B, via `render-dpi.mjs`) must match the
+editor screenshot object by object. Compared aligned crops (editor diagram bbox vs
+render content bbox, scaled to equal width) per object. Fixes in `exporter.js`:
+
+1. **`<hr>` divider lines dropped** (Object:Type, Component UML labels). `htmlTextBlocks`
+   regex only matched paired block tags (`<p>/<div>/<li>/<h>`), so the void `<hr>` was
+   lost. Now an alternation regex `/<hr\b[^>]*>|<(h..p..)>...<\/\1>/` emits a `rule`
+   block in document order; `textSvgNode` renders it as a horizontal `<line>` across the
+   inner width, centered in a ~baseSize-tall band. (Live path gets the `<hr>` free via
+   `borderRect` on the element — headless-only bug.)
+2. **`overflow=fill` vertical alignment.** `textSvgNode` honored `verticalAlign` even for
+   `overflow=fill`/`overflow=width`, which in mxGraph fill the cell and flow content from
+   the TOP. Component (no verticalAlign → default middle) printed vertically centered;
+   now `overflow=fill|width` forces top.
+3. **Text wrapping too aggressive** (Heading paragraph 5→4 lines, note 6→5). `wrapSvgText`
+   used a single `width/(size*0.55)` char-count estimate. Replaced with `textWidthPx`
+   using per-glyph-class em widths (narrow `iIl.,:;` 0.26, `jftr()` 0.33, `mMW` 0.87,
+   `w` 0.72, upper 0.70, digits 0.56, default 0.52) — reproduces the browser's exact line
+   breaks. `getAutosizeTextFontSizeHeadless`'s two `*0.55` overflow checks now use
+   `textWidthPx` too (note autosize is coupled to wrapping). Regenerated `multitext` and
+   `groups` goldens (more-accurate wraps; both rendered + visually confirmed clean).
+4. **Table missing vertical column divider** (`shape=table` "Table"). Its `partialRectangle`
+   cells have all borders off and `rowLines=0`; the editor's divider comes from drawio's
+   table-level `columnLines` (default on). New `tableGridLines(graph, cell, style, w, h)`
+   derives column boundaries from the first `tableRow`'s cell x-positions (and row
+   boundaries when `rowLines≠0`) and draws lines from `startSize` to `h`. NOTE: in the
+   headless parser `cell.style` is a parsed OBJECT, so child styles must be read via
+   `graph.getCellStyle(child)` (works on both paths). Only `test.drawio` has a
+   `shape=table` (no golden) so no golden churn; the green "Assets" table is NOT
+   `shape=table` (it uses bordered cells, already correct).
+
+5. **Shape outer borders rendered too thin → interior lines looked "thick"**
+   (user-reported on the table). Plain shapes are emitted as `kind:'path'` (the
+   engine strokes them uncliped), but builtin/sketch/gradient/stencil shapes are
+   `kind:'svg'` with a tight `w×h` viewport. A `<rect>`/`<path>` drawn at the
+   shape edge (x=0..w) has half its stroke OUTSIDE the viewport → the outer
+   border rendered at ~half thickness while interior lines (header, column
+   divider) rendered full → the asymmetry reads as "thick interior lines",
+   worst on the table. Fix: `paddedSvgShapeNode(content, box, style)` wraps the
+   content in a viewport padded by `strokeWidth/2` (`viewBox="-pad -pad W H"`,
+   box grown by the stroke halo on each side — matching how drawio paints
+   strokes). Applied to the non-rotated builtin push, the sketch-fill push
+   (`sketchFillSvg` now returns inner content, no `<svg>` wrapper), and the
+   gradient push. Regenerated `gradient` + `master-test` goldens (rendered +
+   visually confirmed borders uniform, shapes intact). NOTE: a shape sitting at
+   the page's top-left edge (headless bake places content flush at 0,0, dropping
+   the margin) still has that one border clipped by the PAGE edge — a
+   headless-harness artifact; the real in-app print positions content with
+   margins so it does not occur there.
+
+6. **Note shape had no folded corner (dog-ear)** + STALE-CODE diagnosis. `shapePath`
+   returned `rectPath` for `shape=note`, so the sticky note printed as a plain
+   rectangle. Added `noteInner(style,w,h,fillOverride,opacityOverride)`: a pentagon
+   (one corner cut at `size`) + a fold triangle (`shadeHex(fill,0.9)`), gradient or
+   solid fill, direction-aware via a `rotate` group (`direction=west` → fold at
+   bottom-left, the test.drawio case), plus an offset silhouette for `shadow=1`.
+   New `shape==='note'` branch in `emitVertex` (before `shapePath`) routes through
+   `paddedSvgShapeNode`. KEY DIAGNOSIS: the user's "lines thick / title not rotated"
+   complaints came from a **stale `exporter.js` in the browser** — `exporter.js` is
+   loaded via a plain `<script src="plugins/nativeprint/exporter.js">` in
+   `index.html` (served directly by Vite, NO build step), so a soft reload can serve
+   a CACHED copy. Their PDF print showed thick swimlane borders + a *horizontal*
+   "Horizontal Flow Layout" title (pre-fix behaviour) + no note fold, while the
+   current code renders thin borders + vertical title; the straight sketch outlines
+   + missing note fold proved it was Path B (not Path A harvest). Fix on the user
+   side: restart `npm run dev`, hard-reload (Ctrl+Shift+R) / DevTools "Disable
+   cache", and ensure Native Print → "Headless (Path B)" is selected.
+
+Tests after: exporter 174/174, bake 92/92, `wysiwyg-compare --all` 18/18.
+
+**KNOWN headless approximation (descoped, faithful on the live path):** `sketch=1` shapes
+(red ellipse `fillStyle=dots`→hachure, blue rounded-rect hachure, green rhombus
+cross-hatch) render with CLEAN straight outlines + perfectly-parallel hachure in headless;
+the editor (roughjs) draws hand-drawn WAVY outlines + jittered hachure. Fill pattern,
+color, and shape all match — only the hand-drawn stroke texture differs. The live (browser)
+path harvests drawio's real roughjs SVG via `svgCellNode`, so print is exact there;
+replicating roughjs's seeded randomness headless is high-effort and can't match exactly.
+Also skipped: the table `[−]` collapse-icon chrome (decorative).
+
+---
+
 ## Important Rules & Constraints
 1. **Never make upstream contributions** — fork only.
 2. **Save tokens**: keep this `MEMORY.md` updated.

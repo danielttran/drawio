@@ -3277,3 +3277,36 @@ test('embedImageHrefs: absolute-rendered href falls back to style.image mapping'
   assert.ok(out.includes('data:image/png;base64,GEAR'),
     'unknown literal href resolves via style.image');
 });
+
+test('autosizeText: auto-scales fontSize to fit bounds headlessly', () => {
+  const cells = {
+    note: { id: 'note', vertex: true }
+  };
+  const states = {
+    note: { x: 10, y: 20, width: 150, height: 150 }
+  };
+  const styles = {
+    note: {
+      shape: 'note',
+      autosizeText: '1',
+      fontSize: 20,
+      whiteSpace: 'wrap'
+    }
+  };
+  const labels = {
+    note: 'The size of the font in this note will change so that it fits within the note shape'
+  };
+
+  const result = exporter.buildResult(graphFixture(cells, states, labels, styles), null, { mode: 'B' });
+  const paint = result.contract.document.pages[0].paint;
+
+  const svgNode = paint.find((n) => n.kind === 'svg' && n.source && Buffer.from(n.source, 'base64').toString('utf8').includes('<text'));
+  assert.ok(svgNode, 'text SVG node should be emitted');
+  const svgStr = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  const match = /font-size="(\d+(\.\d+)?)"/.exec(svgStr);
+  assert.ok(match, 'should contain font-size attribute');
+  const size = parseFloat(match[1]);
+  assert.ok(size <= 16, `font size should be scaled down to fit (got ${size}px)`);
+  assert.ok(size > 1, 'font size should be greater than 1');
+});
+

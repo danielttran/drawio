@@ -640,14 +640,125 @@
     return s;
   }
 
+  function getAutosizeTextFontSizeHeadless(raw, style, w, h) {
+    // String() coercion: mxGraph getCellStyle returns numeric values as NUMBERS
+    // (horizontal=0 → 0, not '0'), so a bare `=== '0'` silently fails in the
+    // browser. Coerce before comparing.
+    var isHorizontal = String(style.horizontal) !== '0';
+    var dx = 0;
+    var dy = 0;
+    var spacing = parseFloat(style.spacing != null ? style.spacing : 2);
+    var spacingLeft = parseFloat(style.spacingLeft != null ? style.spacingLeft : 2);
+    var spacingRight = parseFloat(style.spacingRight != null ? style.spacingRight : 2);
+    var spacingTop = parseFloat(style.spacingTop != null ? style.spacingTop : 2);
+    var spacingBottom = parseFloat(style.spacingBottom != null ? style.spacingBottom : 2);
+
+    dx += 2 * spacing + spacingLeft + spacingRight;
+    dy += 2 * spacing + spacingTop + spacingBottom;
+
+    var availW = (isHorizontal ? w : h) - dx;
+    var availH = (isHorizontal ? h : w) - dy;
+
+    if (availW <= 0 || availH <= 0) {
+      return 1;
+    }
+
+    function checkFits(fontSize) {
+      var baseSize = fontSize;
+      var s = String(raw == null ? '' : raw);
+      var blocks = [];
+      if (s.indexOf('<') < 0) {
+        blocks = s.split('\n').map(function (line) {
+          return { text: line, size: baseSize, gap: 0 };
+        });
+      } else {
+        var re = /<(h[1-6]|p|div|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
+        var m;
+        while ((m = re.exec(s))) {
+          var tag = m[1].toLowerCase();
+          var body = m[2].replace(/<br\s*\/?>/gi, '\n');
+          var full = m[0];
+          blocks.push({
+            text: stripHtml(body).replace(/[ \t\r]+/g, ' ')
+              .replace(/ *\n */g, '\n').trim(),
+            size: tag === 'h1' ? Math.max(24, baseSize * 2) : baseSize,
+            gap: tag.charAt(0) === 'h' ? 5 : 0
+          });
+        }
+      }
+
+      if (blocks.length === 0) {
+        blocks.push({ text: String(raw || ''), size: baseSize, gap: 0 });
+      }
+
+      var rows = [];
+      var isWrap = style.whiteSpace === 'wrap';
+      for (var bi = 0; bi < blocks.length; bi++) {
+        var b = blocks[bi];
+        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap);
+        for (var li = 0; li < wrappedLines.length; li++) {
+          rows.push({
+            text: wrappedLines[li],
+            size: b.size,
+            lineH: b.size * 1.22,
+            gap: li === 0 ? b.gap : 0
+          });
+        }
+      }
+
+      var totalH = 0;
+      for (var ri = 0; ri < rows.length; ri++) {
+        var r = rows[ri];
+        totalH += r.lineH + (ri === 0 ? 0 : r.gap);
+      }
+
+      if (totalH > availH) return false;
+
+      if (isWrap) {
+        for (var bj = 0; bj < blocks.length; bj++) {
+          var bk = blocks[bj];
+          var words = bk.text.split(/\s+/).filter(function (w) { return w !== ''; });
+          for (var wi = 0; wi < words.length; wi++) {
+            if (textWidthPx(words[wi], bk.size) > availW) {
+              return false;
+            }
+          }
+        }
+      } else {
+        for (var rj = 0; rj < rows.length; rj++) {
+          if (textWidthPx(rows[rj].text, rows[rj].size) > availW) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }
+
+    var lo = 1;
+    var hi = 84;
+    var optimalFontSize = 12;
+    while (lo <= hi) {
+      var mid = Math.floor((lo + hi) / 2);
+      if (checkFits(mid)) {
+        optimalFontSize = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return optimalFontSize;
+  }
+
   // isVertex flag distinguishes the default-style sets from styles/default.xml:
   // defaultVertex has fillColor="default", strokeColor="default", fontColor="default";
   // defaultEdge has strokeColor="default", fontColor="default" (no fill).
   // The live path: getCellStyle merges the mxStylesheet defaults so these keys
   // are always present. The headless path: getCellStyle returns only the raw cell
   // style → no defaults. Supply them here so headless and live are consistent.
-  function resolveThemeDefaults(style, graph, isVertex) {
+  function resolveThemeDefaults(style, graph, isVertex, cell) {
     if (!style) return style;
+    var model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null;
     var bg = themeColor(graph && graph.shapeBackgroundColor,
       isDark() ? '#121212' : '#ffffff');
     var fg = themeColor(graph && graph.shapeForegroundColor,
@@ -658,6 +769,40 @@
       if (!cloned) { out = Object.assign({}, style); cloned = true; }
       out[k] = v;
     };
+
+    // Auto-size font if autosizeText=1 is specified (headless path only since live mxGraph handles it)
+    if (isVertex && boolish(style.autosizeText) && cell) {
+      var state = graph && graph.view && typeof graph.view.getState === 'function' ? graph.view.getState(cell) : null;
+      var w = cell.geometry ? cell.geometry.width : (state ? state.width / (graph.view.scale || 1) : 0);
+      var h = cell.geometry ? cell.geometry.height : (state ? state.height / (graph.view.scale || 1) : 0);
+      if (w > 0 && h > 0) {
+        var rawLabel = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : '';
+        if (rawLabel) {
+          var autoSize = getAutosizeTextFontSizeHeadless(rawLabel, style, w, h);
+          if (autoSize) {
+            set('fontSize', String(autoSize));
+          }
+        }
+      }
+    }
+    // Resolve "inherit" values by walking up the parent chain
+    Object.keys(style).forEach(function (k) {
+      if (style[k] === 'inherit') {
+        var curr = cell;
+        while (curr && curr.parent && model && model.cells) {
+          var parent = model.cells[curr.parent];
+          if (!parent) break;
+          var parentStyle = graph.getCellStyle(parent);
+          var parentVal = parentStyle ? parentStyle[k] : null;
+          if (parentVal && parentVal !== 'inherit') {
+            set(k, parentVal);
+            break;
+          }
+          curr = parent;
+        }
+      }
+    });
+    style = out;
     // labelBackgroundColor/labelBorderColor are theme colors too
     // (Graph.colorStyles): "default" -> background / foreground respectively.
     [['fillColor', 0], ['gradientColor', 0], ['strokeColor', 1],
@@ -853,11 +998,11 @@
       content = lineSet(angle);
     }
 
-    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(w) + '" height="' + fmt(h) + '">' +
-      '<defs><clipPath id="sk"><path d="' + relD + '"/></clipPath></defs>' +
+    // Inner content only (no <svg> wrapper) so the caller can pad the viewport
+    // via paddedSvgShapeNode — otherwise the outline stroke is half-clipped.
+    return '<defs><clipPath id="sk"><path d="' + relD + '"/></clipPath></defs>' +
       '<g clip-path="url(#sk)">' + content + '</g>' +
-      '<path d="' + relD + '" fill="none"' + strokeSvgAttrs(style) + '/>' +
-      '</svg>';
+      '<path d="' + relD + '" fill="none"' + strokeSvgAttrs(style) + '/>';
   }
 
   function textSvgStr(label, cx, cy, style) {
@@ -921,9 +1066,19 @@
     }
 
     var blocks = [];
-    var re = /<(h[1-6]|p|div|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
+    // Match an <hr> divider (void element, no closing tag) OR a paired block
+    // tag, in document order. The <hr> branch carries no capture groups so the
+    // paired branch's groups stay at m[1] (tag) / m[2] (body). UML object/
+    // component templates put an <hr> between the title <p> and the body <p>;
+    // dropping it (as the old paired-only regex did) lost the divider line.
+    var re = /<hr\b[^>]*>|<(h[1-6]|p|div|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
     var m;
     while ((m = re.exec(s))) {
+      if (/^<hr/i.test(m[0])) {
+        blocks.push({ rule: true, size: Math.max(1, number(style.fontSize, 12)),
+          weight: 400, align: null, underline: false, gap: 2 });
+        continue;
+      }
       var tag = m[1].toLowerCase();
       var body = m[2].replace(/<br\s*\/?>/gi, '\n');
       var full = m[0];
@@ -951,10 +1106,30 @@
     return blocks.filter(function (b) { return b.text !== ''; });
   }
 
+  // Per-glyph advance width as a fraction of the font size (em), approximating
+  // Arial/Helvetica metrics. A single average factor wraps narrow-letter text
+  // (lorem ipsum, "this note") far too early; per-class widths reproduce the
+  // browser's line breaks closely without bundling a full AFM table.
+  function glyphEmWidth(ch) {
+    if (ch === ' ') return 0.28;
+    if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
+    if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
+    if ('mMW'.indexOf(ch) >= 0) return 0.87;
+    if (ch === 'w') return 0.72;
+    if (ch >= 'A' && ch <= 'Z') return 0.70;
+    if (ch >= '0' && ch <= '9') return 0.56;
+    return 0.52; // typical lowercase / default
+  }
+  function textWidthPx(str, size) {
+    var t = String(str == null ? '' : str), sum = 0;
+    for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i));
+    return sum * size;
+  }
+
   function wrapSvgText(text, size, width, wrap) {
     var rawLines = String(text == null ? '' : text).split('\n');
     if (!wrap) return rawLines;
-    var maxChars = Math.max(1, Math.floor(Math.max(1, width) / (size * 0.55)));
+    var maxW = Math.max(1, width);
     var lines = [];
     rawLines.forEach(function (raw) {
       var words = raw.split(/\s+/).filter(function (w) { return w !== ''; });
@@ -962,7 +1137,7 @@
       var line = '';
       words.forEach(function (word) {
         if (!line) { line = word; return; }
-        if ((line + ' ' + word).length <= maxChars) line += ' ' + word;
+        if (textWidthPx(line + ' ' + word, size) <= maxW) line += ' ' + word;
         else { lines.push(line); line = word; }
       });
       if (line) lines.push(line);
@@ -978,10 +1153,19 @@
     var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
     var h = textDefaultAlign(style);
     var v = textDefaultValign(style);
+    // overflow=fill/width sizes the label to the whole cell and flows content
+    // from the top (mxGraph), so the vertical alignment is effectively top —
+    // not the style's verticalAlign. (UML Component has no verticalAlign yet
+    // its title sits at the top in the editor.)
+    if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
     var pad = style.shape === 'text' ? 0 : 2;
     var usableW = Math.max(1, box.w - pad * 2);
     var rows = [];
     blocks.forEach(function (b) {
+      if (b.rule) {
+        rows.push({ rule: true, size: 0, weight: 400, lineH: b.size, gap: b.gap });
+        return;
+      }
       wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
           lineH: b.size * 1.22, gap: b.gap, align: b.align,
@@ -1002,6 +1186,14 @@
       y += (i === 0 ? 0 : r.gap);
       var ty = y;
       y += r.lineH;
+      if (r.rule) {
+        // <hr> divider: a horizontal line across the inner width, centered in
+        // its row band (≈ baseSize tall → ~half above / half below the line).
+        var ry = ty + r.lineH / 2;
+        return '<line x1="' + fmt(pad) + '" y1="' + fmt(ry) +
+          '" x2="' + fmt(box.w - pad) + '" y2="' + fmt(ry) +
+          '" stroke="' + color + '" stroke-width="1"/>';
+      }
       var rowH = alignH(r.align || h);
       var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
       var x = rowH === 'right' ? box.w - pad : rowH === 'center' ? box.w / 2 : pad;
@@ -1017,7 +1209,7 @@
         escXml(r.text) + '</text>';
     }).join('');
 
-    if (style.horizontal === '0') {
+    if (String(style.horizontal) === '0') {
       var cx = box.w / 2, cy = box.h / 2;
       textEls = '<g transform="rotate(-90 ' + fmt(cx) + ' ' + fmt(cy) + ')">' +
         '<text x="' + fmt(cx) + '" y="' + fmt(cy) +
@@ -1138,7 +1330,7 @@
   // horizontal=1 (default): header at top, divider is horizontal at y=startSize.
   // horizontal=0: header on the left, divider is vertical at x=startSize.
   function swimlanePath(style, x, y, w, h) {
-    var isHoriz = style.horizontal !== '0';
+    var isHoriz = String(style.horizontal) !== '0';
     var startSize = Math.min(Math.max(0, number(style.startSize, 30)), isHoriz ? h : w);
     var body = boolish(style.rounded)
       ? roundedRectPath(x, y, w, h, Math.min(w, h) * number(style.arcSize, 10) / 100)
@@ -1248,6 +1440,101 @@
   // (registered via mxCellRenderer.registerShape in Shapes.js). The content is
   // positioned in a (0,0)→(w,h) local viewport; the caller wraps it in <svg>.
   // Returns null for unknown shapes.
+  // Column/row separator lines for a shape=table, derived from the child
+  // tableRow/cell geometry. drawio's TableShape draws these at the table level
+  // (columnLines/rowLines default on) independently of the cells' own borders,
+  // so a table whose cells have all borders off still shows a column divider.
+  // Live path harvests the real SVG; this is the headless equivalent.
+  function tableGridLines(graph, cell, style, w, h) {
+    if (!cell || !cell.children || !cell.children.length) return '';
+    var styleOf = function (c) {
+      return (graph && typeof graph.getCellStyle === 'function') ? (graph.getCellStyle(c) || {}) : (c.style || {});
+    };
+    var strk = strokeSvgAttrs(style);
+    var header = Math.min(h, Math.max(0, number(style.startSize, 30)));
+    var colOn = style.columnLines !== '0' && style.columnLines !== 0;
+    var rowOn = style.rowLines !== '0' && style.rowLines !== 0;
+    var rows = cell.children.filter(function (c) {
+      return c && styleOf(c).shape === 'tableRow';
+    });
+    if (!rows.length) return '';
+    var lines = '';
+    if (colOn) {
+      var cells = (rows[0].children || []).filter(function (c) { return c && c.geometry; })
+        .slice().sort(function (a, b) { return (a.geometry.x || 0) - (b.geometry.x || 0); });
+      for (var ci = 1; ci < cells.length; ci++) {
+        var bx = cells[ci].geometry.x || 0;
+        if (bx > 0 && bx < w) {
+          lines += '<line x1="' + fmt(bx) + '" y1="' + fmt(header) +
+            '" x2="' + fmt(bx) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>';
+        }
+      }
+    }
+    if (rowOn && rows.length > 1) {
+      for (var ri = 1; ri < rows.length; ri++) {
+        var ry = (rows[ri].geometry && rows[ri].geometry.y) || 0;
+        if (ry > header && ry < h) {
+          lines += '<line x1="0" y1="' + fmt(ry) + '" x2="' + fmt(w) +
+            '" y2="' + fmt(ry) + '" fill="none"' + strk + '/>';
+        }
+      }
+    }
+    return lines;
+  }
+
+  // Wrap shape-geometry SVG in a viewport padded by strokeWidth/2 so an edge
+  // stroke (a rect/path drawn at x=0..w) is NOT half-clipped by a tight w×h
+  // viewport. Without this, a shape's outer border renders at ~half thickness
+  // while its interior lines render full — the asymmetry reads as "thick"
+  // interior lines (most visible on tables). The box grows by the pad on each
+  // side (the stroke halo), matching how drawio's own renderer paints strokes.
+  function paddedSvgShapeNode(content, box, style) {
+    var sw = Math.max(0.1, number(style.strokeWidth, 1));
+    var pad = sw / 2;
+    var W = box.w + sw, H = box.h + sw;
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(W) +
+      '" height="' + fmt(H) + '" viewBox="' + fmt(-pad) + ' ' + fmt(-pad) + ' ' +
+      fmt(W) + ' ' + fmt(H) + '">' + content + '</svg>';
+    return { kind: 'svg', box: { x: box.x - pad, y: box.y - pad, w: W, h: H },
+      source: base64(svg), aspect: 'preserve' };
+  }
+
+  // Note shape: a rectangle with a folded-over corner (dog-ear). drawio's
+  // NoteShape draws a pentagon (one corner cut at `size`) plus a small fold
+  // triangle; `direction` rotates which corner folds (east=top-right default,
+  // west=bottom-left). shapePath would flatten this to a plain rectangle.
+  // fillOverride/opacityOverride render the silhouette only (used for shadow).
+  // NOTE: north/south on a non-square note rotate about centre and may slightly
+  // overspill; the note in practice is square, so this is faithful here.
+  function noteInner(style, w, h, fillOverride, opacityOverride) {
+    var s = Math.max(0, Math.min(w / 2, Math.min(h / 2, number(style.size, 15))));
+    var penta = 'M 0 0 L ' + fmt(w - s) + ' 0 L ' + fmt(w) + ' ' + fmt(s) +
+      ' L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' Z';
+    var fold = 'M ' + fmt(w - s) + ' 0 L ' + fmt(w - s) + ' ' + fmt(s) +
+      ' L ' + fmt(w) + ' ' + fmt(s) + ' Z';
+    var content;
+    if (fillOverride) {
+      content = '<path d="' + penta + '" fill="' + fillOverride + '"' +
+        (opacityOverride != null ? ' fill-opacity="' + fmt(opacityOverride) + '"' : '') +
+        ' stroke="none"/>';
+    } else {
+      var fillC = isPaintable(style.fillColor) ? hex(style.fillColor) : '#ffffff';
+      var defs = '', fillAttr;
+      if (isPaintable(style.gradientColor)) {
+        defs = '<defs>' + linearGradDef('ngrad', fillC, hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        fillAttr = ' fill="url(#ngrad)"';
+      } else {
+        fillAttr = ' fill="' + fillC + '"';
+      }
+      content = defs + '<path d="' + penta + '"' + fillAttr + strokeSvgAttrs(style) + '/>' +
+        '<path d="' + fold + '" fill="' + shadeHex(fillC, 0.9) + '" stroke="none"/>';
+    }
+    var dir = style.direction || 'east';
+    var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
+    if (deg) content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) + ')">' + content + '</g>';
+    return content;
+  }
+
   function builtinShapeSvg(style, w, h) {
     var shape = style.shape;
     var fill = fillSvgAttr(style, '');
@@ -3621,7 +3908,7 @@
       if (state == null) return;
       var isEdgeCell = model.isEdge(cell);
       var style = resolveThemeDefaults(
-        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell);
+        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell, cell);
 
       if (isEdgeCell) {
         emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved, mode);
@@ -3965,6 +4252,9 @@
 
       // --- Built-in multi-element shapes (registered in Shapes.js, not stencil XML) ---
       var builtinContent = builtinShapeSvg(style, box.w, box.h);
+      if (builtinContent !== null && style.shape === 'table') {
+        builtinContent += tableGridLines(graph, cell, style, box.w, box.h);
+      }
       if (builtinContent !== null) {
         var rotDegBI = number(style.rotation, 0);
         if (rotDegBI) {
@@ -3985,8 +4275,9 @@
             aspect: 'preserve'
           });
         } else {
-          var svgStrBI = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) + '" height="' + fmt(box.h) + '">' + builtinContent + '</svg>';
-          paint.push({ kind: 'svg', box: box, source: base64(svgStrBI), aspect: 'preserve' });
+          // Pad the viewport by strokeWidth/2 so the shape's outer border is not
+          // half-clipped (which makes it thinner than the interior lines).
+          paint.push(paddedSvgShapeNode(builtinContent, box, style));
           if (label !== '') {
             var lblBoxBI = box;
             var lposBI = style.labelPosition, vlposBI = style.verticalLabelPosition;
@@ -4013,6 +4304,20 @@
             if (blbBI) paint.push(blbBI);
             paint.push(labelTextNode(graph, cell, state, style, lblBoxBI, label, notices, mode));
           }
+        }
+        return;
+      }
+
+      // Note shape (folded-corner sticky note). Handle before shapePath, which
+      // would flatten the dog-ear to a plain rectangle.
+      if (style.shape === 'note') {
+        if (boolish(style.shadow)) {
+          paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, '#000000', 0.18),
+            { x: box.x + 4, y: box.y + 4, w: box.w, h: box.h }, { strokeColor: 'none' }));
+        }
+        paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
+        if (label !== '') {
+          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode));
         }
         return;
       }
@@ -4089,8 +4394,8 @@
         var skFs = style.fillStyle || 'hachure';
         if (skFs === 'hachure' || skFs === 'cross-hatch' || skFs === 'dots') {
           var skRelD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-          paint.push({ kind: 'svg', box: { x: box.x, y: box.y, w: box.w, h: box.h },
-            source: base64(sketchFillSvg(style, skRelD, box.w, box.h)), aspect: 'preserve' });
+          paint.push(paddedSvgShapeNode(sketchFillSvg(style, skRelD, box.w, box.h),
+            { x: box.x, y: box.y, w: box.w, h: box.h }, style));
         } else {
           paint.push({ kind: 'path', d: d, fill: fillOf(style), stroke: strokeOf(style) });
         }
@@ -4102,11 +4407,8 @@
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
           hex(style.gradientColor), style.gradientDirection) + '</defs>';
         var relD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-        var gsvg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
-          '" height="' + fmt(box.h) + '">' + gdefs +
-          '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/></svg>';
-        paint.push({ kind: 'svg', box: { x: box.x, y: box.y, w: box.w, h: box.h },
-          source: base64(gsvg), aspect: 'preserve' });
+        var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
+        paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
       } else {
         paint.push({
           kind: 'path',
@@ -4121,7 +4423,7 @@
     // Constrain the label box to avoid centering over the whole swimlane height.
     var swimLabelBx = box;
     if (style.shape === 'swimlane') {
-      var swimIsH = style.horizontal !== '0';
+      var swimIsH = String(style.horizontal) !== '0';
       var swimSz = Math.min(Math.max(0, number(style.startSize, 30)), swimIsH ? box.h : box.w);
       swimLabelBx = swimIsH
         ? { x: box.x, y: box.y, w: box.w, h: swimSz }
@@ -4356,6 +4658,9 @@
   var api = { buildContract: buildContract, buildResult: buildResult,
     noticeSeverity: noticeSeverity, embedExternalImages: embedExternalImages,
     _embedImageHrefs: embedImageHrefs,
+    // Revision marker so it is trivial to confirm in the browser console which
+    // build of this file is actually loaded: run `NativePrintExporter.__rev`.
+    __rev: 'hl-2026-05-25-numericfix+notefold+swimlanerot',
     registerStencils: function(registry) { _stencilRegistry = registry; } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;

@@ -62,10 +62,21 @@ function parseStyle(s) {
     } else {
       const k = tok.slice(0, eq).trim();
       const v = tok.slice(eq + 1).trim();
-      if (k) style[k] = v;
+      // Match mxStylesheet.getCellStyle: numeric values are parseFloat'd to
+      // NUMBERS in the real browser. Keeping them as strings here masks bugs
+      // where exporter.js does `style.x === '0'` (passes on a string, fails on
+      // the number the browser actually provides). isNumeric mirrors mxUtils.
+      if (k) style[k] = isStyleNumeric(v) ? parseFloat(v) : v;
     }
   }
   return style;
+}
+
+// Mirror of mxUtils.isNumeric: true for "0","20","0.05","-5"; false for
+// "#FFF9B2","west","wrap","1ba1e2" (hex-ish), "" .
+function isStyleNumeric(n) {
+  return n !== '' && !isNaN(parseFloat(n)) && isFinite(n) &&
+    (typeof n !== 'string' || n.toLowerCase().indexOf('0x') < 0);
 }
 
 // --- XML structure extraction ---
