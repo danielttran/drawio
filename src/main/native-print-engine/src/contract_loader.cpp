@@ -1339,9 +1339,9 @@ private:
   if (!units) {
     return ContractLoadResult::err(units.error());
   }
-  if (units.value() != "px") {
+  if (units.value() != "px" && units.value() != "um") {
     return ContractLoadResult::err(
-      error(ContractErrorCode::ContractEnumError, "$.document.units", "only px contract units are supported"));
+      error(ContractErrorCode::ContractEnumError, "$.document.units", "only px or um contract units are supported"));
   }
   document.units = units.value();
 
@@ -1511,6 +1511,11 @@ ContractLoadResult load_baked_contract(std::string_view json) {
   }
 
   return validate_root(*root);
+}
+
+double units_per_inch(const std::string& units) noexcept {
+  if (units == "um") { return 25400.0; }
+  return 96.0;
 }
 
 } // namespace print_engine

@@ -20,6 +20,20 @@ import { tmpdir } from 'node:os';
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
+// Phase 3 bake convergence: the broker can bake .drawio XML headlessly before
+// forwarding to the engine, ensuring the interactive UI uses the same bake as
+// the unattended service.  The import is lazy so dev startup still works even
+// if the bake tooling is temporarily absent (loud error on the first request
+// that needs it, never a silent wrong contract).
+let _headlessBake = null;
+async function headlessBake(xml, opts) {
+  if (!_headlessBake) {
+    const m = await import('../../tools/native-print-bake/bake.mjs');
+    _headlessBake = m.bake;
+  }
+  return _headlessBake(xml, opts);
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENGINE_EXE = join(
   HERE, '..', 'native-print-engine', 'build', 'Debug',
@@ -258,6 +272,37 @@ async function handleRpc(body) {
       return msg;
     });
   }
+
+  // Phase 3 bake convergence: the UI can send raw .drawio XML and let the
+  // broker bake it headlessly, ensuring the same bake as the unattended service.
+  // Action 'bake-and-print': { drawioXml, printerId, stockId, copies, mergeData? }
+  if (body.action === 'bake-and-print') {
+    const { drawioXml, printerId, stockId, copies, mergeData } = body;
+    if (!drawioXml) {
+      return { result: 'Error', error: 'BrokerError', detail: 'missing drawioXml' };
+    }
+    let contract;
+    try {
+      const result = await headlessBake(drawioXml, { unattended: false });
+      if (result.notices && result.notices.length > 0) {
+        return {
+          result: 'Error', error: 'BakeNotices',
+          detail: `bake produced ${result.notices.length} notice(s)`,
+          notices: result.notices
+        };
+      }
+      contract = result.contract;
+    } catch (e) {
+      return { result: 'Error', error: 'BakeError', detail: String(e.message || e) };
+    }
+    return withContractFile(contract, async (file) => {
+      const { msg } = await engine.request({
+        op: 'Print', contractRef: { path: file },
+        mergeData: mergeData || {}, printerId, stockId, copies: copies || 1 });
+      return msg;
+    });
+  }
+
   return { result: 'Error', error: 'BrokerError',
     detail: 'unknown action: ' + body.action };
 }

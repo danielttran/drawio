@@ -33,6 +33,7 @@ using print_engine::render_operator_preview_trace;
 using print_engine::render_to_native_surface_trace;
 using print_engine::render_to_print_lifecycle;
 using print_engine::tile_hits_hardware_margin;
+using print_engine::units_per_inch;
 
 namespace {
 
@@ -409,4 +410,40 @@ TEST_CASE("Phase 7 v2 native surface forwards rich paragraphs on text commands")
     }
   }
   CHECK(saw_text);
+}
+
+TEST_CASE("D4: v2 bridge NativePrintTarget with um contract_units_per_inch scales correctly") {
+  // A um contract: 25400 um wide x 12700 um tall (1 inch x 0.5 inch).
+  // With NativePrintTarget{25400.0} at 300 dpi -> 300 x 150 device pixels.
+  const std::string um_json =
+    R"({"schema":{"major":1,"minor":1},"document":{"units":"um","pages":[)"
+    R"({"id":"p","size":{"w":25400,"h":12700},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":25400,"h":12700}}],"paint":[)"
+    R"({"kind":"path","d":"M 0 0 L 25400 0 L 25400 12700 L 0 12700 Z","fill":{"type":"solid","color":"#000000","alpha":1},"stroke":null})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(um_json);
+  REQUIRE(loaded);
+  CHECK(loaded.value().units == "um");
+
+  const auto surface = render_to_native_surface_trace(
+    loaded.value(),
+    RenderTarget{300.0, units_per_inch("um")},
+    {},
+    false);
+  REQUIRE(surface);
+
+  // Find the path draw command and verify its device_box width == 300 pixels.
+  bool found_path = false;
+  for (const auto& c : surface.value().commands) {
+    if (c.kind == NativeDrawKind::DrawPath) {
+      found_path = true;
+      CHECK(nearly_equal(c.device_box.w, 300.0, 0.5));
+      CHECK(nearly_equal(c.device_box.h, 150.0, 0.5));
+    }
+  }
+  CHECK(found_path);
+}
+
+TEST_CASE("D4: units_per_inch helper is consistent with px=96 and um=25400") {
+  CHECK(units_per_inch("px") == 96.0);
+  CHECK(units_per_inch("um") == 25400.0);
 }

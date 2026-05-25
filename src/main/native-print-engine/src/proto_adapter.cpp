@@ -45,11 +45,10 @@ const char* contract_kind_to_wire(const PaintNodeSummary& node) {
 Json notice_to_json(const DegradationNotice& n) {
   Json j = Json::object();
   j.set("kind", Json::str(to_wire(map_notice(n.type))));
-  // pageId is optional by design (§3.7): present only when page-scoped.
   if (!n.page_id.empty()) {
     j.set("pageId", Json::str(n.page_id));
   } else {
-    j.set("pageId", Json());  // explicit null for non-page-scoped notices
+    j.set("pageId", Json());
   }
   Json detail = Json::object();
   if (!n.detail.empty()) detail.set("detail", Json::str(n.detail));
@@ -99,7 +98,7 @@ DispatchResult ProtoDispatcher::error_reply(const Json& request,
   r.control.set("error", Json::str(to_wire(kind)));
   if (!detail.empty()) r.control.set("detail", Json::str(detail));
   if (const Json* id = request.get("id"); id != nullptr) {
-    r.control.set("id", *id);  // correlate to the request if it carried an id
+    r.control.set("id", *id);
   }
   r.control.set("proto", proto_echo());
   return r;
@@ -117,7 +116,6 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
                        "unknown op");
   }
 
-  // Defined ordering / version gate (§3.2/§3.4) before any work.
   if (auto gated = session_.gate(*op); gated.has_value()) {
     return error_reply(request, *gated, "operation refused by protocol gate");
   }
@@ -258,7 +256,6 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
     }
 
     case Op::RenderPreview: {
-      // A regulated print in progress must not contend with a preview (§3.4).
       if (print_in_flight_) {
         return error_reply(request, ProtoErrorKind::EngineBusyError,
                            "print in progress");
@@ -330,13 +327,16 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
           request.get("stockId") ? request.get("stockId")->as_string() : "";
       const int copies = static_cast<int>(
           request.get("copies") ? request.get("copies")->as_number(1.0) : 1.0);
+      PrintRenderOptions opts;
+      if (const Json* aa = request.get("aa")) {
+        opts.edge_crisp = (aa->as_string() == "crisp");
+      }
 
-      print_in_flight_ = true;  // single-flight (§3.4); serial dispatcher
+      print_in_flight_ = true;
       auto out = services_.print(loaded.value(), read_merge(request),
-                                 printer_id, stock_id, copies);
+                                 printer_id, stock_id, copies, opts);
       print_in_flight_ = false;
       if (!out.has_value()) {
-        // AbortDoc discipline: never a silent partial; report failure loudly.
         return error_reply(request, map_contract_error(out.error().code),
                            out.error().message);
       }
@@ -354,8 +354,6 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
     }
 
     case Op::ReleaseContract: {
-      // The dispatcher reads a contractRef fully per op and holds no handle,
-      // so it can acknowledge immediately (resolves the mid-read race; §6).
       DispatchResult r;
       r.control = Json::object();
       r.control.set("result", Json::str("Released"));

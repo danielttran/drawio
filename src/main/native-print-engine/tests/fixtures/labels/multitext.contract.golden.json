@@ -1,0 +1,205 @@
+{
+  "schema": {
+    "major": 1,
+    "minor": 1
+  },
+  "document": {
+    "units": "um",
+    "pages": [
+      {
+        "id": "page-1",
+        "size": {
+          "w": 105833.333333,
+          "h": 52916.666667
+        },
+        "tiles": [
+          {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "size": {
+              "w": 105833.333333,
+              "h": 52916.666667
+            }
+          }
+        ],
+        "paint": [
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 0,
+              "w": 31750,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Helvetica",
+              "sizePx": 3175,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Left Aligned"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 34395.833333,
+              "y": 0,
+              "w": 31750,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Helvetica",
+              "sizePx": 3704.166667,
+              "weight": 700,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "center",
+              "v": "middle"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Center Middle"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 68791.666667,
+              "y": 0,
+              "w": 31750,
+              "h": 7937.5
+            },
+            "font": {
+              "family": "Helvetica",
+              "sizePx": 2645.833333,
+              "weight": 400,
+              "italic": true,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "right",
+              "v": "bottom"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Right Bottom"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 13229.166667,
+              "w": 31750,
+              "h": 15875
+            },
+            "font": {
+              "family": "Courier New",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "center",
+              "v": "middle"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Multi",
+                "Line",
+                "Text"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 37041.666667,
+              "y": 13229.166667,
+              "w": 31750,
+              "h": 15875
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 2910.416667,
+              "weight": 400,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "left",
+              "v": "top"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "Wrapped long text content that should wrap to next line"
+              ]
+            }
+          },
+          {
+            "kind": "text",
+            "box": {
+              "x": 0,
+              "y": 34395.833333,
+              "w": 52916.666667,
+              "h": 10583.333333
+            },
+            "font": {
+              "family": "Arial",
+              "sizePx": 4233.333333,
+              "weight": 700,
+              "italic": false,
+              "underline": false,
+              "strikethrough": false,
+              "color": "#000000"
+            },
+            "align": {
+              "h": "center",
+              "v": "middle"
+            },
+            "content": {
+              "type": "static",
+              "lines": [
+                "UPPERCASE BOLD"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "bakePath": "B"
+  }
+}

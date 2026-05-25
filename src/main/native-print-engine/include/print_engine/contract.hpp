@@ -9,7 +9,7 @@
 namespace print_engine {
 
 inline constexpr int SupportedMajor = 1;
-inline constexpr int SupportedMinor = 0;
+inline constexpr int SupportedMinor = 1;
 
 enum class PaintKind {
   Path,

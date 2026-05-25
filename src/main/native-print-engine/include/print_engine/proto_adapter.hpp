@@ -53,6 +53,14 @@ struct PrintOutput {
   Json job_log;  // structured record; merged values redacted default-off (§7)
 };
 
+// D6 AA control: per-job rasterization option threaded from the Print op JSON
+// ("aa":"on"|"crisp", default "on"). "crisp" disables GDI+ SmoothingMode and
+// sets TextRenderingHintSingleBitPerPixelGridFit; reserved for T-Barcode and
+// thermal heads. Default = AA on (no change to existing behaviour).
+struct PrintRenderOptions {
+  bool edge_crisp = false;
+};
+
 // The device-touching surface the engine owns (§1). Production impl is
 // Win32/GDI+ (separate workstream); tests inject a fake. Pure ops
 // (GetContractFields) are intentionally NOT here — they need no device.
@@ -67,7 +75,7 @@ class EngineServices {
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge,
       const std::string& printer_id, const std::string& stock_id,
-      int copies) = 0;
+      int copies, PrintRenderOptions opts = {}) = 0;
 };
 
 struct DispatchResult {

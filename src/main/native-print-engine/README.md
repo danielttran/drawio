@@ -10,7 +10,7 @@ source present (INV-1, enforced by `tests/architecture_tests.cpp`).
   Phase 2 (static text), Phase 3 (raster image + SVG rasterizer seam),
   Phase 4 (merge-resolve seam + barcode seam stubs), Phase 5
   (print/preview targets via Win32 + GDI+), Phase 6 (adversarial /
-  hardening), and Phase 7 (v2 native bridge — real `EnumPrintersW`,
+  hardening), and Phase 7 (v2 native bridge -- real `EnumPrintersW`,
   DEVMODE merge incl. `DMPAPER_USER` custom stocks, `StartDoc`/
   `EndDoc` discipline, AbortDoc-on-failure) all green.
 - Engine library: `src/` + `include/`. Win32 host: `host/` (compiles

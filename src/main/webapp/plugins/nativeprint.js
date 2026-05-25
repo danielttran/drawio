@@ -26,6 +26,28 @@
 
   var RPC = '/native-print/rpc';
 
+  // Phase 3 bake convergence: when enabled, the UI sends the raw diagram XML
+  // to the broker which bakes it headlessly (same path as the unattended
+  // service).  Set window.nativePrintHeadlessBake = true before loading the
+  // plugin, or pass ?headlessBake=1 in the dev URL, to activate.
+  // The live-DOM browser bake (buildResult) stays as fallback until this flag
+  // is set and the corpus is green (Phase 3 acceptance criteria).
+  var HEADLESS_BAKE = !!(window.nativePrintHeadlessBake ||
+    (typeof location !== 'undefined' &&
+     location.search.indexOf('headlessBake=1') >= 0));
+
+  // Get the current diagram XML for headless-bake mode.  Returns a bare
+  // <mxGraphModel> string which the headless bake accepts (§3.1 parser).
+  function getDiagramXml() {
+    try {
+      var codec = new mxCodec();
+      var node = codec.encode(ui.editor.graph.getModel());
+      return mxUtils.getXml(node);
+    } catch (e) {
+      throw new Error('cannot serialise diagram: ' + e.message);
+    }
+  }
+
   function rpc(body) {
     return fetch(RPC, {
       method: 'POST',
@@ -48,19 +70,8 @@
       ui.showError('Native Print', 'Exporter not loaded.', 'OK');
       return;
     }
-    var contract;
+    var contract = null;
     var exporterNotices = [];
-    try {
-      var baked = window.NativePrintExporter.buildResult
-        ? window.NativePrintExporter.buildResult(ui.editor.graph)
-        : { contract: window.NativePrintExporter.buildContract(ui.editor.graph),
-            notices: [] };
-      contract = baked.contract;
-      exporterNotices = baked.notices || [];
-    } catch (e) {
-      ui.showError('Native Print', 'Bake failed: ' + e.message, 'OK');
-      return;
-    }
 
     var root = el('div', { style:
       'padding:10px;font-family:Helvetica,Arial;font-size:13px;width:720px;' +
@@ -130,6 +141,172 @@
       style: 'width:60px' });
     cRow.appendChild(copies);
     root.appendChild(cRow);
+
+    // ── Rendering mode selector ───────────────────────────────────────────────
+    // Two modes: Headless (Path B) uses stencil XML geometry directly — no
+    // browser required.  Live canvas (Path A) harvests shapes from the
+    // active DOM — supports everything but requires a fully-rendered diagram.
+    var PROBE_BLOCKING = ['ExporterUnsupportedShape', 'ExporterUnsupportedStencilFeature',
+      'ExporterUnsupportedImage'];
+    var NOTICE_HUMAN = {
+      'ExporterUnsupportedShape':
+        'Shape not yet supported in headless mode — switch to Live canvas',
+      'ExporterUnsupportedStencilFeature':
+        'Shape uses a rendering feature not supported headlessly (rounded paths, ' +
+        'embedded images, or shape composition) — switch to Live canvas',
+      'ExporterUnsupportedImage':
+        'Image references an external URL that could not be embedded',
+      'GradientDirectionApprox':
+        'Gradient direction may differ slightly from screen (headless limitation)',
+      'RichApproximate':
+        'Rich-text layout is approximated (word-wrap requires font metrics)',
+      'RichApproximateAlpha':
+        'Text color uses rgba transparency — alpha dropped (print is opaque)',
+      'NativePrintFatal':
+        'Fatal rendering error — diagram cannot be printed',
+    };
+
+    var modeSection = el('div', { style: 'margin:8px 0' });
+    modeSection.appendChild(el('div', {
+      style: 'font-weight:bold;margin-bottom:4px' }, 'Rendering mode'));
+
+    // Helper: build a mode option row with radio + title + subtitle
+    function modeOptionRow(id, value, title, subtitle) {
+      var row = el('div', {
+        style: 'display:flex;align-items:flex-start;gap:6px;padding:7px 8px;' +
+               'border:1px solid #ddd;border-radius:4px;margin-bottom:4px;cursor:pointer' });
+      var rd = el('input', { type: 'radio', name: 'nativePrintMode',
+        value: value, id: id, style: 'margin-top:3px;flex-shrink:0' });
+      var text = el('div');
+      text.appendChild(el('div', { style: 'font-weight:500' }, title));
+      text.appendChild(el('div', { style: 'font-size:11px;color:#666;margin-top:1px' }, subtitle));
+      row.appendChild(rd);
+      row.appendChild(text);
+      row.addEventListener('click', function () { rd.checked = true; rd.dispatchEvent(new Event('change')); });
+      return { row: row, rd: rd };
+    }
+
+    var bOpt = modeOptionRow('npmB', 'B',
+      'Headless (recommended)',
+      'Renders every shape from its stencil XML definition — no browser required, ' +
+      'deterministic, and the fastest path to print.');
+    var aOpt = modeOptionRow('npmA', 'A',
+      'Live canvas',
+      'Captures shapes directly from the active drawing canvas. ' +
+      'Handles every shape type but requires the diagram to be fully rendered.');
+    var rdB = bOpt.rd;
+    rdB.checked = true;
+    var rdA = aOpt.rd;
+
+    // Headless compatibility panel — shows per-diagram shape support status
+    var compatPanel = el('div', { style:
+      'margin:2px 0 4px 26px;padding:6px 8px;border-radius:3px;font-size:11px;' +
+      'background:#f5f5f5;border:1px solid #e0e0e0;color:#555' });
+    compatPanel.textContent = 'Checking diagram…';
+    bOpt.row.appendChild(compatPanel);
+
+    modeSection.appendChild(bOpt.row);
+    modeSection.appendChild(aOpt.row);
+    root.appendChild(modeSection);
+
+    function selectedMode() { return rdA.checked ? 'A' : 'B'; }
+
+    // Count shape-producing vertices in the live graph model (text-only cells excluded).
+    function countShapeVerts() {
+      try {
+        var cells = ui.editor.graph.getModel().cells;
+        var n = 0;
+        Object.keys(cells).forEach(function (k) {
+          var c = cells[k];
+          if (c.vertex && c.id !== '0' && c.id !== '1') {
+            var s = c.style || '';
+            // text-only cells don't produce a shape node
+            if (s.indexOf('shape=text') < 0 && s !== 'text' &&
+                s.indexOf('text;') !== 0) n++;
+          }
+        });
+        return n;
+      } catch (e) { return null; }
+    }
+
+    // Resolve a cellId to a human-readable label for display.
+    function cellLabel(cellId) {
+      try {
+        var c = ui.editor.graph.getModel().cells[cellId];
+        var v = c && c.value != null ? String(c.value) : '';
+        // Strip HTML tags from rich labels
+        v = v.replace(/<[^>]+>/g, '').trim();
+        if (v.length > 30) v = v.slice(0, 27) + '…';
+        return v || ('#' + cellId);
+      } catch (e) { return '#' + cellId; }
+    }
+
+    function runPathBProbe() {
+      var ex = window.NativePrintExporter;
+      if (!ex || !ex.buildResult) {
+        compatPanel.style.background = '#fce4ec'; compatPanel.style.borderColor = '#ef9a9a';
+        compatPanel.style.color = '#c62828';
+        compatPanel.textContent = 'Exporter not loaded.';
+        return;
+      }
+      try {
+        var probeResult = ex.buildResult(ui.editor.graph, paperPx(), { mode: 'B' });
+        var blocking = (probeResult.notices || []).filter(function (n) {
+          return PROBE_BLOCKING.indexOf(n.kind) >= 0;
+        });
+        var total = countShapeVerts();
+        var totalStr = total != null ? total + ' shape' + (total === 1 ? '' : 's') : 'shapes';
+        if (blocking.length === 0) {
+          compatPanel.style.background = '#e8f5e9'; compatPanel.style.borderColor = '#a5d6a7';
+          compatPanel.style.color = '#2e7d32';
+          compatPanel.textContent = '✓ All ' + totalStr + ' render headlessly — fully print-ready.';
+        } else {
+          compatPanel.style.background = '#fff8e1'; compatPanel.style.borderColor = '#ffe082';
+          compatPanel.style.color = '#7a4500';
+          // Show which specific shapes need live canvas
+          var ul = el('ul', { style: 'margin:4px 0 0;padding-left:16px;list-style:disc' });
+          blocking.forEach(function (n) {
+            var li = el('li', { style: 'margin:2px 0' });
+            var lbl = n.detail && n.detail.cellId ? '"' + cellLabel(n.detail.cellId) + '"' : '';
+            var reason = NOTICE_HUMAN[n.kind] || n.kind;
+            li.textContent = lbl ? lbl + ' — ' + reason : reason;
+            ul.appendChild(li);
+          });
+          // Header with shape counts
+          var hdr = el('div');
+          var supported = total != null ? (total - blocking.length) : null;
+          hdr.textContent = '⚠ ' + blocking.length + ' of ' + totalStr +
+            (supported != null ? ' (' + supported + ' render headlessly' : '') +
+            (supported != null ? ', ' + blocking.length + ' need live canvas)' : ' need live canvas') + ':';
+          compatPanel.innerHTML = '';
+          compatPanel.appendChild(hdr);
+          compatPanel.appendChild(ul);
+          // Quick-switch link
+          var sw = el('div', { style: 'margin-top:5px' });
+          var swLink = el('a', { href: '#',
+            style: 'color:#1565c0;text-decoration:underline;font-size:11px' },
+            'Switch to Live canvas instead');
+          swLink.addEventListener('click', function (e) {
+            e.preventDefault();
+            rdA.checked = true;
+            rdA.dispatchEvent(new Event('change'));
+          });
+          sw.appendChild(swLink);
+          compatPanel.appendChild(sw);
+        }
+      } catch (e) {
+        compatPanel.style.background = '#fce4ec'; compatPanel.style.borderColor = '#ef9a9a';
+        compatPanel.style.color = '#c62828';
+        compatPanel.textContent = 'Headless check failed: ' + e.message;
+      }
+    }
+
+    [rdA, rdB].forEach(function (rd) {
+      rd.addEventListener('change', function () {
+        rearm();
+        rebake().then(function (ok) { if (ok) doPreview(); });
+      });
+    });
 
     root.appendChild(el('div', { style:
       'margin:8px 0 4px;font-weight:bold' }, 'Preview (exactly what prints)'));
@@ -215,15 +392,21 @@
     function rebake() {
       var ex = window.NativePrintExporter;
       if (!ex || !ex.buildResult) return Promise.resolve(true);
+      var mode = selectedMode();
+      // Both modes pre-fetch external image URLs so cells with http(s):// style.image
+      // are embedded as data URIs before baking. Path A also transcodes WebP/BMP via
+      // canvas; Path B skips the canvas transcode (no canvas headlessly) but still
+      // resolves plain PNG/JPEG/GIF external URLs via fetch.
       var resolve = ex.embedExternalImages
         ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
         : Promise.resolve({});
       return resolve.then(function (resolvedImages) {
         try {
           var r = ex.buildResult(ui.editor.graph, paperPx(),
-            { resolvedImages: resolvedImages });
+            { resolvedImages: resolvedImages, mode: mode });
           contract = r.contract;
           exporterNotices = r.notices || [];
+          if (mode === 'B') runPathBProbe();
           return true;
         } catch (e) {
           contract = null;
@@ -253,7 +436,10 @@
     }
 
     function noticeText(n) {
-      return n.kind + (n.detail && n.detail.detail ? ' — ' + n.detail.detail : '');
+      var label = NOTICE_HUMAN[n.kind] || n.kind;
+      var cellInfo = (n.detail && n.detail.cellId)
+        ? ' [' + cellLabel(n.detail.cellId) + ']' : '';
+      return label + cellInfo;
     }
 
     // The Print gate blocks ONLY on degradations (real fidelity loss the
@@ -381,10 +567,18 @@
       }
       printBtn.disabled = true;
       status.textContent = 'Sending to printer…';
-      rpc({ action: 'print', contract: contract,
-        printerId: printers[printerSel.selectedIndex].id,
-        stockId: sid,
-        copies: parseInt(copies.value, 10) || 1 }).then(function (m) {
+      // Phase 3: use headless bake path if enabled; fall back to browser bake.
+      var printRpc = HEADLESS_BAKE
+        ? rpc({ action: 'bake-and-print',
+            drawioXml: getDiagramXml(),
+            printerId: printers[printerSel.selectedIndex].id,
+            stockId: sid,
+            copies: parseInt(copies.value, 10) || 1 })
+        : rpc({ action: 'print', contract: contract,
+            printerId: printers[printerSel.selectedIndex].id,
+            stockId: sid,
+            copies: parseInt(copies.value, 10) || 1 });
+      printRpc.then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';
         } else {
@@ -399,6 +593,8 @@
     });
 
     ui.showDialog(root, 760, 620, true, false);
+    // Run the Path B probe immediately so the status panel shows before printers load.
+    runPathBProbe();
 
     status.textContent = 'Querying printers…';
     rpc({ action: 'capabilities' }).then(function (m) {

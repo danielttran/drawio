@@ -1,0 +1,46 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z">
+  <diagram id="stencil-commands" name="Stencil Commands">
+    <mxGraphModel pageWidth="1960" pageHeight="600">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="c01" vertex="1" value="Cloud Rect" style="shape=mxgraph.basic.cloud_rect;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="100" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c02" vertex="1" value="K8s API" style="shape=mxgraph.kubernetes.api;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="320" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c03" vertex="1" value="Cloud Call" style="shape=mxgraph.basic.cloud_callout;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=20;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="540" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c04" vertex="1" value="BPMN Comp" style="shape=mxgraph.bpmn.compensation_end;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="760" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c05" vertex="1" value="BPMN Cancel" style="shape=mxgraph.bpmn.cancel_end;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="980" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c06" vertex="1" value="Banner" style="shape=mxgraph.basic.banner;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1200" y="100" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="c07" vertex="1" value="Aggregator" style="shape=mxgraph.eip.aggregator;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1420" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c08" vertex="1" value="Analytics" style="shape=mxgraph.salesforce.analytics2;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1640" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c09" vertex="1" value="Access Card" style="shape=mxgraph.citrix.access_card;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=15;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="100" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c10" vertex="1" value="SF Apps" style="shape=mxgraph.salesforce.apps;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="320" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="c11" vertex="1" value="Action Bar" style="shape=mxgraph.android.action_bar;fillColor=#dae8fc;strokeColor=#6c8ebf;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="540" y="300" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="c12" vertex="1" value="Claim Check" style="shape=mxgraph.eip.claim_check;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=30;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="760" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -12,6 +12,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using print_engine::ContractErrorCode;
@@ -27,6 +30,7 @@ using print_engine::render_to_trace;
 using print_engine::render_design_preview_trace;
 using print_engine::render_operator_preview_trace;
 using print_engine::render_print_trace;
+using print_engine::units_per_inch;
 using print_engine::fixtures::FixtureBuilder;
 
 namespace {
@@ -177,8 +181,9 @@ TEST_CASE("Schema major bump = hard refuse; no paint emitted (INV-3)") {
   }
 }
 
-TEST_CASE("Schema same major + minor bump = load with DegradationNotice") {
-  for (const int minor : {1, 5, 99, 1000}) {
+TEST_CASE("Schema same major + minor bump above SupportedMinor = load with DegradationNotice") {
+  // SupportedMinor is 1; minors 2+ are future-additive => degradation notice.
+  for (const int minor : {2, 5, 99, 1000}) {
     const auto loaded = load_baked_contract(
       FixtureBuilder().schema(1, minor).empty_page().build());
     REQUIRE(loaded);
@@ -186,11 +191,14 @@ TEST_CASE("Schema same major + minor bump = load with DegradationNotice") {
   }
 }
 
-TEST_CASE("Schema same major + minor 0 = clean load, no notice") {
-  const auto loaded = load_baked_contract(
-    FixtureBuilder().schema(1, 0).empty_page().build());
-  REQUIRE(loaded);
-  CHECK_FALSE(loaded.value().has_degradation_notice);
+TEST_CASE("Schema same major + minor at-or-below SupportedMinor = clean load, no notice") {
+  // SupportedMinor is 1; minors 0 and 1 are exactly supported => no notice.
+  for (const int minor : {0, 1}) {
+    const auto loaded = load_baked_contract(
+      FixtureBuilder().schema(1, minor).empty_page().build());
+    REQUIRE(loaded);
+    CHECK_FALSE(loaded.value().has_degradation_notice);
+  }
 }
 
 // ===========================================================================
@@ -239,6 +247,26 @@ TEST_CASE("Transform: contract.units==px maps 1:1 at 96 dpi (sanity)") {
   const auto& box = rendered.value().commands[2].device_box;
   CHECK(nearly_equal(box.w, 100.0, 1e-6));
   CHECK(nearly_equal(box.h, 50.0,  1e-6));
+}
+
+TEST_CASE("D4 Transform: contract.units==um scales by 25400 units-per-inch at 300 dpi") {
+  // 25.4 mm = 1 inch = 25400 um; at 300 dpi that is exactly 300 pixels wide.
+  const std::string json =
+    R"({"schema":{"major":1,"minor":1},"document":{"units":"um","pages":[)"
+    R"({"id":"p","size":{"w":254000,"h":127000},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":254000,"h":127000}}],"paint":[)"
+    R"({"kind":"path","d":"M 0 0 L 25400 0 L 25400 12700 L 0 12700 Z","fill":{"type":"solid","color":"#000000","alpha":1},"stroke":null})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  CHECK(loaded.value().units == "um");
+  // RenderTarget: dpi=300, contract_units_per_inch=25400
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{300.0, units_per_inch("um")});
+  REQUIRE(rendered);
+  // 25400 um == 1 inch; at 300 dpi => 300 device pixels wide
+  // 12700 um == 0.5 inch; at 300 dpi => 150 device pixels tall
+  const auto& box = rendered.value().commands[2].device_box;
+  CHECK(nearly_equal(box.w, 300.0, 1e-6));
+  CHECK(nearly_equal(box.h, 150.0, 1e-6));
 }
 
 // ===========================================================================
@@ -548,10 +576,19 @@ TEST_CASE("Missing schema is refused loudly") {
   REQUIRE_FALSE(loaded);
 }
 
-TEST_CASE("Document units must be px (only supported unit)") {
-  const auto loaded = load_baked_contract(
+TEST_CASE("Document units: px and um are accepted; anything else is refused") {
+  const auto px_loaded = load_baked_contract(
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[{"id":"p","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]}]}})");
+  REQUIRE(px_loaded);
+
+  const auto um_loaded = load_baked_contract(
+    R"({"schema":{"major":1,"minor":1},"document":{"units":"um","pages":[{"id":"p","size":{"w":25400,"h":12700},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":25400,"h":12700}}],"paint":[]}]}})");
+  REQUIRE(um_loaded);
+
+  const auto inch_rejected = load_baked_contract(
     R"({"schema":{"major":1,"minor":0},"document":{"units":"inch","pages":[]}})");
-  REQUIRE_FALSE(loaded);
+  REQUIRE_FALSE(inch_rejected);
+  CHECK(inch_rejected.error().code == print_engine::ContractErrorCode::ContractEnumError);
 }
 
 TEST_CASE("Negative tile origin is rejected (would put content under origin)") {
@@ -592,4 +629,122 @@ TEST_CASE("Empty page renders to start/clip/end-tile with no paint commands") {
   CHECK(clip == 1);
   CHECK(end_tile == 1);
   CHECK(path == 0);
+}
+
+// ===========================================================================
+// C2: Corpus golden contracts render deterministically (engine→engine,
+// §6/§9.3). Loads each golden JSON from the labels fixtures directory and
+// verifies that render_to_trace produces byte-identical traces on two
+// consecutive calls — the engine-level proof of "same contract = same output".
+// This is the C2 pixel-equivalence guarantee expressed in terms of the trace
+// (cross-platform; the GDI+ compositor is Windows-only so full pixel comparison
+// is deferred to the Windows CI that builds the Rust rasterizer cdylib).
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] std::string read_all_file(const std::filesystem::path& p) {
+  std::ifstream in(p);
+  if (!in) return {};
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+}  // namespace
+
+TEST_CASE("C2: simple.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  const std::filesystem::path golden =
+      std::filesystem::path(PRINT_ENGINE_SOURCE_ROOT) /
+      "tests" / "fixtures" / "labels" / "simple.contract.golden.json";
+  const std::string json = read_all_file(golden);
+  if (json.empty()) {
+    SKIP("simple.contract.golden.json not found — run bake to generate corpus");
+  }
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const RenderTarget t{300.0, units_per_inch(loaded.value().units)};
+  const auto a = render_to_trace(loaded.value(), t);
+  const auto b = render_to_trace(loaded.value(), t);
+  REQUIRE(a);
+  REQUIRE(b);
+  REQUIRE(a.value().commands.size() == b.value().commands.size());
+  for (std::size_t i = 0; i < a.value().commands.size(); ++i) {
+    INFO("command index " << i);
+    CHECK(a.value().commands[i].kind == b.value().commands[i].kind);
+    CHECK(a.value().commands[i].label == b.value().commands[i].label);
+    CHECK(nearly_equal(a.value().commands[i].device_box.x,
+                       b.value().commands[i].device_box.x, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.y,
+                       b.value().commands[i].device_box.y, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.w,
+                       b.value().commands[i].device_box.w, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.h,
+                       b.value().commands[i].device_box.h, 1e-9));
+  }
+}
+
+// Reusable helper: load, render twice, compare trace for determinism.
+namespace {
+void check_corpus_determinism(const char* fixture_name) {
+  const std::filesystem::path golden =
+      std::filesystem::path(PRINT_ENGINE_SOURCE_ROOT) /
+      "tests" / "fixtures" / "labels" / fixture_name;
+  const std::string json = read_all_file(golden);
+  if (json.empty()) {
+    SKIP("golden not found — run bake to generate corpus: " << fixture_name);
+  }
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+  const RenderTarget t{300.0, units_per_inch(loaded.value().units)};
+  const auto a = render_to_trace(loaded.value(), t);
+  const auto b = render_to_trace(loaded.value(), t);
+  REQUIRE(a);
+  REQUIRE(b);
+  REQUIRE(a.value().commands.size() == b.value().commands.size());
+  for (std::size_t i = 0; i < a.value().commands.size(); ++i) {
+    INFO("command index " << i);
+    CHECK(a.value().commands[i].kind == b.value().commands[i].kind);
+    CHECK(a.value().commands[i].label == b.value().commands[i].label);
+    CHECK(nearly_equal(a.value().commands[i].device_box.x,
+                       b.value().commands[i].device_box.x, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.y,
+                       b.value().commands[i].device_box.y, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.w,
+                       b.value().commands[i].device_box.w, 1e-9));
+    CHECK(nearly_equal(a.value().commands[i].device_box.h,
+                       b.value().commands[i].device_box.h, 1e-9));
+  }
+}
+}  // namespace
+
+TEST_CASE("C2: shapes.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("shapes.contract.golden.json");
+}
+
+TEST_CASE("C2: connector.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("connector.contract.golden.json");
+}
+
+TEST_CASE("C2: gradient.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("gradient.contract.golden.json");
+}
+
+TEST_CASE("C2: multitext.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("multitext.contract.golden.json");
+}
+
+TEST_CASE("C2: groups.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("groups.contract.golden.json");
+}
+
+TEST_CASE("C2: multipage.contract.golden.json renders deterministically",
+          "[c2][corpus][determinism]") {
+  check_corpus_determinism("multipage.contract.golden.json");
 }

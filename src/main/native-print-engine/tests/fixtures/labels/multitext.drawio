@@ -1,0 +1,28 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="400" pageHeight="200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="2" value="Left Aligned" style="text;html=0;align=left;verticalAlign=top;fontFamily=Helvetica;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="10" y="10" width="120" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="3" value="Center Middle" style="text;html=0;align=center;verticalAlign=middle;fontFamily=Helvetica;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="140" y="10" width="120" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="4" value="Right Bottom" style="text;html=0;align=right;verticalAlign=bottom;fontFamily=Helvetica;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="270" y="10" width="120" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="5" value="Multi&#xa;Line&#xa;Text" style="text;html=0;align=center;verticalAlign=middle;fontFamily=Courier New;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="10" y="60" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="6" value="Wrapped long text content that should wrap to next line" style="text;html=0;align=left;verticalAlign=top;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="60" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="7" value="UPPERCASE BOLD" style="text;html=0;align=center;verticalAlign=middle;fontFamily=Arial;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="10" y="140" width="200" height="40" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -70,8 +70,9 @@ std::unique_ptr<SvgRasterizerDll> SvgRasterizerDll::load(
       std::uint8_t*, std::size_t, char*, std::size_t)>(handle,
                                                        "spe_svg_render");
 
-  // Hard handshake: every symbol present AND ABI version exact. Anything else
-  // is a loud refuse (return nullptr) -- never best-effort.
+  // Hard handshake: every MANDATORY symbol present AND ABI version exact.
+  // fn_text_measure_ is optional (D3): backends that predate it get nullptr,
+  // and measure_text() returns std::nullopt (falls back to GDI+ metrics).
   if (self->fn_abi_version_ == nullptr || self->fn_backend_id_ == nullptr ||
       self->fn_measure_ == nullptr || self->fn_render_ == nullptr) {
     return nullptr;
@@ -79,6 +80,11 @@ std::unique_ptr<SvgRasterizerDll> SvgRasterizerDll::load(
   if (self->fn_abi_version_() != SPE_SVG_ABI_VERSION) {
     return nullptr;
   }
+
+  // Optional D3 symbol — soft-load; absence is not a hard failure.
+  self->fn_text_measure_ = resolve<std::int32_t (*)(
+      const char*, std::int32_t, std::int32_t, float,
+      const std::uint8_t*, std::size_t, void*)>(handle, "spe_text_measure");
 
   char id[256] = {0};
   const std::size_t n = self->fn_backend_id_(id, sizeof(id));
@@ -139,6 +145,28 @@ SvgRasterResult SvgRasterizerDll::render(const std::string& svg_bytes,
   result.status = SvgRasterStatus::Ok;
   result.raster = std::move(raster);
   return result;
+}
+
+std::optional<TextMetrics> SvgRasterizerDll::measure_text(
+    const std::string& family, int weight, bool italic,
+    float size_px, const std::string& text) {
+  if (handle_ == nullptr || fn_text_measure_ == nullptr || size_px <= 0.0f) {
+    return std::nullopt;
+  }
+  // spe_text_metrics_t is four floats — layout-compatible with TextMetrics.
+  static_assert(sizeof(TextMetrics) == 4 * sizeof(float),
+                "TextMetrics must be layout-compatible with spe_text_metrics_t");
+  TextMetrics out{};
+  const std::int32_t rc = fn_text_measure_(
+      family.c_str(),
+      static_cast<std::int32_t>(weight),
+      italic ? 1 : 0,
+      size_px,
+      reinterpret_cast<const std::uint8_t*>(text.data()),
+      text.size(),
+      &out);
+  if (rc != SPE_SVG_OK) return std::nullopt;
+  return out;
 }
 
 }  // namespace print_engine::host
