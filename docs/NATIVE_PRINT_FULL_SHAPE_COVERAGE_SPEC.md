@@ -82,7 +82,7 @@ These commands map to SVG with a coordinate transform. The full command → SVG 
 | `<arc rx ry xrot laf sf x y>` | `A su*rx su*ry xrot laf sf ox+x*sw oy+y*sh` | Arc; radii scale by uniform factor (see §3.3) |
 | `<close>` | `Z` | |
 | `<rect x y w h>` | `<rect x="ox+x*sw" y="oy+y*sh" width="w*sw" height="h*sh"/>` | |
-| `<roundrect x y w h arcsize>` | `<rect ... rx="r" ry="r"/>` | r = arcsize/100 * min(w*sw, h*sh); if arcsize=0 → r = 10 (mxConstants default) |
+| `<roundrect x y w h arcsize>` | `<rect ... rx="r" ry="r"/>` | r = arcsize/100 * min(w*sw, h*sh); if arcsize=0 → r = 15 (mxConstants.RECTANGLE_ROUNDING_FACTOR=0.15 → 15%) |
 | `<ellipse x y w h>` | `<ellipse cx="ox+(x+w/2)*sw" cy="oy+(y+h/2)*sy" rx="w/2*sw" ry="h/2*sh"/>` | Note: stencil x,y is top-left, NOT center |
 
 Where `ox`, `oy`, `sw`, `sh` come from `computeAspect` (see §3.3 step 2). For `aspect="variable"` shapes: `ox=0, oy=0, sw=cellW/w0, sh=cellH/h0`. For `aspect="fixed"` shapes the formula is different — see §3.3 step 2.
