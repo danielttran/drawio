@@ -225,7 +225,7 @@ test('ShimDocument: getElementById finds by id attribute', () => {
 
 test('bake: simple.drawio produces valid um contract', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
 
   assert.equal(contract.schema.major, 1);
   assert.equal(contract.schema.minor, 1);
@@ -249,12 +249,12 @@ test('bake: simple.drawio produces valid um contract', async () => {
 test('C1: bake output matches simple.contract.golden.json', async () => {
   const xml    = await readFile(simpleDrawio,  'utf8');
   const golden = JSON.parse(await readFile(simpleGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden,
     'bake output diverged from golden — update golden if bake logic changed intentionally');
 });
 
-test('bake: ExporterUnsupportedShape notice for unknown shape', () => {
+test('bake: ExporterUnsupportedShape notice for unknown shape', async () => {
   // Use a shape name that does not exist in any stencil or built-in registry
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
@@ -264,25 +264,25 @@ test('bake: ExporterUnsupportedShape notice for unknown shape', () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
     'expected ExporterUnsupportedShape notice for unknown shape');
   // Even with unsupported shape, bake produces a paint node (bounding box fallback)
   assert.ok(contract.document.pages[0].paint.length >= 1);
 });
 
-test('bake: empty diagram produces valid zero-paint contract', () => {
+test('bake: empty diagram produces valid zero-paint contract', async () => {
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
     </root>
   </mxGraphModel>`;
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.equal(contract.document.units, 'um');
   assert.equal(contract.document.pages[0].paint.length, 0);
 });
 
-test('bake: ellipse cell produces an arc path', () => {
+test('bake: ellipse cell produces an arc path', async () => {
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -291,7 +291,7 @@ test('bake: ellipse cell produces an arc path', () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
   assert.equal(paths.length, 1);
   // um-scaled ellipse path starts with M ... A ...
@@ -299,11 +299,11 @@ test('bake: ellipse cell produces an arc path', () => {
   assert.equal(paths[0].fill.color, '#ff0000');
 });
 
-test('bake: schema minor is 1 and units are um', () => {
+test('bake: schema minor is 1 and units are um', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50">
     <root><mxCell id="0"/><mxCell id="1" parent="0"/></root>
   </mxGraphModel>`;
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.equal(contract.schema.minor, 1);
   assert.equal(contract.document.units, 'um');
 });
@@ -316,7 +316,7 @@ const shapesGolden = join(fixtureDir, 'shapes.contract.golden.json');
 test('C1: bake output matches shapes.contract.golden.json', async () => {
   const xml    = await readFile(shapesDrawio, 'utf8');
   const golden = JSON.parse(await readFile(shapesGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden,
     'shapes bake output diverged from golden');
 });
@@ -328,7 +328,7 @@ test('C1: bake output matches shapes.contract.golden.json', async () => {
 test('C3: every vertex with a non-empty value has a text paint node', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
   const { cells } = parseDrawio(xml);
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const textNodes = paint.filter((n) => n.kind === 'text');
 
@@ -351,7 +351,7 @@ test('C3: every vertex with a non-empty value has a text paint node', async () =
 
 test('C3: standard shapes produce no ExporterUnsupportedShape notice', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0,
     `unexpected ExporterUnsupportedShape: ${unsupported.map((n) => n.detail && n.detail.detail).join('; ')}`);
@@ -359,7 +359,7 @@ test('C3: standard shapes produce no ExporterUnsupportedShape notice', async () 
 
 test('C3: all paint nodes have strictly positive box dimensions (where applicable)', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const boxKinds = new Set(['text', 'image', 'svg', 'barcode']);
   for (const node of paint) {
@@ -372,7 +372,7 @@ test('C3: all paint nodes have strictly positive box dimensions (where applicabl
 test('C3: simple.drawio — vertex count equals geometric-shape paint-node count', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
   const { cells } = parseDrawio(xml);
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
 
   // Count visible vertices (not root/layer, with geometry)
@@ -399,7 +399,7 @@ test('C3: bake output passes validate-contract', async () => {
   const execFileP = promisify(execFile);
   const tmp = join(tmpdir(), 'bake-c3-test.json');
   const xml = await readFile(shapesDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   await writeFile(tmp, JSON.stringify(contract));
   const scriptPath = resolve(here, '../native-print-validate-contract.mjs');
   const r = await execFileP(process.execPath, [scriptPath, tmp]).catch((e) => e);
@@ -409,7 +409,7 @@ test('C3: bake output passes validate-contract', async () => {
 
 // --- multi-page and D5 ---
 
-test('bake: multi-page .drawio produces contract with multiple pages', () => {
+test('bake: multi-page .drawio produces contract with multiple pages', async () => {
   const xml = `<mxfile>
     <diagram id="d1" name="Page-1">
       <mxGraphModel pageWidth="200" pageHeight="100">
@@ -432,14 +432,14 @@ test('bake: multi-page .drawio produces contract with multiple pages', () => {
       </mxGraphModel>
     </diagram>
   </mxfile>`;
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.equal(contract.document.pages.length, 2);
   assert.equal(contract.document.pages[0].id, 'page-1');
   assert.equal(contract.document.pages[1].id, 'page-2');
   assert.equal(contract.document.units, 'um');
 });
 
-test('bake: pages option selects subset of pages', () => {
+test('bake: pages option selects subset of pages', async () => {
   const xml = `<mxfile>
     <diagram id="d1" name="Page-1">
       <mxGraphModel pageWidth="100" pageHeight="50">
@@ -452,12 +452,12 @@ test('bake: pages option selects subset of pages', () => {
       </mxGraphModel>
     </diagram>
   </mxfile>`;
-  const { contract } = bake(xml, { pages: [1] }); // only second page
+  const { contract } = await bake(xml, { pages: [1] }); // only second page
   assert.equal(contract.document.pages.length, 1);
   assert.equal(contract.document.pages[0].id, 'page-1'); // ordinal from selected set
 });
 
-test('D5: unattended mode throws on degradation notices', () => {
+test('D5: unattended mode throws on degradation notices', async () => {
   // Unknown shape (not in stencil registry or built-ins) triggers ExporterUnsupportedShape notice
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
@@ -467,13 +467,13 @@ test('D5: unattended mode throws on degradation notices', () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  assert.throws(
+  await assert.rejects(
     () => bake(xml, { unattended: true }),
     (err) => err.code === 'BAKE_NOTICES' && Array.isArray(err.notices) && err.notices.length > 0
   );
 });
 
-test('D5: unattended mode succeeds when no notices', () => {
+test('D5: unattended mode succeeds when no notices', async () => {
   // Standard shape with no notices
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
@@ -483,16 +483,44 @@ test('D5: unattended mode succeeds when no notices', () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  const { contract, notices } = bake(xml, { unattended: true }); // must not throw
+  const { contract, notices } = await bake(xml, { unattended: true }); // must not throw
   assert.equal(notices.length, 0);
   assert.equal(contract.document.units, 'um');
+});
+
+test('Gap 1B: bake() accepts fetchFn option; injectable fetch resolves external image URLs', async () => {
+  // Build a diagram with an external image URL
+  const pngDataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const fakeFetch = async (url) => {
+    if (String(url).startsWith('http')) {
+      return {
+        ok: true,
+        blob: async () => ({
+          type: 'image/png',
+          arrayBuffer: async () => Buffer.from(pngDataUri.split(',')[1], 'base64')
+        })
+      };
+    }
+    return { ok: false };
+  };
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="" style="shape=image;image=https://example.com/img.png;" parent="1">
+        <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const { notices } = await bake(xml, { fetchFn: fakeFetch });
+  const imgNotices = notices.filter(n => n.kind === 'ExporterUnsupportedImage');
+  assert.equal(imgNotices.length, 0, 'fetchFn resolved the external image — no ExporterUnsupportedImage notice expected');
 });
 
 // --- font preflight (§3.5) ---
 
 test('referencedFonts: collects font families from text nodes', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const fonts = referencedFonts(contract);
   assert.ok(fonts.size > 0, 'expected at least one font family');
   assert.ok(fonts.has('Arial'), 'expected Arial (draw.io default)');
@@ -526,14 +554,14 @@ test('checkFontAvailability: returns missing fonts', () => {
 
 test('assertFontsAvailable: passes when all fonts present', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const fonts = referencedFonts(contract);
   assert.doesNotThrow(() => assertFontsAvailable(contract, fonts));
 });
 
 test('assertFontsAvailable: throws MISSING_FONTS when font absent', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.throws(
     () => assertFontsAvailable(contract, new Set(['Helvetica'])),
     (err) => err.code === 'MISSING_FONTS' && Array.isArray(err.missingFonts)
@@ -545,14 +573,14 @@ test('assertFontsAvailable: throws MISSING_FONTS when font absent', async () => 
 
 test('C4: simple.drawio produces zero degradation notices', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => `${n.kind}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
 });
 
 test('C4: shapes.drawio produces zero degradation notices', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => `${n.kind}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
 });
@@ -562,7 +590,7 @@ test('C4: shapes.drawio produces zero degradation notices', async () => {
 
 test('C5: simple.drawio — all paint nodes have non-empty content', async () => {
   const xml = await readFile(simpleDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   assert.ok(paint.length > 0, 'C5: no paint nodes produced for simple.drawio');
   for (const node of paint) {
@@ -578,7 +606,7 @@ test('C5: simple.drawio — all paint nodes have non-empty content', async () =>
 
 test('C5: shapes.drawio — rect/ellipse/diamond/rounded produce non-empty path nodes', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const pathNodes = paint.filter((n) => n.kind === 'path');
   // shapes.drawio has rect, ellipse, diamond, rounded-rect = 4 shapes
@@ -608,35 +636,35 @@ const multipageGolden   = join(fixtureDir, 'multipage.contract.golden.json');
 test('C1: bake output matches connector.contract.golden.json', async () => {
   const xml    = await readFile(connectorDrawio, 'utf8');
   const golden = JSON.parse(await readFile(connectorGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'connector bake output diverged from golden');
 });
 
 test('C1: bake output matches gradient.contract.golden.json', async () => {
   const xml    = await readFile(gradientDrawio, 'utf8');
   const golden = JSON.parse(await readFile(gradientGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'gradient bake output diverged from golden');
 });
 
 test('C1: bake output matches multitext.contract.golden.json', async () => {
   const xml    = await readFile(multitextDrawio, 'utf8');
   const golden = JSON.parse(await readFile(multitextGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'multitext bake output diverged from golden');
 });
 
 test('C1: bake output matches groups.contract.golden.json', async () => {
   const xml    = await readFile(groupsDrawio, 'utf8');
   const golden = JSON.parse(await readFile(groupsGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'groups bake output diverged from golden');
 });
 
 test('C1: bake output matches multipage.contract.golden.json', async () => {
   const xml    = await readFile(multipageDrawio, 'utf8');
   const golden = JSON.parse(await readFile(multipageGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'multipage bake output diverged from golden');
 });
 
@@ -645,21 +673,21 @@ test('C1: bake output matches multipage.contract.golden.json', async () => {
 
 test('C4: connector.drawio produces zero degradation notices', async () => {
   const xml = await readFile(connectorDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
 
 test('C4: multitext.drawio produces zero degradation notices', async () => {
   const xml = await readFile(multitextDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
 
 test('C4: multipage.drawio produces zero degradation notices', async () => {
   const xml = await readFile(multipageDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
@@ -668,7 +696,7 @@ test('C4: multipage.drawio produces zero degradation notices', async () => {
 
 test('C5: connector.drawio — path nodes from edge and vertices are non-empty', async () => {
   const xml = await readFile(connectorDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   assert.ok(paint.length > 0, 'C5: no paint nodes for connector.drawio');
   const paths = paint.filter((n) => n.kind === 'path');
@@ -680,7 +708,7 @@ test('C5: connector.drawio — path nodes from edge and vertices are non-empty',
 
 test('C5: gradient.drawio — gradient cells produce svg nodes with linearGradient in mode B', async () => {
   const xml = await readFile(gradientDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   // In mode B, gradient-filled non-rotated cells emit kind:'svg' (direction encoded inline).
   const svgNodes = paint.filter((n) => n.kind === 'svg');
@@ -694,7 +722,7 @@ test('C5: gradient.drawio — gradient cells produce svg nodes with linearGradie
 
 test('C5: multipage.drawio — two pages each have paint nodes', async () => {
   const xml = await readFile(multipageDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.equal(contract.document.pages.length, 2, 'C5: expected 2 pages');
   for (const page of contract.document.pages) {
     assert.ok(page.paint.length > 0, `C5: page ${page.id} has no paint nodes`);
@@ -703,7 +731,7 @@ test('C5: multipage.drawio — two pages each have paint nodes', async () => {
 
 test('C5: multitext.drawio — all text nodes have non-zero-area boxes', async () => {
   const xml = await readFile(multitextDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const texts = paint.filter((n) => n.kind === 'text');
   assert.ok(texts.length >= 4, `C5: expected ≥4 text nodes, got ${texts.length}`);
@@ -727,7 +755,7 @@ async function runWysiwygCompare(xml) {
 test('C1: bake output matches master-test.contract.golden.json', async () => {
   const xml    = await readFile(masterTestDrawio, 'utf8');
   const golden = JSON.parse(await readFile(masterTestGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'master-test bake output diverged from golden');
 });
 
@@ -741,7 +769,7 @@ test('WYSIWYG: master-test — all shapes, labels, gradients, dash, thick, rotat
 
 test('WYSIWYG: master-test — rotated shapes produce kind:svg nodes with rotate() transform', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const svgNodes = paint.filter((n) => n.kind === 'svg');
   // Filter to only the svg nodes that carry a rotation (stencil shapes without rotation also produce kind:svg)
@@ -758,7 +786,7 @@ test('WYSIWYG: master-test — rotated shapes produce kind:svg nodes with rotate
 
 test('WYSIWYG: master-test — gradient shapes produce gradient fills in contract', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   // r13: gradient rect (unrotated → kind:path with linear fill)
   // r14: gradient ellipse (rotated 30° → kind:svg with linearGradient in SVG)
@@ -775,7 +803,7 @@ test('WYSIWYG: master-test — gradient shapes produce gradient fills in contrac
 
 test('WYSIWYG: master-test — dashed rotated shape embeds stroke-dasharray in SVG', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   // r15 is dashed + rotated → kind:svg with stroke-dasharray
   const dashedSvg = paint.find((n) => {
@@ -788,7 +816,7 @@ test('WYSIWYG: master-test — dashed rotated shape embeds stroke-dasharray in S
 
 test('WYSIWYG: master-test — only GradientDirectionApprox notice expected', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   const unexpected = notices.filter((n) => n.kind !== 'GradientDirectionApprox');
   assert.equal(unexpected.length, 0,
     `unexpected notices: ${unexpected.map((n) => n.kind).join(', ')}`);
@@ -810,26 +838,26 @@ function makeStencilXml(styleExtra, label = '') {
   </mxGraphModel>`;
 }
 
-test('stencil: variable-aspect flowchart shape bakes to kind:svg with no notice', () => {
+test('stencil: variable-aspect flowchart shape bakes to kind:svg with no notice', async () => {
   const xml = makeStencilXml('shape=mxgraph.flowchart.start_1;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'Start');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape: ${unsupported.map(n => n.detail && n.detail.detail).join('; ')}`);
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil shape');
 });
 
-test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', () => {
+test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape`);
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for fixed-aspect stencil');
 });
 
-test('stencil: fixed-aspect centering — SVG geometry is bounded within cell box', () => {
+test('stencil: fixed-aspect centering — SVG geometry is bounded within cell box', async () => {
   // A fixed-aspect stencil with a simple 10×10 native size rendered into a 100×60 cell.
   // computeAspect: su = min(100/10, 60/10) = 6, ox = (100-10*6)/2 = 20, oy = (60-10*6)/2 = 0.
   // The shape rectangle at (0,0) 10×10 → rendered at (20,0) with size 60×60.
@@ -843,7 +871,7 @@ test('stencil: fixed-aspect centering — SVG geometry is bounded within cell bo
       <mxGeometry x="50" y="50" width="100" height="60" as="geometry"/>
     </mxCell>
   </root></mxGraphModel>`;
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0, 'fixed-aspect inline stencil should not produce ExporterUnsupportedShape');
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
@@ -859,7 +887,7 @@ test('stencil: fixed-aspect centering — SVG geometry is bounded within cell bo
   assert.ok(mx >= 18 && mx <= 22, `expected M x ≈ 20 (centering offset), got ${mx}`);
 });
 
-test('stencil: inline base64 stencil decodes and bakes to kind:svg', () => {
+test('stencil: inline base64 stencil decodes and bakes to kind:svg', async () => {
   // A simple rectangle stencil encoded as base64
   // <shape name="test" w="100" h="100" aspect="variable">
   //   <background><path><move x="0" y="0"/><line x="100" y="0"/><line x="100" y="100"/><line x="0" y="100"/><close/></path></background>
@@ -868,7 +896,7 @@ test('stencil: inline base64 stencil decodes and bakes to kind:svg', () => {
   const stencilXml = '<shape name="test" w="100" h="100" aspect="variable"><background><path><move x="0" y="0"/><line x="100" y="0"/><line x="100" y="100"/><line x="0" y="100"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;strokeColor=#6c8ebf;`, 'Inline');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0, `unexpected ExporterUnsupportedShape: ${JSON.stringify(unsupported)}`);
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
@@ -878,9 +906,9 @@ test('stencil: inline base64 stencil decodes and bakes to kind:svg', () => {
   assert.ok(/<svg/.test(svgStr), 'SVG node should contain SVG markup');
 });
 
-test('stencil: gradient fill produces linearGradient in SVG defs', () => {
+test('stencil: gradient fill produces linearGradient in SVG defs', async () => {
   const xml = makeStencilXml('shape=mxgraph.flowchart.process;fillColor=#dae8fc;gradientColor=#6c8ebf;strokeColor=#000000;', 'Gradient');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   // Find kind:svg nodes
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   const pathNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
@@ -892,7 +920,7 @@ test('stencil: gradient fill produces linearGradient in SVG defs', () => {
   assert.ok(hasGrad, 'expected linearGradient in stencil SVG with gradientColor');
 });
 
-test('stencil: rotation produces SVG with rotate() transform', () => {
+test('stencil: rotation produces SVG with rotate() transform', async () => {
   const xml = `<mxGraphModel pageWidth="300" pageHeight="200">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -901,48 +929,48 @@ test('stencil: rotation produces SVG with rotate() transform', () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg for rotated stencil');
   const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
   assert.ok(/rotate\(30/.test(svgStr), 'SVG should contain rotate(30 transform');
 });
 
-test('stencil: direction=north produces rotation transform', () => {
+test('stencil: direction=north produces rotation transform', async () => {
   const xml = makeStencilXml('shape=mxgraph.flowchart.start_1;fillColor=#dae8fc;strokeColor=#6c8ebf;direction=north;', 'Dir N');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg for direction=north stencil');
   const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
   assert.ok(/rotate/.test(svgStr), 'SVG should contain rotation transform for direction=north');
 });
 
-test('stencil: <image> with data URI src embeds inline (no notice)', () => {
+test('stencil: <image> with data URI src embeds inline (no notice)', async () => {
   // data: URI src is already embedded — should emit SVG <image> element, no notice.
   const stencilXml = '<shape name="imgtest" w="50" h="50" aspect="variable"><background><path><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><line x="0" y="50"/><close/></path></background><foreground><image x="0" y="0" w="50" h="50" src="data:image/png;base64,abc"/><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
   assert.ok(stencilNotices.length === 0, 'expected no notice for data-URI <image> in stencil');
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil with data-URI image');
 });
 
-test('stencil: <image> with external URL raises ExporterUnsupportedStencilFeature notice', () => {
+test('stencil: <image> with external URL raises ExporterUnsupportedStencilFeature notice', async () => {
   const stencilXml = '<shape name="exturltest" w="50" h="50" aspect="variable"><foreground><image x="0" y="0" w="50" h="50" src="https://example.com/img.png"/><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
   assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for external-URL <image>');
 });
 
-test('stencil: <path rounded="1"> renders as Bezier path (no notice)', () => {
+test('stencil: <path rounded="1"> renders as Bezier path (no notice)', async () => {
   const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
-  const { contract, notices } = bake(xml);
+  const { contract, notices } = await bake(xml);
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
   assert.ok(stencilNotices.length === 0, 'expected no notice for rounded="1" path');
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
@@ -952,16 +980,16 @@ test('stencil: <path rounded="1"> renders as Bezier path (no notice)', () => {
   assert.ok(/Q /.test(svgStr), 'expected Q (quadratic Bezier) command in rounded path SVG');
 });
 
-test('stencil: built-in hexagon shape produces no ExporterUnsupportedShape notice', () => {
+test('stencil: built-in hexagon shape produces no ExporterUnsupportedShape notice', async () => {
   const xml = makeStencilXml('shape=hexagon;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'Hex');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
   assert.equal(unsupported.length, 0, 'hexagon should not produce ExporterUnsupportedShape');
 });
 
-test('stencil: label preserved on non-rotated stencil shape', () => {
+test('stencil: label preserved on non-rotated stencil shape', async () => {
   const xml = makeStencilXml('shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'MyLabel');
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const textNodes = paint.filter((n) => n.kind === 'text');
   const svgNodes = paint.filter((n) => n.kind === 'svg');
@@ -992,12 +1020,12 @@ for (const name of stencilFixtures) {
   test(`C1: bake output matches ${name}.contract.golden.json`, async () => {
     const xml    = await readFile(drawioPath, 'utf8');
     const golden = JSON.parse(await readFile(goldenPath, 'utf8'));
-    const { contract } = bake(xml);
+    const { contract } = await bake(xml);
     assert.deepEqual(contract, golden, `${name} bake output diverged from golden`);
   });
   test(`C4: ${name}.drawio produces zero degradation notices`, async () => {
     const xml = await readFile(drawioPath, 'utf8');
-    const { notices } = bake(xml);
+    const { notices } = await bake(xml);
     assert.equal(notices.length, 0,
       `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
   });
@@ -1013,13 +1041,13 @@ const imagesGolden     = join(fixtureDir, 'master-test-images.contract.golden.js
 test('C1: bake output matches master-test-html-labels.contract.golden.json', async () => {
   const xml    = await readFile(htmlLabelsDrawio, 'utf8');
   const golden = JSON.parse(await readFile(htmlLabelsGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'html-labels bake output diverged from golden');
 });
 
 test('C4: master-test-html-labels.drawio produces zero degradation notices', async () => {
   const xml = await readFile(htmlLabelsDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
@@ -1027,19 +1055,19 @@ test('C4: master-test-html-labels.drawio produces zero degradation notices', asy
 test('C1: bake output matches master-test-images.contract.golden.json', async () => {
   const xml    = await readFile(imagesDrawio, 'utf8');
   const golden = JSON.parse(await readFile(imagesGolden, 'utf8'));
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   assert.deepEqual(contract, golden, 'images bake output diverged from golden');
 });
 
 test('C4: master-test-images.drawio produces zero degradation notices', async () => {
   const xml = await readFile(imagesDrawio, 'utf8');
-  const { notices } = bake(xml);
+  const { notices } = await bake(xml);
   assert.equal(notices.length, 0,
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
 
 // GAP 3: labelPosition=right — text node x coordinate must exceed cell right edge
-test('stencil: labelPosition=right places text node beyond cell right edge', () => {
+test('stencil: labelPosition=right places text node beyond cell right edge', async () => {
   // Cell at x=100, w=120: right edge = 220; with labelPosition=right the text box x should be >= 220
   const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -1047,7 +1075,7 @@ test('stencil: labelPosition=right places text node beyond cell right edge', () 
       <mxGeometry x="100" y="50" width="120" height="80" as="geometry"/>
     </mxCell>
   </root></mxGraphModel>`;
-  const { contract } = bake(xml);
+  const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
   const textNodes = paint.filter((n) => n.kind === 'text');
   assert.ok(textNodes.length >= 1, 'expected at least one text node for labelPosition=right cell');

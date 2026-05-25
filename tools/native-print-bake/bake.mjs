@@ -52,11 +52,19 @@ if (typeof exporter.registerStencils === 'function') {
   exporter.registerStencils(_stencilRegistry);
 }
 
-// Bake a single page (internal helper).
+// Bake a single page (internal helper). Resolves external images first.
 // Returns { pxContract (one-page), notices }.
-function bakePage(pageData, exporterOpts) {
+async function bakePage(pageData, exporterOpts, fetchFn) {
   const graph = buildGraph(pageData.cells, pageData.paper);
-  return exporter.buildResult(graph, pageData.paper, exporterOpts || null);
+  // Pre-resolve external image URLs so they print WYSIWYG (no ExporterUnsupportedImage).
+  // embedExternalImages is a no-op when no external URLs are present.
+  let resolvedImages = {};
+  if (typeof exporter.embedExternalImages === 'function') {
+    resolvedImages = await exporter.embedExternalImages(graph, fetchFn || null, null, null)
+      .catch(() => ({}));
+  }
+  return exporter.buildResult(graph, pageData.paper,
+    { ...(exporterOpts || {}), resolvedImages });
 }
 
 // Bake a .drawio XML string to a multi-page um-unit contract.
@@ -64,12 +72,13 @@ function bakePage(pageData, exporterOpts) {
 // options:
 //   unattended  {boolean} — D5: throw BakeNoticeError if any notice is produced
 //   pages       {number[]} — 0-based page indices to include (default: all)
+//   fetchFn     {function} — injectable fetch implementation (for tests / Node)
 //   exporterOpts — passed through to exporter.buildResult()
 //
-// Returns { contract, notices } where:
+// Returns Promise<{ contract, notices }> where:
 //   contract — schema-1.1 um-unit object with all baked pages
 //   notices  — flat array of all notices from all pages
-export function bake(drawioXml, options) {
+export async function bake(drawioXml, options) {
   const opts = options || {};
   const parsed = parseDrawio(drawioXml);
 
@@ -88,8 +97,10 @@ export function bake(drawioXml, options) {
   const pxPages = [];
   let bakeMeta = null;
 
-  pagesToBake.forEach((pageData, idx) => {
-    const result = bakePage(pageData, { ...(opts.exporterOpts || {}), mode: 'B' });
+  for (let idx = 0; idx < pagesToBake.length; idx++) {
+    const pageData = pagesToBake[idx];
+    const result = await bakePage(
+      pageData, { ...(opts.exporterOpts || {}), mode: 'B' }, opts.fetchFn);
     allNotices.push(...result.notices);
     // Take the single page the exporter produced, tag with ordinal id
     const page = result.contract.document.pages[0];
@@ -97,7 +108,7 @@ export function bake(drawioXml, options) {
     pxPages.push(page);
     // Capture meta from first page (all pages share the same bake mode).
     if (!bakeMeta && result.contract.meta) bakeMeta = result.contract.meta;
-  });
+  }
 
   // D5: fail loudly if unattended and any notice was raised
   if (opts.unattended && allNotices.length > 0) {
@@ -137,7 +148,7 @@ async function main() {
 
   let result;
   try {
-    result = bake(xml);
+    result = await bake(xml);
   } catch (e) {
     process.stderr.write(`bake failed: ${e.message}\n`);
     process.exit(1);

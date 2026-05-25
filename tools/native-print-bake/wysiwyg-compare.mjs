@@ -231,9 +231,9 @@ function contractFillColors(contract) {
 
 // ---------- main comparison ----------
 
-function compare(drawioXml) {
+async function compare(drawioXml) {
   const cells  = parseModelCells(drawioXml);
-  const result = bake(drawioXml);
+  const result = await bake(drawioXml);
   const { contract, notices } = result;
 
   const vertices = cells.filter(c => c.isVertex);
@@ -671,7 +671,7 @@ async function main() {
         continue;
       }
 
-      const result = compare(xml);
+      const result = await compare(xml);
       if (result.fail > 0) {
         allPassed = false;
         console.log(`FAIL: ${f} (${result.fail} check(s) failed)`);
@@ -706,8 +706,8 @@ async function main() {
   console.log(` WYSIWYG Compare: ${inputPath}`);
   console.log(`══════════════════════════════════════════════════════════════\n`);
 
-  const { checks, pass, fail, notices, vertices, edges, contractPaths } = compare(xml);
-  const { contract } = bake(xml);
+  const { checks, pass, fail, notices, vertices, edges, contractPaths } = await compare(xml);
+  const { contract } = await bake(xml);
 
   // Summary stats
   console.log(`Draw.io shapes : ${vertices.length} vertices, ${edges.length} edges`);
