@@ -135,6 +135,31 @@ headlessly rather than reimplement it. Options:
 with **B** as the immediate, compliant stepping stone. Both feed the *same*
 contract the engine already consumes.
 
+#### Design decision — bake convergence (UI and unattended share one bake)
+
+**Confirmed direction.** Once the headless bake (A) exists, the interactive
+Native Print UI is pointed at it too, so there is exactly **one** bake. A
+human-printed label and a server-printed label are then identical **by
+construction**.
+
+What changes: the UI bake stops depending on the **live on-screen DOM**
+(`svgCellNode` harvesting the already-rendered SVG) and instead drives draw.io's
+own renderer deterministically (model → SVG via the shim) with text measured from
+the **print host's** font source. The UI still runs inside draw.io (a browser
+app), but the contract no longer *depends* on the browser's live render.
+
+Why: one tested code path (the browser-free Node/C++ harness tests exactly what
+ships in both paths); identical interactive vs unattended output; and a more
+honest preview — the contract reflects the print host's fonts, so the operator
+sees the label that will actually print rather than their browser's local
+rendering.
+
+Trade-off: we swap "capture exactly the on-screen pixels" for "deterministic
+re-render." They agree when the renderer is deterministic and font/measurement
+sources align; the watch item is HTML-label measurement. **The switch is gated by
+the migration verification corpus (§9):** the live-DOM dependency is removed only
+after the headless bake proves equivalent on the corpus, with zero browser.
+
 ### U2 — Unattended host + machine API
 
 - Replace the Vite dev broker with a **Windows service** that wraps the existing
@@ -267,7 +292,85 @@ Neither track requires a browser; both consume the same headless pipeline.
    ruling); banded rasterization; AA control; determinism + audit logging.
 5. **Parallel tracks:** `T-Data`, `T-Barcode` (§7).
 
-## 9. Definition of done (this track)
+## 9. Migration verification strategy (browser-free)
+
+Convergence (§U1 bake convergence) is correct, but the live-DOM bake is the
+current source of truth, so before removing it we build a **browser-free safety
+net that proves the headless bake is equivalent** — and keep it as a permanent
+regression guard.
+
+**Hard rule for the harness:** no Puppeteer, Chrome, Firefox, Edge, Electron,
+headless browser, or `jsdom` may run at test or CI time. Everything below runs in
+`node --test` and `ctest` against **static files only**. The WYSIWYG goal is
+unchanged.
+
+### 9.1 Sample-label corpus
+
+A curated set of small, single-purpose `.drawio` files covering the object
+vocabulary medical labels need (e.g. under
+`src/main/native-print-engine/tests/fixtures/labels/`):
+
+- primitives: rect, rounded-rect, ellipse, line/polyline;
+- connectors with arrowheads / markers;
+- fills: solid and linear / radial gradients;
+- embedded images (PNG / JPEG → embedded data URI);
+- static text: multiple fonts, sizes, weights, alignments, multi-line, wrap;
+- HTML / rich labels (the highest-risk capture path);
+- groups, layers, and z-order (Send to Back / Bring to Front);
+- edge cases: cell at page origin, content near the hardware margin;
+- placeholders for the separate tracks: a merge-field label (`T-Data`) and a
+  barcode label (`T-Barcode`), expected to stub until those tracks land.
+
+### 9.2 Golden contract fixtures (ground truth)
+
+For each sample, a reviewed reference contract `*.contract.golden.json`,
+**captured once by a human running the real draw.io app** (the same act as an
+operator printing) and checked in as static JSON. That one-time capture is the
+only point a real browser is touched, and it is **not** part of the harness —
+afterward every test reads static files with zero browser. (If even one-time
+capture is undesirable, the fallback is hand-authored fixtures: more effort, less
+representative — owner's call.)
+
+### 9.3 Browser-free equivalence + correctness tests
+
+- **C1 Headless-bake parity:** `headless_bake(sample.drawio)` equals
+  `*.contract.golden.json`, compared structurally/semantically — strict on
+  geometry, colors, verbatim text, and z-order; tolerant of insignificant key
+  ordering.
+- **C2 Engine determinism / pixel equivalence:** the engine renders both the
+  golden and the headless contract to identical pixels (engine→engine, reusing
+  `svg_pixel_determinism_tests`; this is **not** a browser pixel oracle).
+- **C3 Structural invariants (WYSIWYG-by-construction):** every model cell maps to
+  a contract node; every labelled object carries its verbatim text; no
+  heuristic/fallback geometry; no `<foreignObject>` in emitted SVG; z-order
+  preserved. Extends `architecture_tests.cpp` / `wysiwyg_parity_tests.cpp` to the
+  headless bake.
+- **C4 Zero-notice gate:** every supported-vocabulary sample renders through the
+  engine with **no** degradation notice — the machine definition of "done
+  correctly = no loud warning."
+- **C5 Vocabulary coverage:** every object type renders non-empty via resvg,
+  never a stub.
+
+### 9.4 Safe-unplug procedure
+
+1. Land the corpus (§9.1) and goldens (§9.2) from the current trusted path.
+2. Add the headless bake behind a flag; both paths available.
+3. Require **C1–C5 green across the whole corpus** in CI.
+4. (Optional, dev-only) dual-run in the interactive UI: bake both ways and assert
+   equivalence — a diagnostic, never shipped, never a browser dependency in CI.
+5. Only when green do we remove the live-DOM dependency.
+6. Goldens stay as permanent regression guards; new label types add new
+   samples + goldens **before** they ship.
+
+### 9.5 WYSIWYG framing
+
+The guarantee remains **faithful-by-construction + deterministic**, verified with
+zero browser: goldens anchor "correct" for the corpus, invariants forbid
+re-derivation, determinism ensures stability, and the zero-notice gate proves full
+fidelity for the supported set. Pixel-identity to a browser is neither claimed nor
+tested (it would require a forbidden oracle).
+
+## 10. Definition of done (this track)
 
 - An unattended Windows service prints a draw.io file to the target printer with
   **no browser** at any stage and **no UI**.
@@ -276,4 +379,8 @@ Neither track requires a browser; both consume the same headless pipeline.
 - Output is **dimensionally exact** at the device's true DPI and **deterministic**
   across servers and over time (pinned engine + host fonts; recorded in `jobLog`).
 - Required fonts are verified present on the host before printing.
+- The migration safety-net corpus (C1–C5, §9) is green in CI **before** the
+  live-DOM bake is removed, and stays green afterward.
+- The interactive UI and the unattended service produce identical contracts from
+  one shared bake (§U1 bake convergence).
 - `T-Data` and `T-Barcode` integrate without a browser via the same pipeline.
