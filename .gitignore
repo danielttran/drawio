@@ -51,3 +51,13 @@ src/main/webapp/WEB-INF/lib/protobuf-java-util-*.jar
 src/main/webapp/WEB-INF/lib/re2j-*.jar
 src/main/webapp/WEB-INF/lib/threetenbp-*.jar
 .claude/
+
+# Native print visual test scratch output. Keep the render helpers in
+# tools/native-print-bake/*.mjs trackable; ignore only generated artifacts.
+/preview_page1.png
+/render_final.png
+/render_full.png
+/renders/
+/tools/native-print-bake/*.png
+/tools/native-print-bake/codex-*.contract.json
+/tools/native-print-bake/test-contract*.json
