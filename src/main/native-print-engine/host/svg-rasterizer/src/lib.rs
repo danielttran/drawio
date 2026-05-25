@@ -20,6 +20,8 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 
+extern crate ttf_parser;
+
 // Status codes -- MUST match svg_rasterizer_abi.h exactly.
 const SPE_SVG_OK: i32 = 0;
 const SPE_SVG_ERR_BAD_ARGS: i32 = -1;
@@ -98,6 +100,100 @@ pub extern "C" fn spe_svg_measure(
         SPE_SVG_OK
     })
     .unwrap_or(SPE_SVG_ERR_INTERNAL)
+}
+
+// ---- D3 text metrics (spe_text_measure) --------------------------------
+
+/// Matches spe_text_metrics_t in svg_rasterizer_abi.h.
+#[repr(C)]
+pub struct SpeTextMetrics {
+    pub advance_px: f32,
+    pub ascent_px: f32,
+    pub descent_px: f32,
+    pub line_height_px: f32,
+}
+
+fn c_str_to_str<'a>(ptr: *const c_char, fallback: &'a str) -> &'a str {
+    if ptr.is_null() { return fallback; }
+    unsafe { std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or(fallback) }
+}
+
+fn measure_text_inner(
+    family: &str,
+    weight: u16,
+    italic: bool,
+    size_px: f32,
+    text: &str,
+) -> Option<SpeTextMetrics> {
+    use resvg::usvg::fontdb;
+    let db = fontdb();
+    let style = if italic { fontdb::Style::Italic } else { fontdb::Style::Normal };
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name(family)],
+        weight: fontdb::Weight(weight),
+        style,
+        ..Default::default()
+    };
+    // Try the requested family; fall back to system sans-serif.
+    let face_id = db.query(&query).or_else(|| {
+        let q2 = fontdb::Query {
+            families: &[fontdb::Family::SansSerif],
+            weight: fontdb::Weight(weight),
+            style,
+            ..Default::default()
+        };
+        db.query(&q2)
+    })?;
+
+    db.with_face_data(face_id, |data, idx| {
+        let face = ttf_parser::Face::parse(data, idx).ok()?;
+        let upem = face.units_per_em() as f32;
+        let scale = size_px / upem;
+        let ascent  = face.ascender() as f32 * scale;
+        let descent = -(face.descender() as f32 * scale); // positive
+        let gap     = face.line_gap() as f32 * scale;
+        let mut advance = 0.0f32;
+        for ch in text.chars() {
+            if let Some(gid) = face.glyph_index(ch) {
+                if let Some(adv) = face.glyph_hor_advance(gid) {
+                    advance += adv as f32 * scale;
+                }
+            }
+        }
+        Some(SpeTextMetrics {
+            advance_px:    advance,
+            ascent_px:     ascent,
+            descent_px:    descent,
+            line_height_px: ascent + descent + gap,
+        })
+    })?
+}
+
+/// D3: one font-metrics engine shared by bake measurement and rasterization.
+#[no_mangle]
+pub extern "C" fn spe_text_measure(
+    family:   *const c_char,
+    weight:   i32,
+    italic:   i32,
+    size_px:  f32,
+    text:     *const u8,
+    text_len: usize,
+    out:      *mut SpeTextMetrics,
+) -> i32 {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if out.is_null() || size_px <= 0.0 { return SPE_SVG_ERR_BAD_ARGS; }
+        let fam = c_str_to_str(family as *const c_char, "Arial");
+        let txt = if text.is_null() || text_len == 0 { "" } else {
+            let b = unsafe { std::slice::from_raw_parts(text, text_len) };
+            std::str::from_utf8(b).unwrap_or("")
+        };
+        let w = (weight.max(100).min(900)) as u16;
+        match measure_text_inner(fam, w, italic != 0, size_px, txt) {
+            Some(m) => { unsafe { *out = m; } SPE_SVG_OK }
+            None    => SPE_SVG_ERR_INTERNAL,
+        }
+    }));
+    result.unwrap_or(SPE_SVG_ERR_INTERNAL)
 }
 
 /// Byte-level scan for `<foreignObject` so a malformed or non-UTF8 SVG still

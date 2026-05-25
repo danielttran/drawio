@@ -92,6 +92,31 @@ int32_t spe_svg_render(const uint8_t* svg, size_t svg_len,
                        uint8_t* out_pixels, size_t out_pixels_len,
                        char* err_buf, size_t err_buf_len);
 
+/* D3 TEXT METRICS — shared by bake measurement and rasterization so both use
+ * the same font stack (one shaper, WYSIWYG by construction).
+ *
+ * Returns SPE_SVG_OK on success, SPE_SVG_ERR_INTERNAL if the font cannot be
+ * found or parsed, SPE_SVG_ERR_BAD_ARGS if required args are null/invalid.
+ * `out` is written only on SPE_SVG_OK.
+ *
+ * Callers: the bake uses this to size text boxes (static text); the Win32
+ * host uses it to lay out merge/variable text at render time (variable text).
+ * Both callers use the same metrics so bake layout == print layout. */
+typedef struct {
+  float advance_px;     /* total horizontal advance of the run */
+  float ascent_px;      /* ascender above baseline (positive)  */
+  float descent_px;     /* descender below baseline (positive) */
+  float line_height_px; /* ascent + descent + line gap         */
+} spe_text_metrics_t;
+
+int32_t spe_text_measure(const char*           family,   /* NUL-terminated */
+                         int32_t               weight,   /* 400=normal,700=bold */
+                         int32_t               italic,   /* 0=normal, 1=italic  */
+                         float                 size_px,  /* device pixels        */
+                         const uint8_t*        text,     /* UTF-8 run bytes      */
+                         size_t                text_len, /* byte count           */
+                         spe_text_metrics_t*   out);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

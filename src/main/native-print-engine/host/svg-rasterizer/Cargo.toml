@@ -13,6 +13,9 @@ crate-type = ["cdylib"]
 # resvg re-exports usvg + tiny_skia; keep the dep surface to exactly this one
 # crate so an upstream fix is a single version bump + DLL rebuild (no C++).
 resvg = "0.47"
+# ttf-parser: glyph advance + face metrics for spe_text_measure (D3).
+# Must stay in sync with the version resvg 0.47 pulls transitively.
+ttf-parser = "0.25"
 
 [profile.release]
 # Unwinding is caught at every export via catch_unwind so a Rust panic can

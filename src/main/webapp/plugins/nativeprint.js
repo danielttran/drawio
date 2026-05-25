@@ -26,6 +26,28 @@
 
   var RPC = '/native-print/rpc';
 
+  // Phase 3 bake convergence: when enabled, the UI sends the raw diagram XML
+  // to the broker which bakes it headlessly (same path as the unattended
+  // service).  Set window.nativePrintHeadlessBake = true before loading the
+  // plugin, or pass ?headlessBake=1 in the dev URL, to activate.
+  // The live-DOM browser bake (buildResult) stays as fallback until this flag
+  // is set and the corpus is green (Phase 3 acceptance criteria).
+  var HEADLESS_BAKE = !!(window.nativePrintHeadlessBake ||
+    (typeof location !== 'undefined' &&
+     location.search.indexOf('headlessBake=1') >= 0));
+
+  // Get the current diagram XML for headless-bake mode.  Returns a bare
+  // <mxGraphModel> string which the headless bake accepts (§3.1 parser).
+  function getDiagramXml() {
+    try {
+      var codec = new mxCodec();
+      var node = codec.encode(ui.editor.graph.getModel());
+      return mxUtils.getXml(node);
+    } catch (e) {
+      throw new Error('cannot serialise diagram: ' + e.message);
+    }
+  }
+
   function rpc(body) {
     return fetch(RPC, {
       method: 'POST',
@@ -381,10 +403,18 @@
       }
       printBtn.disabled = true;
       status.textContent = 'Sending to printer…';
-      rpc({ action: 'print', contract: contract,
-        printerId: printers[printerSel.selectedIndex].id,
-        stockId: sid,
-        copies: parseInt(copies.value, 10) || 1 }).then(function (m) {
+      // Phase 3: use headless bake path if enabled; fall back to browser bake.
+      var printRpc = HEADLESS_BAKE
+        ? rpc({ action: 'bake-and-print',
+            drawioXml: getDiagramXml(),
+            printerId: printers[printerSel.selectedIndex].id,
+            stockId: sid,
+            copies: parseInt(copies.value, 10) || 1 })
+        : rpc({ action: 'print', contract: contract,
+            printerId: printers[printerSel.selectedIndex].id,
+            stockId: sid,
+            copies: parseInt(copies.value, 10) || 1 });
+      printRpc.then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';
         } else {

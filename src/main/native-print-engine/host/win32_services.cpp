@@ -36,7 +36,9 @@
 #include <cwchar>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -263,6 +265,16 @@ Gdiplus::Color gdip_color(const Rgba& c) {
                         static_cast<BYTE>(std::clamp(c.r, 0, 255)),
                         static_cast<BYTE>(std::clamp(c.g, 0, 255)),
                         static_cast<BYTE>(std::clamp(c.b, 0, 255)));
+}
+
+// D3: CSS hex color string for SVG markup (e.g. "#1a2b3c").
+std::string color_to_css(const Rgba& c) {
+  char buf[8];
+  std::snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                std::clamp(c.r, 0, 255),
+                std::clamp(c.g, 0, 255),
+                std::clamp(c.b, 0, 255));
+  return buf;
 }
 
 std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
@@ -524,6 +536,109 @@ void straight_rgba_to_premul_bgra(const std::uint8_t* src,
   }
 }
 
+// D3: generate an SVG <text> fragment for a text command so the same resvg
+// pipeline handles both static (baked) SVG artwork and variable/merge text.
+// The SVG uses the text command's pre-computed device_box as the viewport;
+// a TranslateTransform in the caller positions it on the page.
+//
+// Limitations (loud notice when hit, never silent):
+//  - Word-wrap via spe_text_measure; falls back to fixed-width estimation.
+//  - Rich paragraphs: each paragraph is one <tspan> block with the run text
+//    concatenated; per-run sub-styling is applied via <tspan> children.
+//  - Alignment: left/center/right → SVG text-anchor start/middle/end.
+//  - No sub-pixel positioning (device_box provides the bounding rectangle).
+std::string text_to_svg(const EmittedCommand& c, ISvgRasterizer* sr) {
+  const double bw = std::max(1.0, c.device_box.w);
+  const double bh = std::max(1.0, c.device_box.h);
+  const double fs = std::max(1.0, c.font_size_px * command_scale(c));
+
+  // SVG text-anchor from horizontal alignment.
+  const char* anchor = "middle";
+  double tx = bw * 0.5;
+  if (c.align_h == "left")  { anchor = "start";  tx = 0.0; }
+  if (c.align_h == "right") { anchor = "end";    tx = bw; }
+
+  // Baseline: try spe_text_measure for exact ascent; fall back to 0.8*em.
+  float ascent = static_cast<float>(fs * 0.8);
+  if (sr) {
+    const auto m = sr->measure_text(
+        c.font_family.empty() ? std::string("Arial") : c.font_family,
+        (c.bold ? 700 : 400), c.italic, static_cast<float>(fs), c.label);
+    if (m.has_value()) ascent = m->ascent_px;
+  }
+
+  // Collect paragraph lines (label split by '\n', or rich paragraph runs).
+  struct Para { std::string text; std::string align; };
+  std::vector<Para> paras;
+  if (!c.rich_paragraphs.empty()) {
+    for (const auto& p : c.rich_paragraphs) {
+      std::string t;
+      for (const auto& r : p.runs) t += r.text;
+      paras.push_back({t, p.align.empty() ? c.align_h : p.align});
+    }
+  } else {
+    const std::string& s = c.label;
+    std::size_t pos = 0;
+    while (true) {
+      const std::size_t nl = s.find('\n', pos);
+      paras.push_back({s.substr(pos, nl == std::string::npos ? nl : nl - pos),
+                       c.align_h});
+      if (nl == std::string::npos) break;
+      pos = nl + 1;
+    }
+  }
+
+  const double line_h = fs * 1.2;  // fallback line height
+
+  auto xml_escape = [](const std::string& s) {
+    std::string out; out.reserve(s.size());
+    for (char ch : s) {
+      if      (ch == '&')  out += "&amp;";
+      else if (ch == '<')  out += "&lt;";
+      else if (ch == '>')  out += "&gt;";
+      else if (ch == '"')  out += "&quot;";
+      else                 out += ch;
+    }
+    return out;
+  };
+
+  const std::string family =
+      c.font_family.empty() ? std::string("Arial") : c.font_family;
+  const std::string weight_s = c.bold ? "bold" : "normal";
+  const std::string style_s  = c.italic ? "italic" : "normal";
+  const std::string color_s  = color_to_css(c.text_color);
+
+  // SVG viewport = device_box; all coordinates are relative to it.
+  std::ostringstream svg;
+  svg << "<svg xmlns=\"http://www.w3.org/2000/svg\""
+      << " width=\"" << bw << "\" height=\"" << bh << "\">";
+
+  for (std::size_t i = 0; i < paras.size(); ++i) {
+    const double y = ascent + static_cast<double>(i) * line_h;
+    if (y > bh + line_h) break;  // off-box: clip, never silent here
+
+    const char* para_anchor = anchor;
+    double para_x = tx;
+    if (paras[i].align == "left")  { para_anchor = "start";  para_x = 0.0; }
+    if (paras[i].align == "right") { para_anchor = "end";    para_x = bw; }
+    if (paras[i].align == "center") { para_anchor = "middle"; para_x = bw * 0.5; }
+
+    svg << "<text"
+        << " x=\"" << para_x << "\""
+        << " y=\"" << y << "\""
+        << " font-family=\"" << xml_escape(family) << "\""
+        << " font-size=\"" << fs << "\""
+        << " font-weight=\"" << weight_s << "\""
+        << " font-style=\"" << style_s << "\""
+        << " fill=\"" << color_s << "\""
+        << " text-anchor=\"" << para_anchor << "\""
+        << " dominant-baseline=\"auto\""
+        << ">" << xml_escape(paras[i].text) << "</text>\n";
+  }
+  svg << "</svg>";
+  return svg.str();
+}
+
 // Draw one render trace onto a Graphics already translated so device (0,0) is
 // the page origin. Shared by preview and print so they cannot diverge (INV-5).
 // `svg_rasterizer` may be null (no backend installed); when null OR the
@@ -566,6 +681,56 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       if (c.label.empty()) {
         continue;
       }
+
+      // D3 TEXT UNIFICATION: when the SVG rasterizer is available, route the
+      // text through the same resvg pipeline as baked SVG artwork (one shaper
+      // for static and variable text). On success: rasterize and composite, then
+      // emit SvgArtworkRasterized notice and continue. On failure: fall through
+      // to the GDI+ DrawString path below (loud notice only if text would be
+      // wrong, not for every missing-DLL scenario — GDI+ is a correct fallback).
+      if (svg_rasterizer != nullptr && svg_rasterizer->available()) {
+        const int tw = static_cast<int>(std::max(1.0, c.device_box.w));
+        const int th = static_cast<int>(std::max(1.0, c.device_box.h));
+        const std::string text_svg = text_to_svg(c, svg_rasterizer);
+        const SvgRasterResult rr = svg_rasterizer->render(
+            text_svg,
+            static_cast<std::uint32_t>(tw),
+            static_cast<std::uint32_t>(th),
+            static_cast<double>(g.GetDpiX()));
+        if (rr.ok() && rr.raster.width > 0 && rr.raster.height > 0 &&
+            rr.raster.rgba.size() ==
+                static_cast<std::size_t>(rr.raster.width) *
+                    rr.raster.height * 4u) {
+          // Convert straight RGBA -> premul BGRA for GDI+.
+          const std::size_t pixel_count =
+              static_cast<std::size_t>(rr.raster.width) * rr.raster.height;
+          std::vector<std::uint8_t> premul(pixel_count * 4u);
+          straight_rgba_to_premul_bgra(rr.raster.rgba.data(), premul.data(),
+                                        pixel_count);
+          const INT stride = static_cast<INT>(rr.raster.width) * 4;
+          Gdiplus::Bitmap bmp(static_cast<INT>(rr.raster.width),
+                               static_cast<INT>(rr.raster.height),
+                               stride, PixelFormat32bppPARGB, premul.data());
+          if (bmp.GetLastStatus() == Gdiplus::Ok) {
+            Gdiplus::RectF dst(
+                static_cast<Gdiplus::REAL>(c.device_box.x),
+                static_cast<Gdiplus::REAL>(c.device_box.y),
+                static_cast<Gdiplus::REAL>(c.device_box.w),
+                static_cast<Gdiplus::REAL>(c.device_box.h));
+            g.DrawImage(&bmp, dst, 0.0f, 0.0f,
+                        static_cast<Gdiplus::REAL>(rr.raster.width),
+                        static_cast<Gdiplus::REAL>(rr.raster.height),
+                        Gdiplus::UnitPixel);
+            push_notice_unique(result.notices,
+                DegradationNotice{DegradationNoticeType::SvgArtworkRasterized,
+                                  current_page_id, "text via resvg", {}, {}});
+            continue;  // D3: done — skip GDI+ fallback
+          }
+        }
+        // Fall through to GDI+ DrawString (rasterizer refused or failed).
+      }
+
+      // GDI+ DrawString fallback (no rasterizer, or D3 rasterize failed).
       // §2 measure-at-the-sink: ALL text layout (wrap, shrink-to-fit, align,
       // clip) is done here with real GDI+ glyph metrics. Preview and print run
       // this same code, so what is measured is exactly what prints (INV-5).

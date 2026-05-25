@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,16 @@ struct SvgRasterResult {
   [[nodiscard]] bool ok() const { return status == SvgRasterStatus::Ok; }
 };
 
+// D3 text metrics: font-metric measurements shared by the bake (static text
+// sizing) and the Win32 host (variable/merge text layout at render time).
+// Matches spe_text_metrics_t from svg_rasterizer_abi.h.
+struct TextMetrics {
+  float advance_px    = 0.0f;
+  float ascent_px     = 0.0f;
+  float descent_px    = 0.0f;
+  float line_height_px = 0.0f;
+};
+
 class ISvgRasterizer {
 public:
   virtual ~ISvgRasterizer() = default;
@@ -48,6 +59,11 @@ public:
                                                std::uint32_t target_w_px,
                                                std::uint32_t target_h_px,
                                                double dpi) = 0;
+  // D3: measure a text run using the same font engine as rasterization.
+  // Returns std::nullopt if the backend is unavailable or the font is missing.
+  [[nodiscard]] virtual std::optional<TextMetrics> measure_text(
+      const std::string& family, int weight, bool italic,
+      float size_px, const std::string& text) = 0;
 };
 
 // Runtime-loaded backend. load() performs the ABI-version handshake and
@@ -69,6 +85,9 @@ public:
                                        std::uint32_t target_w_px,
                                        std::uint32_t target_h_px,
                                        double dpi) override;
+  [[nodiscard]] std::optional<TextMetrics> measure_text(
+      const std::string& family, int weight, bool italic,
+      float size_px, const std::string& text) override;
 
 private:
   SvgRasterizerDll() = default;
@@ -87,6 +106,10 @@ private:
                              std::uint32_t, std::uint32_t, double,
                              std::uint8_t*, std::size_t,
                              char*, std::size_t) = nullptr;
+  // D3: optional — may be null if the backend predates this ABI entry.
+  std::int32_t (*fn_text_measure_)(const char*, std::int32_t, std::int32_t,
+                                   float, const std::uint8_t*, std::size_t,
+                                   void*) = nullptr;
 };
 
 }  // namespace print_engine::host
