@@ -963,6 +963,8 @@ const stencilFixtures = [
   'master-test-aws',
   'master-test-network',
   'master-test-style-variants',
+  'master-test-stencil-commands',
+  'master-test-compound-styles',
 ];
 
 for (const name of stencilFixtures) {
