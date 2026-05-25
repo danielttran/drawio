@@ -147,19 +147,37 @@ vocabulary and notice the rest.
   gate (there is no operator).
 - **Font preflight (§3.5):** reject the job loudly listing any missing face
   *before* printing.
+- **Concurrency:** the engine processes one job at a time and returns
+  `EngineBusyError` (`proto.cpp`) if a render arrives mid-print. The service must
+  therefore **serialize jobs per host process** (a queue) or run a **pool of host
+  processes** — do not assume the engine is reentrant.
+- **Multi-page documents:** a `.drawio` file may contain multiple pages and the
+  contract already supports multiple `document.pages` and per-page tiles. The API
+  must define page scope explicitly: print all pages, or accept a page selector.
+  Do not silently print only page 1.
+- **Custom stock:** `stockId` carries the existing `custom:<wMicrons>x<hMicrons>`
+  encoding straight through to the host parser (`host/custom_stock.cpp`,
+  `DMPAPER_USER`); no new mechanism needed.
 - No UI. No `/native-print/*` browser routes. No debug endpoints.
 
 ### 3.3 Engine changes — units (D4)
 
 Minimal, additive (see §4 for the exact contract delta):
+- `include/print_engine/contract.hpp`: advance `SupportedMinor` from `0` to `1`
+  (the engine now understands the 1.1 `um` feature, so it must not flag its own
+  `um` contracts as minor-ahead). `SupportedMajor` stays `1`.
 - `contract_loader.cpp`: accept `units == "um"` in addition to `"px"`
   (currently rejected at the `units.value() != "px"` check).
 - Introduce a single helper `double units_per_inch(const std::string& units)`
   → `px`=96.0, `um`=25400.0.
-- At the **two** `RenderTarget` construction sites in
-  `host/win32_services.cpp` (`render_preview`, `print`, currently
-  `RenderTarget{dpi, 96.0}`), derive the second field from
-  `units_per_inch(doc.units)`.
+- Derive the target's `contract_units_per_inch` from `units_per_inch(doc.units)`
+  at **every** site that builds a target from a loaded document — verified sites:
+  - `host/win32_services.cpp` `render_preview` and `print` (the production path;
+    currently `RenderTarget{dpi, 96.0}` at the two call sites);
+  - `src/native_print.cpp` (the v2 native-bridge path: `NativePrintTarget` default
+    and the `RenderTarget render_target{...}` it builds). This path is not on the
+    win32 production print path today, but must be updated for consistency or
+    explicitly left `px`-only with a test asserting so.
 - No change to `make_world_transform` (already `dpi / contract_units_per_inch`)
   or to any geometry math.
 
@@ -168,9 +186,11 @@ Minimal, additive (see §4 for the exact contract delta):
 - **Unify text on resvg (D3):** variable/merge text is rendered by generating an
   SVG `<text>` fragment at merge-resolve time (resolved value + font/size/box +
   computed auto-size) and rasterizing it through the **same resvg path** as baked
-  `svg` artwork. Retire the GDI+ `DrawString` text path for *content* text (keep
-  GDI+ only for compositing the opaque page bitmap and the printer DC blit). This
-  makes static and variable text identical.
+  `svg` artwork. Retire the GDI+ `DrawString` text path for *content* text. GDI+
+  is **not** fully removed: it still renders `path` and `image` trace commands and
+  composites the final opaque page bitmap to the printer DC — it simply no longer
+  **shapes content text**. This makes static and variable text identical (one
+  shaper).
 - **Banded rasterization (D6):** replace the single full-page
   `PixelFormat24bppRGB` bitmap in `print()` with horizontal **band** bitmaps so
   peak memory is bounded regardless of DPI/media size; composite each band, blit,
@@ -188,10 +208,23 @@ Minimal, additive (see §4 for the exact contract delta):
 
 - **Fonts are host-installed**, not embedded in the contract (settled). Required
   faces are a deployment prerequisite of the print server.
-- **One font-metrics engine** shared by bake measurement and rasterization
-  (e.g. resvg's `fontdb`/ttf-parser, or FreeType+HarfBuzz exposed to both Node and
-  the host). Bake-time measurement and print-time rasterization must read the
-  **same** metrics so layout computed at bake equals what prints.
+- **One font-metrics engine** shared by bake measurement and rasterization.
+  Because the rasterizer is resvg, the consistent choice is the **same Rust stack
+  resvg uses internally** (`fontdb` + `rustybuzz`). Add a dedicated **text-measure
+  entry point** to the rasterizer crate (font face + size + string → advances /
+  ascent / descent / wrapped line breaks). Note: the existing
+  `spe_svg_measure` (`host/svg_rasterizer_abi.h`) measures an **SVG document's**
+  intrinsic size, not a text run, so a new ABI call is required — do not overload
+  it. The Node bake reaches the *same* engine via a thin native addon or a
+  short-lived subprocess over that ABI — **never** a browser/DOM measurement.
+  Bake-time and print-time measurement must read the same metrics so layout
+  computed at bake equals what prints.
+- **Where measurement happens (resolve the measure-at-the-sink tension):**
+  - *Static text* is measured **at bake** (the headless renderer must size labels
+    to reproduce draw.io's layout) and frozen into the `svg` node.
+  - *Variable/merge text* (`T-Data`) is measured **at print** (the value is
+    unknown at bake) using the same engine, then emitted as SVG `<text>` for
+    resvg. Same metrics ⇒ identical appearance to static text.
 - **Preflight:** a function that, given a contract, returns the set of referenced
   font faces not available on the host. Unattended mode: missing face ⇒ **fail
   loudly** (never silent Arial). Interactive mode keeps the `FontSubstituted`
@@ -211,8 +244,14 @@ Minimal, additive (see §4 for the exact contract delta):
   the transform).
 - Validation (`contract_loader.cpp`): accept `px`|`um`; everything else stays a
   `ContractEnumError`. All positivity/structure checks unchanged.
-- Versioning: this is additive; bump `schema.minor` (1.0 → 1.1). The loader
-  already treats minor-ahead as additive, so older `px` contracts keep working.
+- Versioning: additive minor bump (schema 1.0 → 1.1). Advance the engine's
+  `SupportedMinor` to `1` (§3.3) and have `um`-producing bakes emit `minor:1`.
+  Compatibility after the change:
+  - new engine + `px` contract (minor 0 or 1): works (px path unchanged);
+  - new engine + `um` contract (minor 1): works (exact support);
+  - old engine (minor 0) + `um` contract: **fails loudly** at unit validation
+    (`ContractEnumError`, "only px…") — never a silent wrong size. Correct
+    behaviour: a `um` contract requires an engine that supports `um`.
 
 **Producer rule:** the headless bake (§3.1) and the converged UI bake emit
 `units:"um"`. The legacy in-browser exporter may continue to emit `px`
@@ -313,8 +352,8 @@ one shaper; C1–C5 green; live-DOM harvest removed.
 | SVG-serialization shim | `tools/native-print-bake/svg-shim/` (new) |
 | Font-metrics service | shared lib usable by Node bake + C++ host (`host/` + `tools/`) |
 | Unattended service + API | `tools/native-print-service/` (new); pattern from `src/main/webapp/vite.config.mjs` |
-| Units (loader + helper) | `src/main/native-print-engine/src/contract_loader.cpp`, `include/print_engine/` |
-| RenderTarget units wiring | `src/main/native-print-engine/host/win32_services.cpp` (2 sites) |
+| Units (loader + `SupportedMinor` + helper) | `src/main/native-print-engine/src/contract_loader.cpp`, `include/print_engine/contract.hpp` |
+| RenderTarget units wiring | `host/win32_services.cpp` (`render_preview`, `print`); `src/native_print.cpp` (v2 bridge) |
 | Unify text on resvg | `src/main/native-print-engine/host/win32_services.cpp`, `host/svg-rasterizer/` |
 | Banded raster + AA control | `src/main/native-print-engine/host/win32_services.cpp` |
 | Font preflight | `host/` + service |
