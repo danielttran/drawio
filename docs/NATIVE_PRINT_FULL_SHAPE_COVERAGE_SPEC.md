@@ -249,7 +249,14 @@ These are self-contained; they become the current path (as SVG element strings, 
 
 **Step 8 — Processing paint commands (`<fillstroke>`, `<fill>`, `<stroke>`):**
 
-When the walker encounters a paint command, it takes the current path accumulator and emits an SVG element:
+When the walker encounters a paint command, it takes the current path accumulator and emits an
+SVG element. **If the path accumulator is empty (no geometry accumulated since the last paint
+command or since the start of the section), silently skip the paint command — no-op.** This
+matches the browser's behaviour (mxSvgCanvas2D silently draws nothing if no path is begun).
+This case is common in stencils that use paint commands to set up state or as structural
+markers before the actual geometry.
+
+If the accumulator is non-empty:
 - Determine fill attr: `fillSvgAttr(state)` — uses `state.fillColor` and gradient if present.
 - Determine stroke attrs: `strokeSvgAttrs(state)` — uses `state.strokeColor`, `state.strokeWidth`, `state.dashed`, etc.
 - For `<fill>`: emit with fill, `stroke="none"`.
@@ -368,12 +375,22 @@ Stencil shapes with `style.rotation !== 0` follow the existing rotation pattern:
 
 ### 3.8 Built-in JS Shapes (Phase 2)
 
-A small set of named shapes are defined as JavaScript classes (not stencil XML):
-`hexagon`, `doubleEllipse`, `actor` (person), `parallelogram`, `trapezoid`, `cross`, `plus`,
-`mxgraph.*` built-in star, `swimlane`, `process`, `arrow`, `line`, `link`.
+The following shape names are registered in `mxCellRenderer.defaultShapes` (authoritative list
+from `mxClient.js` `mxConstants` + `registerShape` calls). These are NOT in stencil XML:
 
-These are a finite, bounded list (~20-30 shapes). Each will be added to the existing
-`shapePath` function as an additional `else if (name === '...')` branch.
+`rectangle`, `ellipse`, `doubleEllipse`, `rhombus`, `line`, `arrow`, `arrowConnector`,
+`label`, `cylinder`, `swimlane`, `connector`, `actor`, `cloud`, `triangle`, `hexagon`
+
+**NOT built-in JS** (despite common assumption): `parallelogram` (does not exist anywhere),
+`trapezoid` (stencil: `mxgraph.basic.trapezoid`), `cross` (stencil: `mxgraph.basic.cross`),
+`plus` (does not exist anywhere), `process` (does not exist as built-in or stencil).
+
+Phase 1 already handles `rectangle`, `ellipse`, `rhombus`, `cylinder`, `cloud`, `label`,
+`triangle` via the existing `shapePath` function. Phase 2 adds the remaining built-ins:
+`doubleEllipse`, `line`, `arrow`, `arrowConnector`, `swimlane`, `connector`, `actor`, `hexagon`.
+
+These are a finite, bounded list. Each will be added to the existing `shapePath` function as
+an additional `else if (name === '...')` branch.
 
 Acceptance criterion: `shapePath` returns a valid SVG `d` string for each built-in, matching
 the browser-rendered geometry to within the coordinate precision already in use.
@@ -589,12 +606,14 @@ New cells to add (on top of existing 22 cells):
 | b08 | `shape=mxgraph.basic.arrow` | `Arrow` | 30° |
 | b09 | `shape=hexagon` | `Built-in Hex` | 0° |
 | b10 | `shape=doubleEllipse` | `Dbl Ellipse` | 0° |
-| b11 | `shape=parallelogram` | `Parallelogram` | 10° |
-| b12 | `shape=trapezoid` | `Trapezoid` | 0° |
+| b11 | `shape=actor` | `Actor` | 10° |
+| b12 | `shape=swimlane` | `Swimlane` | 0° |
 | b13 | `shape=mxgraph.basic.star;flipH=1` | `Star FlipH` | 0° |
 | b14 | `shape=mxgraph.basic.arrow;flipV=1` | `Arrow FlipV` | 0° |
 | b15 | `shape=mxgraph.basic.star;direction=north` | `Star North` | 0° |
 | b16 | `shape=mxgraph.basic.arrow;gradientColor=#ff0000` | `Gradient Arrow` | 0° |
+| b17 | `shape=mxgraph.basic.trapezoid` | `Trapezoid` | 15° |
+| b18 | `shape=arrowConnector` | `Arrow Conn` | 0° |
 
 ---
 
@@ -621,13 +640,13 @@ Cells (8 per row, 120×100 px each):
 | f12 | `shape=mxgraph.flowchart.manual_operation` | `Manual Op` | 0° |
 | f13 | `shape=mxgraph.flowchart.card` | `Card` | 30° |
 | f14 | `shape=mxgraph.flowchart.punched_tape` | `Tape` | 0° |
-| f15 | `shape=mxgraph.flowchart.connector` | `Connector` | 0° |
+| f15 | `shape=mxgraph.flowchart.terminator` | `Terminator` | 0° |
 | f16 | `shape=mxgraph.flowchart.summing_function` | `Sum Func` | 0° |
 | f17 | `shape=mxgraph.flowchart.or` | `Or` | 0° |
 | f18 | `shape=mxgraph.flowchart.collate` | `Collate` | 0° |
 | f19 | `shape=mxgraph.flowchart.sort` | `Sort` | −20° |
-| f20 | `shape=mxgraph.flowchart.extract` | `Extract` | 0° |
-| f21 | `shape=mxgraph.flowchart.merge` | `Merge` | 0° |
+| f20 | `shape=mxgraph.flowchart.preparation` | `Preparation` | 0° |
+| f21 | `shape=mxgraph.flowchart.merge_or_storage` | `Merge/Store` | 0° |
 | f22 | `shape=mxgraph.flowchart.delay` | `Delay` | 0° |
 | f23 | `shape=mxgraph.flowchart.display` | `Display` | 0° |
 | f24 | `shape=mxgraph.flowchart.annotation_1` | `Annotation` | 0° |
@@ -655,16 +674,20 @@ Arrows section (120×80 px, first two rows):
 
 BPMN section (100×100 px, next rows):
 
+Note: BPMN shapes are individual stencil shapes in `bpmn.xml` (`<shapes name="mxgraph.bpmn">`).
+The `shape=mxgraph.bpmn.shape;symbol=...` pattern used in the draw.io palette is a
+parameterised UI composite — the underlying stencil shapes are registered individually.
+
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|
-| p01 | `shape=mxgraph.bpmn.shape;perimeter=mxPerimeter.ellipsePerimeter;symbol=terminate` | `BPMN End` | 0° |
-| p02 | `shape=mxgraph.bpmn.shape;perimeter=mxPerimeter.ellipsePerimeter;symbol=general` | `BPMN Start` | 0° |
-| p03 | `shape=mxgraph.bpmn.shape;symbol=terminate;isLooping=1` | `BPMN Loop` | 0° |
-| p04 | `shape=mxgraph.bpmn.shape;symbol=gateway_complex` | `Gateway X` | 0° |
-| p05 | `shape=mxgraph.bpmn.shape;symbol=gateway_parallel` | `Gateway +` | 0° |
-| p06 | `shape=mxgraph.bpmn.shape;symbol=task_call_activity` | `Task Call` | 0° |
-| p07 | `shape=mxgraph.bpmn.shape;symbol=subprocess_call_activity` | `SubProc` | 15° |
-| p08 | `shape=mxgraph.bpmn.shape;symbol=data_object` | `Data Obj` | 0° |
+| p01 | `shape=mxgraph.bpmn.terminate` | `BPMN Term` | 0° |
+| p02 | `shape=mxgraph.bpmn.general_start` | `BPMN Start` | 0° |
+| p03 | `shape=mxgraph.bpmn.general_end` | `BPMN End` | 0° |
+| p04 | `shape=mxgraph.bpmn.gateway_complex` | `Gateway X` | 0° |
+| p05 | `shape=mxgraph.bpmn.gateway_and` | `Gateway +` | 0° |
+| p06 | `shape=mxgraph.bpmn.user_task` | `User Task` | 0° |
+| p07 | `shape=mxgraph.bpmn.timer_start` | `Timer Start` | 15° |
+| p08 | `shape=mxgraph.bpmn.loop` | `Loop` | 0° |
 
 ---
 
@@ -891,6 +914,19 @@ The implementation is **done** when ALL of the following are true:
 | 8 | `strokewidth="inherit"` initial setup not described | §3.4 step 3 added |
 | 9 | `labelPosition`/`verticalLabelPosition` not handled | §3.6 style overrides table added |
 | 10 | `<fillstroke>` described as child of `<path>` (wrong — it's a sibling) | §3.4 step 5 clarified with explicit sibling walker model |
+
+### Review 2 (2026-05-25) — Test label suite, 8 defects corrected (prior round)
+
+### Review 3 (2026-05-25) — Full plan audit, 6 defects corrected
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | `mxgraph.flowchart.connector/extract/merge` don't exist in flowchart.xml | f15→`terminator`, f20→`preparation`, f21→`merge_or_storage` |
+| 2 | `mxgraph.bpmn.shape` doesn't exist; BPMN uses individual stencil shapes | p01-p08 rewritten with `mxgraph.bpmn.terminate`, `gateway_complex`, etc. |
+| 3 | `parallelogram`, `plus` don't exist anywhere; `cross`/`trapezoid` are stencils not JS built-ins | §3.8 built-in list corrected to authoritative 15-shape set; b11→`actor`, b12→`swimlane`, b17/b18 added for missing built-ins |
+| 4 | §3.4 step 8: no handling for paint command with empty path accumulator (orphaned paint) — affects 11,000+ stencils | Step 8 amended: empty accumulator → silent no-op (matches browser behaviour) |
+| 5 | Spacing: 30°/45°/−35° overflow canvas top at origin (20,20) | Grid origin moved to (100,100); verified clearance ≥72 px at 45° |
+| 6 | Done criteria: structural checks cannot catch gradient correctness or edge-case geometry errors | §12.5 note added; test files must be comprehensive and include all known edge cases |
 
 ### Review 2 (2026-05-25) — Test label suite, 8 defects corrected
 
