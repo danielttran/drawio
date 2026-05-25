@@ -708,3 +708,82 @@ test('C5: multitext.drawio — all text nodes have non-zero-area boxes', async (
       `C5: text node has zero-area box: ${JSON.stringify(t.box)}`);
   }
 });
+
+// --- Master WYSIWYG test (all supported shapes, all features, rotations) ---
+
+const masterTestDrawio = join(fixtureDir, 'master-test.drawio');
+const masterTestGolden = join(fixtureDir, 'master-test.contract.golden.json');
+
+// Lazy-import compare so wysiwyg-compare.mjs is only loaded when these tests run.
+async function runWysiwygCompare(xml) {
+  const { compare } = await import('./wysiwyg-compare.mjs');
+  return compare(xml);
+}
+
+test('C1: bake output matches master-test.contract.golden.json', async () => {
+  const xml    = await readFile(masterTestDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(masterTestGolden, 'utf8'));
+  const { contract } = bake(xml);
+  assert.deepEqual(contract, golden, 'master-test bake output diverged from golden');
+});
+
+test('WYSIWYG: master-test — all shapes, labels, gradients, dash, thick, rotation verified', async () => {
+  const xml = await readFile(masterTestDrawio, 'utf8');
+  const { checks, fail } = await runWysiwygCompare(xml);
+  const failures = checks.filter((c) => !c.ok);
+  assert.equal(fail, 0,
+    `WYSIWYG failures:\n${failures.map((c) => `  ${c.name}: ${c.detail}`).join('\n')}`);
+});
+
+test('WYSIWYG: master-test — rotated shapes produce kind:svg nodes with rotate() transform', async () => {
+  const xml = await readFile(masterTestDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const svgNodes = paint.filter((n) => n.kind === 'svg');
+  assert.ok(svgNodes.length >= 9, `expected ≥9 svg nodes for 9 rotated shapes, got ${svgNodes.length}`);
+  for (const n of svgNodes) {
+    const src = Buffer.from(n.source, 'base64').toString('utf8');
+    assert.ok(/transform="rotate/.test(src),
+      `kind:svg node lacks rotate() transform in source SVG`);
+    assert.ok(n.box && n.box.w > 0 && n.box.h > 0,
+      `kind:svg node has non-positive box: ${JSON.stringify(n.box)}`);
+  }
+});
+
+test('WYSIWYG: master-test — gradient shapes produce gradient fills in contract', async () => {
+  const xml = await readFile(masterTestDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  // r13: gradient rect (unrotated → kind:path with linear fill)
+  // r14: gradient ellipse (rotated 30° → kind:svg with linearGradient in SVG)
+  const gradPaths = paint.filter((n) =>
+    n.kind === 'path' && n.fill && (n.fill.type === 'linear' || n.fill.type === 'radial'));
+  const gradSvgs  = paint.filter((n) => {
+    if (n.kind !== 'svg') return false;
+    try { return /linearGradient|radialGradient/.test(Buffer.from(n.source,'base64').toString('utf8')); }
+    catch { return false; }
+  });
+  assert.ok(gradPaths.length + gradSvgs.length >= 2,
+    `expected ≥2 gradient nodes (path+svg combined), got path=${gradPaths.length} svg=${gradSvgs.length}`);
+});
+
+test('WYSIWYG: master-test — dashed rotated shape embeds stroke-dasharray in SVG', async () => {
+  const xml = await readFile(masterTestDrawio, 'utf8');
+  const { contract } = bake(xml);
+  const paint = contract.document.pages[0].paint;
+  // r15 is dashed + rotated → kind:svg with stroke-dasharray
+  const dashedSvg = paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    try { return /stroke-dasharray/.test(Buffer.from(n.source,'base64').toString('utf8')); }
+    catch { return false; }
+  });
+  assert.ok(dashedSvg, 'expected a kind:svg node with stroke-dasharray for the dashed rotated shape');
+});
+
+test('WYSIWYG: master-test — only GradientDirectionApprox notice expected', async () => {
+  const xml = await readFile(masterTestDrawio, 'utf8');
+  const { notices } = bake(xml);
+  const unexpected = notices.filter((n) => n.kind !== 'GradientDirectionApprox');
+  assert.equal(unexpected.length, 0,
+    `unexpected notices: ${unexpected.map((n) => n.kind).join(', ')}`);
+});

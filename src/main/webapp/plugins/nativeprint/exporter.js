@@ -227,6 +227,69 @@
     return String(Object.is(rounded, -0) ? 0 : rounded);
   }
 
+  // --- SVG-string helpers for headless rotated-shape nodes ---
+  // Used by emitVertex when style.rotation≠0 and there is no live DOM.
+  // Produces kind:'svg' so shape + label rotate together (matches svgCellNode).
+
+  function escXml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function fillSvgAttr(style, gradId) {
+    if (!isPaintable(style.fillColor)) return ' fill="none"';
+    if (isPaintable(style.gradientColor) && gradId) return ' fill="url(#' + gradId + ')"';
+    var c = hex(style.fillColor);
+    var a = opacity(style, 'fillOpacity');
+    return ' fill="' + c + '"' + (a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '');
+  }
+
+  function strokeSvgAttrs(style) {
+    if (!isPaintable(style.strokeColor)) return ' stroke="none"';
+    var s = ' stroke="' + hex(style.strokeColor) + '"';
+    var sw = Math.max(0.1, number(style.strokeWidth, 1));
+    s += ' stroke-width="' + fmt(sw) + '"';
+    var sc = style.lineCap === 'round' ? 'round' : style.lineCap === 'square' ? 'square' : 'butt';
+    var sj = style.lineJoin === 'round' || boolish(style.rounded) ? 'round' :
+      style.lineJoin === 'bevel' ? 'bevel' : 'miter';
+    s += ' stroke-linecap="' + sc + '" stroke-linejoin="' + sj + '"';
+    if (boolish(style.dashed)) {
+      var dp = dashPattern(style);
+      s += ' stroke-dasharray="' + dp.map(fmt).join(' ') + '"';
+    }
+    var so = opacity(style, 'strokeOpacity');
+    if (so < 1) s += ' stroke-opacity="' + fmt(so) + '"';
+    return s;
+  }
+
+  function textSvgStr(label, cx, cy, style) {
+    if (!label) return '';
+    var fs = Math.max(1, number(style.fontSize, 11));
+    var ff = style.fontFamily || 'Arial';
+    var fc = style.fontColor || '#000000';
+    var fsVal = number(style.fontStyle, 0);
+    var isBold = !!(fsVal & 1);
+    var isItalic = !!(fsVal & 2);
+    var attrs = ' text-anchor="middle" dominant-baseline="central"' +
+      ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
+      ' fill="' + fc + '"' +
+      (isBold ? ' font-weight="bold"' : '') +
+      (isItalic ? ' font-style="italic"' : '');
+    var lines = label.split('\n');
+    if (lines.length === 1) {
+      return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' +
+        escXml(label) + '</text>';
+    }
+    var lineH = fs * 1.2;
+    var startDy = -(lines.length - 1) * lineH / 2;
+    var spans = lines.map(function (ln, i) {
+      return '<tspan x="' + fmt(cx) + '" dy="' + fmt(i === 0 ? startDy : lineH) + '">' +
+        escXml(ln) + '</tspan>';
+    }).join('');
+    return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' + spans + '</text>';
+  }
+
   function p(x, y) {
     return fmt(x) + ' ' + fmt(y);
   }
@@ -2614,6 +2677,57 @@
         notices.push(degradation('ExporterUnsupportedShape',
           'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
       }
+
+      // Rotated shape (headless): construct a kind:'svg' node so both the shape
+      // outline AND the label rotate together around the cell centre. This is
+      // WYSIWYG — it matches what svgCellNode emits on the live-DOM path.
+      // The SVG viewport is expanded to the axis-aligned bounding box of the
+      // rotated rectangle so strokes near the corners are not clipped.
+      var rotDeg = number(style.rotation, 0);
+      if (rotDeg) {
+        var theta = rotDeg * Math.PI / 180;
+        var cosT = Math.abs(Math.cos(theta));
+        var sinT = Math.abs(Math.sin(theta));
+        var expW = box.w * cosT + box.h * sinT;
+        var expH = box.w * sinT + box.h * cosT;
+        // Shape offset inside the expanded SVG viewport
+        var offX = (expW - box.w) / 2;
+        var offY = (expH - box.h) / 2;
+        // Rotation centre = midpoint of expanded viewport
+        var rcx = expW / 2;
+        var rcy = expH / 2;
+        var relD = shapePath(style, offX, offY, box.w, box.h) ||
+                   rectPath(offX, offY, box.w, box.h);
+        // Linear gradient defs (left-to-right in rotated frame; more accurate
+        // than the path fallback since direction rotates with the shape).
+        var defs = '';
+        var gradId = '';
+        if (isPaintable(style.gradientColor)) {
+          gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
+          defs = '<defs><linearGradient id="' + gradId + '" x1="0" y1="0" x2="1" y2="0">' +
+            '<stop offset="0" stop-color="' + hex(style.fillColor) + '"/>' +
+            '<stop offset="1" stop-color="' + hex(style.gradientColor) + '"/>' +
+            '</linearGradient></defs>';
+        }
+        var pathEl = '<path d="' + relD + '"' +
+          fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
+        var textEl = label !== '' ? textSvgStr(label, rcx, rcy, style) : '';
+        var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
+          pathEl + textEl + '</g>';
+        var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
+          'width="' + fmt(expW) + '" height="' + fmt(expH) + '">' +
+          defs + inner + '</svg>';
+        var svgCx = box.x + box.w / 2;
+        var svgCy = box.y + box.h / 2;
+        paint.push({
+          kind: 'svg',
+          box: { x: svgCx - expW / 2, y: svgCy - expH / 2, w: expW, h: expH },
+          source: base64(svgStr),
+          aspect: 'preserve'
+        });
+        return;  // label is embedded in the SVG; no separate text node needed
+      }
+
       paint.push({
         kind: 'path',
         d: d,
