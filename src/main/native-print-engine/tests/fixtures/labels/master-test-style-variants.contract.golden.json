@@ -37,32 +37,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 0,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Gradient"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwMSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czAxKSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+R3JhZGllbnQ8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -76,32 +59,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 58208.333333,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Dashed"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwMiI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czAyKSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RGFzaGVkPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -115,32 +81,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 116416.666667,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Thick"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwMyI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czAzKSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+VGhpY2s8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -154,32 +103,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 174625,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Opacity 50"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwNCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA0KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+T3BhY2l0eSA1MDwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -193,32 +125,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 232833.333333,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Flip H"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwNSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA1KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RmxpcCBIPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -232,32 +147,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 291041.666667,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Flip V"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwNiI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA2KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RmxpcCBWPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -271,32 +169,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 349250,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Flip HV"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwNyI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA3KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RmxpcCBIVjwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -310,32 +191,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 407458.333333,
               "y": 0,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Dir N"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwOCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA4KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RGlyIE48L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -349,32 +213,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 0,
               "y": 52916.666667,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Dir S"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMwOSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czA5KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RGlyIFM8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -388,32 +235,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 58208.333333,
               "y": 52916.666667,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Dir W"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMxMCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czEwKSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+RGlyIFc8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -449,32 +279,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 264583.333333,
               "y": 52916.666667,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Label Right"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMxMyI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czEzKSI+PHRleHQgeD0iMiIgeT0iNDMuMjkiIGZvbnQtZmFtaWx5PSJBcmlhbCwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJzdGFydCIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPkxhYmVsIFJpZ2h0PC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -488,32 +301,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 291041.666667,
               "y": 79375,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Label Below"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMxNCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czE0KSI+PHRleHQgeD0iNjAiIHk9IjAiIGZvbnQtZmFtaWx5PSJBcmlhbCwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5MYWJlbCBCZWxvdzwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -527,32 +323,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 349250,
               "y": 52916.666667,
               "w": 31750,
               "h": 26458.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 2910.416667,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Inline Stencil"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTAwIj48ZGVmcz48Y2xpcFBhdGggaWQ9InR4dHMxNSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0czE1KSI+PHRleHQgeD0iNjAiIHk9IjQzLjI5IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+SW5saW5lIFN0ZW5jaWw8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           }
         ]
       }

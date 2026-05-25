@@ -365,6 +365,7 @@ const SUPPORTED_SHAPES = [
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
   ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
+  ['note', { shape: 'note' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
   ['switch', { shape: 'switch' }, /^M 0 0 C [\d.]+ [\d.]+ [\d.]+ [\d.]+ 80 0 C /],
   ['default (no shape)', {}, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/]
 ];
@@ -383,7 +384,7 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
 // Note: hexagon, actor, process, umlActor are now implemented (moved to SUPPORTED /
 // builtinShapeSvg). mxgraph.* shapes silently fall back to rect (matching live canvas).
 const UNSUPPORTED = [
-  'step', 'parallelogram', 'callout', 'tape', 'card', 'note', 'cube'
+  'step', 'parallelogram', 'callout', 'tape', 'card', 'cube'
 ];
 for (const shape of UNSUPPORTED) {
   test(`unsupported stencil loudly degraded, not silent: ${shape}`, () => {
@@ -435,6 +436,98 @@ for (const shape of MXGRAPH_NOTSTENCIL) {
     assertSchemaValid(r.contract, shape);
   });
 }
+
+// ---- mxgraph.basic.button: 6-path bevel SVG, zero notices ------------------
+test('mxgraph.basic.button: 6-path bevel SVG emitted with zero notices', () => {
+  const r = oneVertex({ shape: 'mxgraph.basic.button', dx: 10,
+    fillColor: '#1ba1e2', strokeColor: '#006EAF', width: 100, height: 60 });
+  assert.equal(r.notices.length, 0, 'button must not emit any notice');
+  const page = r.contract.document.pages[0];
+  // Rotated path → kind:'svg'
+  const svgNode = page.paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'button must emit a kind:svg node');
+  const svg = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  const pathCount = (svg.match(/<path/g) || []).length;
+  assert.equal(pathCount, 6, 'button SVG must contain exactly 6 path elements');
+  assertSchemaValid(r.contract, 'mxgraph.basic.button');
+});
+
+// ---- wedgeArrowDashed2: multi-subpath stroke-only, zero notices -------------
+test('mxgraph.arrows2.wedgeArrowDashed2: multi-subpath path emitted with zero notices', () => {
+  const cells = { e: { id: 'e', edge: true, style: 'shape=mxgraph.arrows2.wedgeArrowDashed2;startWidth=50;stepSize=15;', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 80, y: 450 }, { x: 180, y: 350 }] } };
+  const styles = { e: { shape: 'mxgraph.arrows2.wedgeArrowDashed2', startWidth: 50, stepSize: 15 } };
+  const result = exporter.buildResult(graphFixture(cells, states, {}, styles));
+  assert.equal(result.notices.length, 0, 'wedgeArrowDashed2 must not emit any notice');
+  const paths = result.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.ok(paths.length > 0, 'must emit at least one path node');
+  const d = paths[0].d;
+  // Multiple M subpaths (one per step)
+  const mCount = (d.match(/\bM /g) || []).length;
+  assert.ok(mCount > 3, `must have multiple M subpaths, got ${mCount}`);
+  assert.equal(paths[0].fill, null, 'wedgeArrowDashed2 is stroke-only');
+  assertSchemaValid(result.contract, 'mxgraph.arrows2.wedgeArrowDashed2');
+});
+
+// ---- flexArrow: closed arrow path, zero notices ----------------------------
+test('flexArrow edge: closed arrow path emitted with zero notices', () => {
+  const cells = { e: { id: 'e', edge: true, style: 'shape=flexArrow;startArrow=classic;endArrow=classic;', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 330, y: 260 }, { x: 430, y: 160 }] } };
+  const styles = { e: { shape: 'flexArrow', startArrow: 'classic', endArrow: 'classic' } };
+  const result = exporter.buildResult(graphFixture(cells, states, {}, styles));
+  assert.equal(result.notices.length, 0, 'flexArrow must not emit any notice');
+  const paths = result.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  assert.ok(paths.length > 0, 'must emit at least one path node');
+  const d = paths[0].d;
+  // Closed path (ends with Z) with multiple L segments (arrow shape)
+  assert.ok(d.endsWith('Z'), 'flexArrow path must be closed (Z)');
+  const lCount = (d.match(/\bL /g) || []).length;
+  assert.ok(lCount >= 8, `flexArrow must have ≥8 line segments (both markers), got ${lCount}`);
+  assertSchemaValid(result.contract, 'flexArrow');
+});
+
+// ---- sketch fills: hachure/cross-hatch/dots emit kind:'svg' with clip ------
+function oneSketchVertex(style) {
+  const cells = { v: { id: 'v', vertex: true } };
+  const states = { v: { x: 10, y: 20, width: 120, height: 60 } };
+  const styles = { v: style };
+  return exporter.buildResult(graphFixture(cells, states, {}, styles));
+}
+
+test('sketch hachure: emits kind:svg with clipped lines, zero notices', () => {
+  const r = oneSketchVertex({ shape: 'ellipse', sketch: '1', fillColor: '#990000', strokeColor: '#000000', strokeWidth: 2, fillWeight: 2, hachureGap: 8 });
+  assert.equal(r.notices.length, 0);
+  const svgNode = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'must emit kind:svg');
+  const svg = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  assert.ok(svg.includes('clip-path="url(#sk)"'), 'must have clip-path');
+  assert.ok(svg.includes('<line '), 'hachure must have <line> elements');
+  assertSchemaValid(r.contract, 'sketch-hachure');
+});
+
+test('sketch cross-hatch: emits kind:svg with two sets of lines, zero notices', () => {
+  const r = oneSketchVertex({ shape: 'rhombus', sketch: '1', fillStyle: 'cross-hatch', fillColor: '#006600', strokeColor: '#000000', strokeWidth: 2, fillWeight: -1, hachureGap: 8 });
+  assert.equal(r.notices.length, 0);
+  const svgNode = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'must emit kind:svg');
+  const svg = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  assert.ok(svg.includes('<line '), 'cross-hatch must have <line> elements');
+  const lineCount = (svg.match(/<line /g) || []).length;
+  assert.ok(lineCount >= 4, `cross-hatch needs multiple lines in both directions, got ${lineCount}`);
+  assertSchemaValid(r.contract, 'sketch-cross-hatch');
+});
+
+test('sketch dots: matches current drawio renderer with diagonal hatch, zero notices', () => {
+  const r = oneSketchVertex({ shape: 'ellipse', sketch: '1', fillStyle: 'dots', fillColor: '#990000', strokeColor: '#000000', strokeWidth: 2, fillWeight: 2, hachureGap: 8 });
+  assert.equal(r.notices.length, 0);
+  const svgNode = r.contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'must emit kind:svg');
+  const svg = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  assert.ok(svg.includes('<line '), 'drawio dots style currently paints as diagonal hatch');
+  assertSchemaValid(r.contract, 'sketch-dots');
+});
 
 // ===========================================================================
 // UNIVERSAL SHAPE HARVESTING

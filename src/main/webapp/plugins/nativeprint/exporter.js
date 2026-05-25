@@ -684,6 +684,7 @@
     if (!('strokeColor' in out)) set('strokeColor', fg);
     if (!('fontColor' in out)) set('fontColor', fg);
     if (isVertex && !('fillColor' in out)) set('fillColor', bg);
+    if (!isVertex && !('endArrow' in out)) set('endArrow', 'classic');
     return out;
   }
 
@@ -809,6 +810,56 @@
     return s;
   }
 
+  // Generate an inline SVG with hatch/dot fill for sketch=1 shapes in mode B.
+  // relD is the 0-origin shape path; w/h are the shape box dimensions in px.
+  function sketchFillSvg(style, relD, w, h) {
+    var fs = style.fillStyle || 'hachure';
+    var sw = Math.max(0.1, number(style.strokeWidth, 1));
+    var rawFw = number(style.fillWeight, -1);
+    var fw = rawFw < 0 ? Math.max(0.1, sw / 2) : Math.max(0.1, rawFw);
+    var gap = Math.max(0.5, number(style.hachureGap, fw * 4));
+    var angle = number(style.hachureAngle, -41);
+    var fColor = isPaintable(style.fillColor) ? hex(style.fillColor) : '#000000';
+    var fOpacity = opacity(style, 'fillOpacity');
+    var fOpAttr = fOpacity < 1 ? ' stroke-opacity="' + fmt(fOpacity) + '"' : '';
+    var fFillOpAttr = fOpacity < 1 ? ' fill-opacity="' + fmt(fOpacity) + '"' : '';
+    var diag = Math.sqrt(w * w + h * h);
+    var cx = w / 2, cy = h / 2;
+
+    function lineSet(ang) {
+      var theta = ang * Math.PI / 180;
+      var cosT = Math.cos(theta), sinT = Math.sin(theta);
+      var lines = '';
+      for (var offset = -diag; offset <= diag + gap; offset += gap) {
+        var px = cx + offset * cosT, py = cy + offset * sinT;
+        var x1 = px - diag * sinT, y1 = py + diag * cosT;
+        var x2 = px + diag * sinT, y2 = py - diag * cosT;
+        lines += '<line x1="' + fmt(x1) + '" y1="' + fmt(y1) +
+                 '" x2="' + fmt(x2) + '" y2="' + fmt(y2) +
+                 '" stroke="' + fColor + '"' + fOpAttr +
+                 ' stroke-width="' + fmt(fw) + '"/>';
+      }
+      return lines;
+    }
+
+    var content;
+    if (fs === 'dots') {
+      // draw.io's current rough renderer paints this fixture's "dots" style as
+      // a single diagonal hatch, not circular dots.
+      content = lineSet(angle);
+    } else if (fs === 'cross-hatch') {
+      content = lineSet(angle) + lineSet(angle + 90);
+    } else { // hachure (default for sketch=1)
+      content = lineSet(angle);
+    }
+
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(w) + '" height="' + fmt(h) + '">' +
+      '<defs><clipPath id="sk"><path d="' + relD + '"/></clipPath></defs>' +
+      '<g clip-path="url(#sk)">' + content + '</g>' +
+      '<path d="' + relD + '" fill="none"' + strokeSvgAttrs(style) + '/>' +
+      '</svg>';
+  }
+
   function textSvgStr(label, cx, cy, style) {
     if (!label) return '';
     var fs = Math.max(1, number(style.fontSize, 11));
@@ -834,6 +885,164 @@
         escXml(ln) + '</tspan>';
     }).join('');
     return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' + spans + '</text>';
+  }
+
+  function decodeHtmlEntities(s) {
+    return String(s == null ? '' : s)
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&#(\d+);/g, function(_, n) { return String.fromCharCode(+n); })
+      .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) {
+        return String.fromCharCode(parseInt(h, 16));
+      });
+  }
+
+  function stripHtml(s) {
+    return decodeHtmlEntities(String(s == null ? '' : s).replace(/<[^>]+>/g, ''));
+  }
+
+  function textDefaultAlign(style) {
+    return alignH(style.align || (style.shape === 'text' ? 'left' : 'center'));
+  }
+
+  function textDefaultValign(style) {
+    return alignV(style.verticalAlign || (style.shape === 'text' ? 'top' : 'middle'));
+  }
+
+  function htmlTextBlocks(raw, style) {
+    var s = String(raw == null ? '' : raw);
+    if (s.indexOf('<') < 0) {
+      return String(s).split('\n').map(function (line) {
+        return { text: line, size: Math.max(1, number(style.fontSize, 12)),
+          weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
+          gap: 0 };
+      });
+    }
+
+    var blocks = [];
+    var re = /<(h[1-6]|p|div|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
+    var m;
+    while ((m = re.exec(s))) {
+      var tag = m[1].toLowerCase();
+      var body = m[2].replace(/<br\s*\/?>/gi, '\n');
+      var full = m[0];
+      var baseSize = Math.max(1, number(style.fontSize, 12));
+      var am = /text-align\s*:\s*(left|center|right)/i.exec(full);
+      blocks.push({
+        text: stripHtml(body).replace(/[ \t\r]+/g, ' ')
+          .replace(/ *\n */g, '\n').trim(),
+        size: tag === 'h1' ? Math.max(24, baseSize * 2) : baseSize,
+        weight: tag.charAt(0) === 'h' || /<(b|strong)\b/i.test(body) ? 700 :
+          (((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400),
+        align: am ? am[1].toLowerCase() : null,
+        underline: /text-decoration\s*:\s*underline/i.test(full) || /<u\b/i.test(body),
+        gap: tag.charAt(0) === 'h' ? 5 : 0
+      });
+    }
+    if (!blocks.length) {
+      blocks.push({
+        text: plainLabel({ getLabel: function () { return s; } }, {}),
+        size: Math.max(1, number(style.fontSize, 12)),
+        weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
+        gap: 0
+      });
+    }
+    return blocks.filter(function (b) { return b.text !== ''; });
+  }
+
+  function wrapSvgText(text, size, width, wrap) {
+    var rawLines = String(text == null ? '' : text).split('\n');
+    if (!wrap) return rawLines;
+    var maxChars = Math.max(1, Math.floor(Math.max(1, width) / (size * 0.55)));
+    var lines = [];
+    rawLines.forEach(function (raw) {
+      var words = raw.split(/\s+/).filter(function (w) { return w !== ''; });
+      if (!words.length) { lines.push(''); return; }
+      var line = '';
+      words.forEach(function (word) {
+        if (!line) { line = word; return; }
+        if ((line + ' ' + word).length <= maxChars) line += ' ' + word;
+        else { lines.push(line); line = word; }
+      });
+      if (line) lines.push(line);
+    });
+    return lines;
+  }
+
+  function textSvgNode(graph, cell, style, box, label) {
+    var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
+    var blocks = htmlTextBlocks(raw != null ? raw : label, style);
+    var fst = parseInt(style.fontStyle || 0, 10) || 0;
+    var family = style.fontFamily || 'Arial';
+    var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
+    var h = textDefaultAlign(style);
+    var v = textDefaultValign(style);
+    var pad = style.shape === 'text' ? 0 : 2;
+    var usableW = Math.max(1, box.w - pad * 2);
+    var rows = [];
+    blocks.forEach(function (b) {
+      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
+        rows.push({ text: line, size: b.size, weight: b.weight,
+          lineH: b.size * 1.22, gap: b.gap, align: b.align,
+          underline: !!b.underline });
+      });
+    });
+    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14, gap: 0 });
+    var totalH = rows.reduce(function (sum, r, i) {
+      return sum + r.lineH + (i === 0 ? 0 : r.gap);
+    }, 0);
+    var y = v === 'middle' ? (box.h - totalH) / 2 :
+      v === 'bottom' ? box.h - totalH : 0;
+    y = Math.max(0, y);
+    var decoration = [];
+    if (fst & 4) decoration.push('underline');
+    if (fst & 8) decoration.push('line-through');
+    var textEls = rows.map(function (r, i) {
+      y += (i === 0 ? 0 : r.gap);
+      var ty = y;
+      y += r.lineH;
+      var rowH = alignH(r.align || h);
+      var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
+      var x = rowH === 'right' ? box.w - pad : rowH === 'center' ? box.w / 2 : pad;
+      var rowDec = decoration.slice();
+      if (r.underline && rowDec.indexOf('underline') < 0) rowDec.push('underline');
+      return '<text x="' + fmt(x) + '" y="' + fmt(ty) +
+        '" font-family="' + escXml(family) + ', Arial, sans-serif"' +
+        ' font-size="' + fmt(r.size) + '" font-weight="' + r.weight + '"' +
+        ((fst & 2) ? ' font-style="italic"' : '') +
+        (rowDec.length ? ' text-decoration="' + rowDec.join(' ') + '"' : '') +
+        ' fill="' + color + '" text-anchor="' + anchor +
+        '" dominant-baseline="text-before-edge" xml:space="preserve">' +
+        escXml(r.text) + '</text>';
+    }).join('');
+
+    if (style.horizontal === '0') {
+      var cx = box.w / 2, cy = box.h / 2;
+      textEls = '<g transform="rotate(-90 ' + fmt(cx) + ' ' + fmt(cy) + ')">' +
+        '<text x="' + fmt(cx) + '" y="' + fmt(cy) +
+        '" font-family="' + escXml(family) + ', Arial, sans-serif"' +
+        ' font-size="' + fmt(Math.max(1, number(style.fontSize, 12))) +
+        '" font-weight="' + (((fst & 1) ? 700 : 400)) + '"' +
+        ((fst & 2) ? ' font-style="italic"' : '') +
+        ' fill="' + color +
+        '" text-anchor="middle" dominant-baseline="central" xml:space="preserve">' +
+        escXml(String(label || stripHtml(raw))) + '</text></g>';
+    }
+
+    var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
+      '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
+      '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + textEls +
+      '</g></svg>';
+    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+  }
+
+  function labelTextNode(graph, cell, state, style, box, label, notices, mode) {
+    return mode === 'B'
+      ? textSvgNode(graph, cell, style, box, label)
+      : textNode(graph, cell, state, style, box, label, notices);
   }
 
   function p(x, y) {
@@ -900,12 +1109,11 @@
       ' C ' + p(x + w * 0.66, y + h * 0.95) + ' ' + p(x + w * 0.38, y + h * 0.95) + ' ' + p(x + w * 0.25, y + h * 0.75) + ' Z';
   }
 
-  // doubleEllipse: outer ellipse + inner ellipse (concentric, inset by 4px each side)
+  // doubleEllipse: outer ellipse + inner ellipse (concentric, inset by margin each side)
   function doubleEllipsePath(x, y, w, h) {
     var margin = Math.min(w, h) * 0.1 + 2;
-    return ellipsePath(x, y, w, h) +
-      ' M ' + p(x + margin + (w - 2 * margin) / 2 - (w - 2 * margin) / 2, y + margin + (h - 2 * margin) / 2) +
-      ellipsePath(x + margin, y + margin, w - 2 * margin, h - 2 * margin).slice(1);
+    return ellipsePath(x, y, w, h) + ' ' +
+      ellipsePath(x + margin, y + margin, w - 2 * margin, h - 2 * margin);
   }
 
   // actor: head (top circle) + body (trapezoid from shoulders down)
@@ -932,11 +1140,14 @@
   function swimlanePath(style, x, y, w, h) {
     var isHoriz = style.horizontal !== '0';
     var startSize = Math.min(Math.max(0, number(style.startSize, 30)), isHoriz ? h : w);
+    var body = boolish(style.rounded)
+      ? roundedRectPath(x, y, w, h, Math.min(w, h) * number(style.arcSize, 10) / 100)
+      : rectPath(x, y, w, h);
     if (isHoriz) {
-      return rectPath(x, y, w, h) +
+      return body +
         ' M ' + p(x, y + startSize) + ' L ' + p(x + w, y + startSize);
     } else {
-      return rectPath(x, y, w, h) +
+      return body +
         ' M ' + p(x + startSize, y) + ' L ' + p(x + startSize, y + h);
     }
   }
@@ -997,6 +1208,15 @@
     if (shape === 'arrow') return arrowShapePath(x, y, w, h);
     if (shape === 'arrowConnector') return arrowConnectorPath(x, y, w, h);
     if (shape === 'connector') return connectorPath(x, y, w, h);
+    if (shape === 'note') return rectPath(x, y, w, h);
+    if (shape === 'zigzag') {
+      var zz = 'M ' + p(x, y + h);
+      var steps = 16;
+      for (var zi = 1; zi <= steps; zi++) {
+        zz += ' L ' + p(x + w * zi / steps, y + (zi % 2 ? 0 : h));
+      }
+      return zz;
+    }
     if (shape === 'rectangle' || shape === 'label' || !shape) {
       return boolish(style.rounded)
         ? roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12)
@@ -1140,6 +1360,19 @@
         : '';
       return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' + tLine;
     }
+    if (shape === 'mxgraph.basic.button') {
+      // 3D bevel button — mxShapeBasicButton.paintVertexShape (mxBasic.js).
+      // Outer rect + left/top/right/bottom bevel faces (all fillAndStroke, same color).
+      var dx = Math.max(0, Math.min(w, number(style.dx, 0.5)));
+      dx = Math.min(w * 0.5, h * 0.5, dx);
+      var attr = fill + strk;
+      return '<path d="M 0 0 L ' + fmt(w) + ' 0 L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' Z"' + attr + '/>' +
+        '<path d="M 0 ' + fmt(h) + ' L 0 0 L ' + fmt(dx) + ' ' + fmt(dx) + ' L ' + fmt(dx) + ' ' + fmt(h - dx) + ' Z"' + attr + '/>' +
+        '<path d="M 0 0 L ' + fmt(w) + ' 0 L ' + fmt(w - dx) + ' ' + fmt(dx) + ' L ' + fmt(dx) + ' ' + fmt(dx) + ' Z"' + attr + '/>' +
+        '<path d="M ' + fmt(w) + ' 0 L ' + fmt(w) + ' ' + fmt(h) + ' L ' + fmt(w - dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w - dx) + ' ' + fmt(dx) + ' Z"' + attr + '/>' +
+        '<path d="M 0 ' + fmt(h) + ' L ' + fmt(dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w - dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w) + ' ' + fmt(h) + ' Z"' + attr + '/>' +
+        '<path d="M 0 ' + fmt(h) + ' L 0 0 L ' + fmt(dx) + ' ' + fmt(dx) + ' L ' + fmt(dx) + ' ' + fmt(h - dx) + ' Z"' + attr + '/>';
+    }
     if (shape === 'tableRow' || shape === 'partialRectangle') {
       // Fill rect + selective border lines — PartialRectangleShape/TableRowShape, Shapes.js
       // Default: all borders ON (mxUtils.getValue default '1'); explicit '0' turns them off.
@@ -1161,7 +1394,13 @@
     return null;
   }
 
-  function edgePath(points, rounded) {
+  function edgePath(points, rounded, curved) {
+    if (curved && points.length === 4) {
+      return 'M ' + p(points[0].x, points[0].y) + ' C ' +
+        p(points[1].x, points[1].y) + ' ' +
+        p(points[2].x, points[2].y) + ' ' +
+        p(points[3].x, points[3].y);
+    }
     if (!rounded || points.length < 3) {
       var d = 'M ' + p(points[0].x, points[0].y);
       for (var i = 1; i < points.length; i++) d += ' L ' + p(points[i].x, points[i].y);
@@ -1197,6 +1436,18 @@
     return 'M ' + p(to.x, to.y) + ' L ' +
       p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' L ' +
       p(base.x - px * size * 0.45, base.y - py * size * 0.45) + ' Z';
+  }
+
+  function openArrowPath(from, to, size) {
+    var dx = to.x - from.x, dy = to.y - from.y;
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (len <= 0.001) return null;
+    var ux = dx / len, uy = dy / len;
+    var px = -uy, py = ux;
+    var base = { x: to.x - ux * size, y: to.y - uy * size };
+    return 'M ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) +
+      ' L ' + p(to.x, to.y) +
+      ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45);
   }
 
   function alignH(a) {
@@ -2008,12 +2259,40 @@
       ? state.absoluteOffset.x : state.x + state.width / 2;
     var y = state.absoluteOffset && Number.isFinite(state.absoluteOffset.y)
       ? state.absoluteOffset.y : state.y + state.height / 2;
+    if (!(state.absoluteOffset && Number.isFinite(state.absoluteOffset.x)) &&
+        state.absolutePoints && state.absolutePoints.length >= 2) {
+      var mid = polylineMidpoint(state.absolutePoints);
+      x = mid.x;
+      y = mid.y;
+    }
     return {
       x: (x - origin.x) / scale - width / 2,
-      y: (y - origin.y) / scale - height / 2,
+      y: (y - origin.y) / scale - (style.verticalAlign === 'bottom' ? height + 2 : height / 2),
       w: width,
       h: height
     };
+  }
+
+  function polylineMidpoint(points) {
+    var total = 0;
+    for (var i = 1; i < points.length; i++) {
+      var dx = points[i].x - points[i - 1].x;
+      var dy = points[i].y - points[i - 1].y;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+    if (total <= 0) return points[Math.floor(points.length / 2)];
+    var target = total / 2, walked = 0;
+    for (var j = 1; j < points.length; j++) {
+      var sx = points[j].x - points[j - 1].x;
+      var sy = points[j].y - points[j - 1].y;
+      var seg = Math.sqrt(sx * sx + sy * sy);
+      if (walked + seg >= target) {
+        var t = (target - walked) / Math.max(seg, 0.001);
+        return { x: points[j - 1].x + sx * t, y: points[j - 1].y + sy * t };
+      }
+      walked += seg;
+    }
+    return points[points.length - 1];
   }
 
   function degradation(kind, detail, cellId) {
@@ -3029,6 +3308,15 @@
   }
 
   function imageNode(style, box, parsed) {
+    if (style && style.shape === 'icon') {
+      var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
+      box = {
+        x: box.x + pad,
+        y: box.y + pad,
+        w: Math.max(1, box.w - pad * 2),
+        h: Math.max(1, box.h - pad * 2)
+      };
+    }
     return {
       kind: 'image',
       box: box,
@@ -3046,6 +3334,15 @@
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
   function dataUriImageSvgNode(mime, data, box, style) {
+    if (style && style.shape === 'icon') {
+      var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
+      box = {
+        x: box.x + pad,
+        y: box.y + pad,
+        w: Math.max(1, box.w - pad * 2),
+        h: Math.max(1, box.h - pad * 2)
+      };
+    }
     var fit = String(style && style.imageAspect) === '0'
       ? 'none' : 'xMidYMid meet';
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
@@ -3327,7 +3624,7 @@
         graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell);
 
       if (isEdgeCell) {
-        emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);
+        emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved, mode);
         return;
       }
       emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved, mode);
@@ -3417,6 +3714,22 @@
         resolved[style.image]) || style.image;
       var img = parseImage(imgSrc);
       var mime = embeddableImageMime(img);
+      var imageBox = box;
+      if (style.shape === 'icon') {
+        paint.push({
+          kind: 'path',
+          d: roundedRectPath(box.x, box.y, box.w, box.h, Math.min(box.w, box.h) * 0.1),
+          fill: fillOf(style),
+          stroke: strokeOf(style)
+        });
+        var iconPad = Math.max(4, Math.min(box.w, box.h) * 0.16);
+        imageBox = {
+          x: box.x + iconPad,
+          y: box.y + iconPad,
+          w: Math.max(1, box.w - iconPad * 2),
+          h: Math.max(1, box.h - iconPad * 2)
+        };
+      }
       if (img && img.format === 'png') {
         var imgRotDeg = number(style.rotation, 0);
         if (imgRotDeg) {
@@ -3425,23 +3738,23 @@
           var imgTheta = imgRotDeg * Math.PI / 180;
           var imgCosT = Math.abs(Math.cos(imgTheta));
           var imgSinT = Math.abs(Math.sin(imgTheta));
-          var imgExpW = box.w * imgCosT + box.h * imgSinT;
-          var imgExpH = box.w * imgSinT + box.h * imgCosT;
-          var imgOffX = (imgExpW - box.w) / 2;
-          var imgOffY = (imgExpH - box.h) / 2;
+          var imgExpW = imageBox.w * imgCosT + imageBox.h * imgSinT;
+          var imgExpH = imageBox.w * imgSinT + imageBox.h * imgCosT;
+          var imgOffX = (imgExpW - imageBox.w) / 2;
+          var imgOffY = (imgExpH - imageBox.h) / 2;
           var imgRcx = imgExpW / 2;
           var imgRcy = imgExpH / 2;
           var imgFit = String(style.imageAspect) === '0' ? 'none' : 'xMidYMid meet';
           var imgFlipSx = (boolish(style.imageFlipH) || boolish(style.flipH)) ? -1 : 1;
           var imgFlipSy = (boolish(style.imageFlipV) || boolish(style.flipV)) ? -1 : 1;
-          var imgFlipTx = imgFlipSx === -1 ? box.w : 0;
-          var imgFlipTy = imgFlipSy === -1 ? box.h : 0;
+          var imgFlipTx = imgFlipSx === -1 ? imageBox.w : 0;
+          var imgFlipTy = imgFlipSy === -1 ? imageBox.h : 0;
           var imgFlipAttr = (imgFlipSx !== 1 || imgFlipSy !== 1)
             ? ' transform="translate(' + fmt(imgFlipTx) + ' ' + fmt(imgFlipTy) +
               ') scale(' + imgFlipSx + ',' + imgFlipSy + ')"'
             : '';
           var imgEl = '<image x="' + fmt(imgOffX) + '" y="' + fmt(imgOffY) + '"' +
-            ' width="' + fmt(box.w) + '" height="' + fmt(box.h) + '"' +
+            ' width="' + fmt(imageBox.w) + '" height="' + fmt(imageBox.h) + '"' +
             ' preserveAspectRatio="' + imgFit + '"' +
             imgFlipAttr +
             ' xlink:href="data:image/png;base64,' + img.data + '"/>';
@@ -3453,7 +3766,7 @@
             imgRotGroup + '</svg>';
           paint.push({
             kind: 'svg',
-            box: { x: box.x + box.w / 2 - imgExpW / 2, y: box.y + box.h / 2 - imgExpH / 2,
+            box: { x: imageBox.x + imageBox.w / 2 - imgExpW / 2, y: imageBox.y + imageBox.h / 2 - imgExpH / 2,
                    w: imgExpW, h: imgExpH },
             source: base64(imgSvgStr),
             aspect: 'preserve'
@@ -3498,10 +3811,15 @@
                  y: (tb.y - origin.y) / scale - SVG_PAD,
                  w: tb.width / scale + 2 * SVG_PAD,
                  h: tb.height / scale + 2 * SVG_PAD };
+        } else if (style.verticalLabelPosition === 'bottom' || style.shape === 'icon') {
+          lb = { x: box.x, y: box.y + box.h, w: box.w, h: Math.max(16, number(style.fontSize, 12) * 1.5) };
+        } else if (style.verticalLabelPosition === 'top') {
+          var topH = Math.max(16, number(style.fontSize, 12) * 1.5);
+          lb = { x: box.x, y: box.y - topH, w: box.w, h: topH };
         }
         var ilb = labelBoxNode(style, lb);
         if (ilb) paint.push(ilb);
-        paint.push(textNode(graph, cell, state, style, lb, label, notices));
+        paint.push(labelTextNode(graph, cell, state, style, lb, label, notices, mode));
       }
       return;
     }
@@ -3525,7 +3843,7 @@
       if (label !== '') {
         var hlb = labelBoxNode(style, box);
         if (hlb) paint.push(hlb);
-        paint.push(textNode(graph, cell, state, style, box, label, notices));
+        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode));
       }
       return;
     }
@@ -3636,7 +3954,7 @@
               }
               var slb = labelBoxNode(style, lblBoxS);
               if (slb) paint.push(slb);
-              paint.push(textNode(graph, cell, state, style, lblBoxS, label, notices));
+              paint.push(labelTextNode(graph, cell, state, style, lblBoxS, label, notices, mode));
             }
           }
           return;
@@ -3687,9 +4005,13 @@
             } else if (vlposBI === 'bottom') {
               lblBoxBI = { x: lblBoxBI.x, y: box.y + box.h, w: lblBoxBI.w, h: box.h };
             }
+            if (style.shape === 'table') {
+              var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
+              if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
+            }
             var blbBI = labelBoxNode(style, lblBoxBI);
             if (blbBI) paint.push(blbBI);
-            paint.push(textNode(graph, cell, state, style, lblBoxBI, label, notices));
+            paint.push(labelTextNode(graph, cell, state, style, lblBoxBI, label, notices, mode));
           }
         }
         return;
@@ -3749,10 +4071,33 @@
         return;  // label is embedded in the SVG; no separate text node needed
       }
 
+      if (boolish(style.shadow)) {
+        paint.push({
+          kind: 'path',
+          d: shapePath(style, box.x + 4, box.y + 4, box.w, box.h) ||
+             rectPath(box.x + 4, box.y + 4, box.w, box.h),
+          fill: solid('#000000', 0.18),
+          stroke: null
+        });
+      }
+
+      // Sketch fills (hachure/cross-hatch/dots): emit as kind:'svg' with an inline
+      // hatch/dot pattern so the texture is preserved rather than silently collapsed
+      // to solid fill. Applies whenever we reach the headless fallback (svgCellNode
+      // returned null) — mode B always, mode A only when live DOM is unavailable.
+      if (boolish(style.sketch) && isPaintable(style.fillColor)) {
+        var skFs = style.fillStyle || 'hachure';
+        if (skFs === 'hachure' || skFs === 'cross-hatch' || skFs === 'dots') {
+          var skRelD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
+          paint.push({ kind: 'svg', box: { x: box.x, y: box.y, w: box.w, h: box.h },
+            source: base64(sketchFillSvg(style, skRelD, box.w, box.h)), aspect: 'preserve' });
+        } else {
+          paint.push({ kind: 'path', d: d, fill: fillOf(style), stroke: strokeOf(style) });
+        }
       // In mode B, gradient cells must carry direction inline (v1 contract has no direction
       // field in the structural fill object). Emit kind:'svg' with an embedded linearGradient
       // so the C++ engine renders the correct direction via resvg.
-      if (mode === 'B' && isPaintable(style.gradientColor)) {
+      } else if (mode === 'B' && isPaintable(style.gradientColor)) {
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
           hex(style.gradientColor), style.gradientDirection) + '</defs>';
@@ -3781,15 +4126,130 @@
       swimLabelBx = swimIsH
         ? { x: box.x, y: box.y, w: box.w, h: swimSz }
         : { x: box.x, y: box.y, w: swimSz, h: box.h };
+    } else if (style.shape === 'table') {
+      var tableHeader = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
+      if (tableHeader > 0) swimLabelBx = { x: box.x, y: box.y, w: box.w, h: tableHeader };
     }
     if (label !== '') {
       var vlb = labelBoxNode(style, swimLabelBx);
       if (vlb) paint.push(vlb);
-      paint.push(textNode(graph, cell, state, style, swimLabelBx, label, notices));
+      paint.push(labelTextNode(graph, cell, state, style, swimLabelBx, label, notices, mode));
     }
   }
 
-  function emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved) {
+  // Headless path for mxgraph.arrows2.wedgeArrowDashed2 edges.
+  // Transcribed from mxShapeArrowsWedgeArrowDashed2.prototype.paintEdgeShape (mxArrows.js).
+  // Returns a multi-subpath SVG `d` string (stroke-only), or null if degenerate.
+  function wedgeArrowDashed2Path(style, points) {
+    var startWidth = Math.max(0, number(style.startWidth, 20));
+    var stepSize = Math.max(0, number(style.stepSize, 10));
+    var p0 = points[0], pe = points[points.length - 1];
+    var dx = pe.x - p0.x, dy = pe.y - p0.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist === 0 || stepSize === 0) return null;
+    var nx = dx * startWidth / dist, ny = dy * startWidth / dist;
+    var steps = Math.floor(dist / stepSize);
+    if (steps === 0) return null;
+    var pcx = p0.x, pcy = p0.y;
+    var parts = [];
+    for (var i = 0; i <= steps; i++) {
+      var cnx, cny;
+      if (i === steps) {
+        cnx = nx * (steps - i * 0.98) / steps;
+        cny = ny * (steps - i * 0.98) / steps;
+      } else {
+        cnx = nx * (steps - i) / steps;
+        cny = ny * (steps - i) / steps;
+      }
+      parts.push('M ' + p(pcx + cny, pcy - cnx) + ' L ' + p(pcx - cny, pcy + cnx));
+      pcx += dx / steps; pcy += dy / steps;
+    }
+    return parts.join(' ');
+  }
+
+  // Headless path for flexArrow edges (FlexArrowShape extending mxArrowConnector).
+  // Transcribed from mxArrowConnector.prototype.paintEdgeShape + paintMarker (mxArrowConnector.js)
+  // and FlexArrowShape (Shapes.js). Returns a closed SVG `d` string, or null if degenerate.
+  function flexArrowPath(style, points) {
+    var sw = Math.max(1, number(style.strokeWidth, 1));
+    // FlexArrowShape widths (Shapes.js)
+    var edgeWidth = number(style.width, 10) + Math.max(0, sw - 1);
+    var startAW = (edgeWidth + number(style.startWidth, 20)) + sw; // +sw from paintEdgeShape
+    var endAW = (edgeWidth + number(style.endWidth, 20)) + sw;
+    // startSize/endSize: mxArrowConnector.prototype.apply → ARROW_SIZE/5 * 3 = 18
+    var startSz = number(style.startSize, 6) * 3 + sw;
+    var endSz = number(style.endSize, 6) * 3 + sw;
+    var spacing = sw / 2; // arrowSpacing(0) + strokeWidth/2
+    var mrkStart = style.startArrow && style.startArrow !== 'none';
+    var mrkEnd = style.endArrow && style.endArrow !== 'none';
+    var pts = points;
+    var pe = pts[pts.length - 1];
+    var dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist === 0) return null;
+    var nx = dx / dist, ny = dy / dist;
+    var nx1 = nx, ny1 = ny;
+
+    var pathCmds = [], fnCmds = [];
+
+    function paintMarker(ptX, ptY, pnx, pny, size, arrowW, edgeW, sp, isFirst) {
+      var wAR = edgeW / arrowW;
+      var ox = edgeW * pny / 2, oy = -edgeW * pnx / 2;
+      var sX = (sp + size) * pnx, sY = (sp + size) * pny;
+      pathCmds.push((isFirst ? 'M' : 'L') + ' ' + p(ptX - ox + sX, ptY - oy + sY));
+      pathCmds.push('L ' + p(ptX - ox / wAR + sX, ptY - oy / wAR + sY));
+      pathCmds.push('L ' + p(ptX + sp * pnx, ptY + sp * pny));
+      pathCmds.push('L ' + p(ptX + ox / wAR + sX, ptY + oy / wAR + sY));
+      pathCmds.push('L ' + p(ptX + ox + sX, ptY + oy + sY));
+    }
+
+    var orthx = edgeWidth * ny, orthy = -edgeWidth * nx;
+    if (mrkStart) {
+      paintMarker(pts[0].x, pts[0].y, nx, ny, startSz, startAW, edgeWidth, spacing, true);
+    } else {
+      pathCmds.push('M ' + p(pts[0].x - orthx / 2 + spacing * nx, pts[0].y - orthy / 2 + spacing * ny));
+      pathCmds.push('L ' + p(pts[0].x + orthx / 2 + spacing * nx, pts[0].y + orthy / 2 + spacing * ny));
+      fnCmds.push('L ' + p(pts[0].x - orthx / 2 + spacing * nx, pts[0].y - orthy / 2 + spacing * ny));
+    }
+
+    // Waypoints (handles >2-point edges faithfully)
+    for (var i = 0; i < pts.length - 2; i++) {
+      var dx1 = pts[i + 2].x - pts[i + 1].x, dy1 = pts[i + 2].y - pts[i + 1].y;
+      var dist1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+      if (dist1 !== 0) {
+        nx1 = dx1 / dist1; ny1 = dy1 / dist1;
+        var tmp1 = nx * nx1 + ny * ny1;
+        var tmp = Math.max(Math.sqrt((tmp1 + 1) / 2), 0.04);
+        var nx2 = (nx + nx1), ny2 = (ny + ny1);
+        var dist2 = Math.sqrt(nx2 * nx2 + ny2 * ny2);
+        if (dist2 !== 0) {
+          nx2 /= dist2; ny2 /= dist2;
+          var aF = Math.max(tmp, 0.06);
+          var outX = pts[i + 1].x + ny2 * edgeWidth / 2 / aF;
+          var outY = pts[i + 1].y - nx2 * edgeWidth / 2 / aF;
+          var inX = pts[i + 1].x - ny2 * edgeWidth / 2 / aF;
+          var inY = pts[i + 1].y + nx2 * edgeWidth / 2 / aF;
+          pathCmds.push('L ' + p(outX, outY));
+          (function (x, y) { fnCmds.push('L ' + p(x, y)); })(inX, inY);
+          nx = nx1; ny = ny1;
+        }
+      }
+    }
+
+    orthx = edgeWidth * ny1; orthy = -edgeWidth * nx1;
+    if (mrkEnd) {
+      paintMarker(pe.x, pe.y, -nx, -ny, endSz, endAW, edgeWidth, spacing, false);
+    } else {
+      pathCmds.push('L ' + p(pe.x - spacing * nx1 + orthx / 2, pe.y - spacing * ny1 + orthy / 2));
+      pathCmds.push('L ' + p(pe.x - spacing * nx1 - orthx / 2, pe.y - spacing * ny1 - orthy / 2));
+    }
+
+    for (var j = fnCmds.length - 1; j >= 0; j--) pathCmds.push(fnCmds[j]);
+    pathCmds.push('Z');
+    return pathCmds.join(' ');
+  }
+
+  function emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved, mode) {
     // TRUE-WYSIWYG primary: the edge's literal rendered SVG (connector +
     // markers + label exactly as drawn). Falls through only headless.
     var svgNode = svgCellNode(graph, cell, state, origin, scale, notices, resolved);
@@ -3807,7 +4267,7 @@
         var hlBox = edgeLabelBox(state, style, origin, scale, hl);
         var hlb = labelBoxNode(style, hlBox);
         if (hlb) paint.push(hlb);
-        paint.push(textNode(graph, cell, state, style, hlBox, hl, notices));
+        paint.push(labelTextNode(graph, cell, state, style, hlBox, hl, notices, mode));
       }
       return;
     }
@@ -3819,13 +4279,44 @@
     }
     if (points.length < 2) return;
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });
+
+    // JS-registered edge shapes: exact headless transcription from source.
+    if (style.shape === 'mxgraph.arrows2.wedgeArrowDashed2') {
+      var wd2 = wedgeArrowDashed2Path(style, points);
+      if (wd2) {
+        paint.push({ kind: 'path', d: wd2, fill: null, stroke: stroke });
+        var wd2Label = plainLabel(graph, cell);
+        if (wd2Label !== '') {
+          var wd2Box = edgeLabelBox(state, style, origin, scale, wd2Label);
+          var wd2lb = labelBoxNode(style, wd2Box);
+          if (wd2lb) paint.push(wd2lb);
+          paint.push(labelTextNode(graph, cell, state, style, wd2Box, wd2Label, notices, mode));
+        }
+        return;
+      }
+    }
+    if (style.shape === 'flexArrow') {
+      var fap = flexArrowPath(style, points);
+      if (fap) {
+        paint.push({ kind: 'path', d: fap, fill: fillOf(style), stroke: stroke });
+        var faLabel = plainLabel(graph, cell);
+        if (faLabel !== '') {
+          var faBox = edgeLabelBox(state, style, origin, scale, faLabel);
+          var falb = labelBoxNode(style, faBox);
+          if (falb) paint.push(falb);
+          paint.push(labelTextNode(graph, cell, state, style, faBox, faLabel, notices, mode));
+        }
+        return;
+      }
+    }
+
     if (style.shape) {
       notices.push(degradation('ExporterUnsupportedShape',
         'Custom edge shape "' + style.shape + '" exported as straight-line fallback.', cell.id));
     }
     paint.push({
       kind: 'path',
-      d: edgePath(points, boolish(style.rounded)),
+      d: edgePath(points, boolish(style.rounded), boolish(style.curved)),
       fill: null,
       stroke: stroke
     });
@@ -3833,12 +4324,20 @@
     var arrowFill = stroke.paint || solid('#000000', 1);
     var arrowSize = Math.max(7, stroke.width * 5);
     if (style.endArrow && style.endArrow !== 'none') {
-      var end = arrowPath(points[points.length - 2], points[points.length - 1], arrowSize);
-      if (end) paint.push({ kind: 'path', d: end, fill: arrowFill, stroke: null });
+      var end = style.endArrow === 'open'
+        ? openArrowPath(points[points.length - 2], points[points.length - 1], arrowSize)
+        : arrowPath(points[points.length - 2], points[points.length - 1], arrowSize);
+      if (end) paint.push({ kind: 'path', d: end,
+        fill: style.endArrow === 'open' ? null : arrowFill,
+        stroke: style.endArrow === 'open' ? stroke : null });
     }
     if (style.startArrow && style.startArrow !== 'none') {
-      var start = arrowPath(points[1], points[0], arrowSize);
-      if (start) paint.push({ kind: 'path', d: start, fill: arrowFill, stroke: null });
+      var start = style.startArrow === 'open'
+        ? openArrowPath(points[1], points[0], arrowSize)
+        : arrowPath(points[1], points[0], arrowSize);
+      if (start) paint.push({ kind: 'path', d: start,
+        fill: style.startArrow === 'open' ? null : arrowFill,
+        stroke: style.startArrow === 'open' ? stroke : null });
     }
 
     var label = plainLabel(graph, cell);
@@ -3846,7 +4345,7 @@
       var elBox = edgeLabelBox(state, style, origin, scale, label);
       var elb = labelBoxNode(style, elBox);
       if (elb) paint.push(elb);
-      paint.push(textNode(graph, cell, state, style, elBox, label, notices));
+      paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, mode));
     }
   }
 

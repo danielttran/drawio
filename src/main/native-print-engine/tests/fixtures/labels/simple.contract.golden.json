@@ -47,60 +47,26 @@
             }
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 0,
               "y": 0,
               "w": 21166.666667,
               "h": 7937.5
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 3175,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Hello"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4MCIgaGVpZ2h0PSIzMCI+PGRlZnM+PGNsaXBQYXRoIGlkPSJ0eHQyIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iODAiIGhlaWdodD0iMzAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0MikiPjx0ZXh0IHg9IjQwIiB5PSI3LjY4IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+SGVsbG88L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 0,
               "y": 11906.25,
               "w": 21166.666667,
               "h": 7937.5
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 3175,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "center",
-              "v": "middle"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "World"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4MCIgaGVpZ2h0PSIzMCI+PGRlZnM+PGNsaXBQYXRoIGlkPSJ0eHQzIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iODAiIGhlaWdodD0iMzAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0MykiPjx0ZXh0IHg9IjQwIiB5PSI3LjY4IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+V29ybGQ8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "aspect": "preserve"
           }
         ]
       }

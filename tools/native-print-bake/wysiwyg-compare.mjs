@@ -214,7 +214,8 @@ function contractFillColors(contract) {
       if (node.kind === 'svg') {
         try {
           const s = Buffer.from(node.source, 'base64').toString('utf8');
-          const re = /fill="(#[0-9a-fA-F]{6})"/g;
+          // Sketch SVGs express fillColor as stroke on hatch lines; match both.
+          const re = /(?:fill|stroke)="(#[0-9a-fA-F]{6})"/g;
           let m;
           while ((m = re.exec(s)) !== null) colors.add(m[1].toLowerCase());
         } catch { /* skip */ }

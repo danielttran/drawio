@@ -144,13 +144,21 @@ function parseCells(xml) {
         height:   parseFloat(ga.height || 0) || 0,
         relative: ga.relative === '1'
       };
-      // Edge waypoints inside mxGeometry
+      // Parse mxPoint children inside mxGeometry.
+      // offset: pixel offset for relative-geometry vertices — stored separately.
+      // sourcePoint/targetPoint/waypoints: go into points[] for edge path rendering.
       const ptRe = /<mxPoint\s([^>]*?)\/>/gi;
       const points = [];
       let pt;
       while ((pt = ptRe.exec(body)) !== null) {
         const pa = parseAttrs(pt[1]);
-        if (pa.as !== 'points') { // skip sourcePoint/targetPoint
+        if (pa.as === 'offset') {
+          cell.geometry.offset = { x: parseFloat(pa.x || 0) || 0, y: parseFloat(pa.y || 0) || 0 };
+        } else if (pa.as === 'sourcePoint') {
+          cell.geometry.sourcePoint = { x: parseFloat(pa.x || 0) || 0, y: parseFloat(pa.y || 0) || 0 };
+        } else if (pa.as === 'targetPoint') {
+          cell.geometry.targetPoint = { x: parseFloat(pa.x || 0) || 0, y: parseFloat(pa.y || 0) || 0 };
+        } else {
           points.push({ x: parseFloat(pa.x || 0) || 0, y: parseFloat(pa.y || 0) || 0 });
         }
       }
@@ -170,21 +178,148 @@ function parseCells(xml) {
   return cells;
 }
 
-// Compute bounding box of all vertex/edge geometry.
+// Compute the absolute x,y position of a cell by accumulating parent offsets.
+// Cells with parent='0' or parent='1' have absolute geometry; cells inside
+// containers have geometry relative to their parent.
+//
+// Vertices with geometry.relative=true use x,y as fractions (0–1) of parent
+// width/height plus an optional pixel offset (geometry.offset). This is how
+// draw.io positions decorators like UML component notches.
+function absolutePos(cell, cells) {
+  if (!cell.geometry) return { ax: 0, ay: 0 };
+  const g = cell.geometry;
+  const parentId = cell.parent;
+
+  if (g.relative && cell.vertex && parentId && parentId !== '0' && parentId !== '1') {
+    const parent = cells[parentId];
+    if (parent && parent.geometry) {
+      const ox = g.offset ? g.offset.x : 0;
+      const oy = g.offset ? g.offset.y : 0;
+      const relX = (parent.geometry.width  || 0) * (g.x || 0) + ox;
+      const relY = (parent.geometry.height || 0) * (g.y || 0) + oy;
+      const { ax: pax, ay: pay } = absolutePos(parent, cells);
+      return { ax: pax + relX, ay: pay + relY };
+    }
+  }
+
+  let ax = g.x || 0;
+  let ay = g.y || 0;
+  let pid = parentId;
+  while (pid && pid !== '0' && pid !== '1') {
+    const parent = cells[pid];
+    if (!parent || !parent.geometry) break;
+    ax += parent.geometry.x || 0;
+    ay += parent.geometry.y || 0;
+    pid = parent.parent;
+  }
+  return { ax, ay };
+}
+
+function absoluteBox(cell, cells) {
+  if (!cell || !cell.geometry) return null;
+  const { ax, ay } = absolutePos(cell, cells);
+  return {
+    x: ax,
+    y: ay,
+    width: cell.geometry.width || 0,
+    height: cell.geometry.height || 0
+  };
+}
+
+function terminalPoint(edge, cells, terminalId, isSource, toward) {
+  const terminal = terminalId ? cells[terminalId] : null;
+  const box = absoluteBox(terminal, cells);
+  if (!box) return null;
+  const style = edge.style || {};
+  const pxKey = isSource ? 'exitX' : 'entryX';
+  const pyKey = isSource ? 'exitY' : 'entryY';
+  if (style[pxKey] != null || style[pyKey] != null) {
+    const px = parseFloat(style[pxKey] ?? 0.5);
+    const py = parseFloat(style[pyKey] ?? 0.5);
+    const dx = parseFloat(style[isSource ? 'exitDx' : 'entryDx'] || 0) || 0;
+    const dy = parseFloat(style[isSource ? 'exitDy' : 'entryDy'] || 0) || 0;
+    return { x: box.x + box.width * px + dx, y: box.y + box.height * py + dy };
+  }
+
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  if (!toward) return { x: cx, y: cy };
+
+  const dx = toward.x - cx;
+  const dy = toward.y - cy;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return { x: dx >= 0 ? box.x + box.width : box.x, y: cy };
+  }
+  return { x: cx, y: dy >= 0 ? box.y + box.height : box.y };
+}
+
+function edgePoints(cell, cells) {
+  const g = cell.geometry;
+  const { ax, ay } = absolutePos(cell, cells);
+  const waypoints = (g.points || []).map((pt) => ({ x: pt.x + ax, y: pt.y + ay }));
+  const hasLiteralTerminals = !!(g.sourcePoint || g.targetPoint);
+  const sourceBox = absoluteBox(cells[cell.source], cells);
+  const targetBox = absoluteBox(cells[cell.target], cells);
+  const sourceCenter = sourceBox
+    ? { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 }
+    : null;
+  const targetCenter = targetBox
+    ? { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 }
+    : null;
+
+  const out = waypoints.slice();
+  if (!cell.source && g.sourcePoint) out.unshift({ x: g.sourcePoint.x + ax, y: g.sourcePoint.y + ay });
+  if (!cell.target && g.targetPoint) out.push({ x: g.targetPoint.x + ax, y: g.targetPoint.y + ay });
+  const firstToward = out[0] || targetCenter;
+  const lastToward = out[out.length - 1] || sourceCenter;
+  const src = terminalPoint(cell, cells, cell.source, true, firstToward);
+  const tgt = terminalPoint(cell, cells, cell.target, false, lastToward);
+  if (waypoints.length === 0 && !hasLiteralTerminals && src && tgt &&
+      (cell.style?.edgeStyle === 'elbowEdgeStyle' ||
+       cell.style?.edgeStyle === 'orthogonalEdgeStyle') &&
+      cell.style?.noEdgeStyle !== '1') {
+    if (cell.style?.elbow === 'horizontal') {
+      const midX = (src.x + tgt.x) / 2;
+      return [src, { x: midX, y: src.y }, { x: midX, y: tgt.y }, tgt];
+    }
+    const midY = (src.y + tgt.y) / 2;
+    return [src, { x: src.x, y: midY }, { x: tgt.x, y: midY }, tgt];
+  }
+  if (src) out.unshift(src);
+  if (tgt) out.push(tgt);
+
+  if (out.length === 0 && sourceCenter && targetCenter) {
+    const start = terminalPoint(cell, cells, cell.source, true, targetCenter) || sourceCenter;
+    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter) || targetCenter;
+    if ((cell.style?.edgeStyle === 'elbowEdgeStyle' ||
+         cell.style?.edgeStyle === 'orthogonalEdgeStyle') &&
+        cell.style?.noEdgeStyle !== '1') {
+      const midY = (start.y + end.y) / 2;
+      return [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+    }
+    return [start, end];
+  }
+
+  return out;
+}
+
+// Compute bounding box of all vertex/edge geometry using absolute positions.
 function computeBounds(cells) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const cell of Object.values(cells)) {
     if (!cell.geometry) continue;
     const g = cell.geometry;
     if (cell.vertex && g.width > 0 && g.height > 0) {
-      minX = Math.min(minX, g.x);
-      minY = Math.min(minY, g.y);
-      maxX = Math.max(maxX, g.x + g.width);
-      maxY = Math.max(maxY, g.y + g.height);
+      const { ax, ay } = absolutePos(cell, cells);
+      minX = Math.min(minX, ax);
+      minY = Math.min(minY, ay);
+      maxX = Math.max(maxX, ax + g.width);
+      maxY = Math.max(maxY, ay + g.height);
     } else if (cell.edge && g.points) {
+      const { ax, ay } = absolutePos(cell, cells);
       for (const pt of g.points) {
-        minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
-        maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+        minX = Math.min(minX, pt.x + ax); minY = Math.min(minY, pt.y + ay);
+        maxX = Math.max(maxX, pt.x + ax); maxY = Math.max(maxY, pt.y + ay);
       }
     }
   }
@@ -194,17 +329,23 @@ function computeBounds(cells) {
 
 // Build a source cell state compatible with exporter's buildResult().
 // Scale is 1 (model units = view pixel units in headless mode).
-function cellToState(cell) {
+// Uses absolute positions so container children appear at the correct location.
+function cellToState(cell, cells) {
   if (!cell.geometry) return null;
   const g = cell.geometry;
   if (cell.vertex) {
-    return { x: g.x, y: g.y, width: g.width, height: g.height };
+    const { ax, ay } = absolutePos(cell, cells);
+    return { x: ax, y: ay, width: g.width, height: g.height };
   }
-  if (cell.edge && g.points && g.points.length >= 2) {
+  if (cell.edge) {
     // Provide absolute waypoints for the headless fallback path in emitEdge.
+    // Include source/target terminal points when draw.io stores them as cell
+    // references instead of literal mxPoint entries.
+    const points = edgePoints(cell, cells);
+    if (points.length < 2) return null;
     return {
       x: 0, y: 0, width: 0, height: 0,
-      absolutePoints: g.points.map((pt) => ({ x: pt.x, y: pt.y }))
+      absolutePoints: points
     };
   }
   return null;
@@ -256,7 +397,7 @@ export function parseDrawio(xml) {
 export function buildGraph(cells, paper) {
   const states = {};
   for (const cell of Object.values(cells)) {
-    const s = cellToState(cell);
+    const s = cellToState(cell, cells);
     if (s) states[cell.id] = s;
   }
 

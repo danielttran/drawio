@@ -37,32 +37,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 0,
               "y": 0,
               "w": 31750,
               "h": 13229.166667
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 3175,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Gradient A"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNTAiPjxkZWZzPjxjbGlwUGF0aCBpZD0idHh0MiI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI1MCIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCN0eHQyKSI+PHRleHQgeD0iNjAiIHk9IjE3LjY4IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+R3JhZGllbnQgQTwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -76,32 +59,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 37041.666667,
               "y": 0,
               "w": 31750,
               "h": 13229.166667
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 3175,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Gradient B"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNTAiPjxkZWZzPjxjbGlwUGF0aCBpZD0idHh0MyI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI1MCIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCN0eHQzKSI+PHRleHQgeD0iNjAiIHk9IjE3LjY4IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+R3JhZGllbnQgQjwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           },
           {
             "kind": "svg",
@@ -115,32 +81,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "text",
+            "kind": "svg",
             "box": {
               "x": 15875,
               "y": 17197.916667,
               "w": 37041.666667,
               "h": 10583.333333
             },
-            "font": {
-              "family": "Arial",
-              "sizePx": 3175,
-              "weight": 400,
-              "italic": false,
-              "underline": false,
-              "strikethrough": false,
-              "color": "#000000"
-            },
-            "align": {
-              "h": "left",
-              "v": "top"
-            },
-            "content": {
-              "type": "static",
-              "lines": [
-                "Gradient C"
-              ]
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNDAiIGhlaWdodD0iNDAiPjxkZWZzPjxjbGlwUGF0aCBpZD0idHh0NCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjE0MCIgaGVpZ2h0PSI0MCIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCN0eHQ0KSI+PHRleHQgeD0iNzAiIHk9IjEyLjY4IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+R3JhZGllbnQgQzwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
           }
         ]
       }

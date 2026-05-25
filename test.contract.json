@@ -295,7 +295,7 @@
           },
           {
             "kind": "path",
-            "d": "M 87312.5 68791.666667 L 113770.833333 42333.333333",
+            "d": "M 91896.141667 66078.89375 L 93860.672917 68043.425 L 87406.1625 68698.004167 L 88060.741667 62243.49375 L 90025.272917 64208.025 L 109187.191667 45046.10625 L 107222.660417 43081.575 L 113677.170833 42426.995833 L 113022.591667 48881.50625 L 111058.060417 46916.975 Z",
             "fill": null,
             "stroke": {
               "paint": {
@@ -309,26 +309,6 @@
               "miterLimit": 10,
               "dash": null
             }
-          },
-          {
-            "kind": "path",
-            "d": "M 113770.833333 42333.333333 L 113050.6375 44232.247917 L 111871.91875 43053.529167 Z",
-            "fill": {
-              "type": "solid",
-              "color": "#000000",
-              "alpha": 1
-            },
-            "stroke": null
-          },
-          {
-            "kind": "path",
-            "d": "M 87312.5 68791.666667 L 88032.695833 66892.752083 L 89211.414583 68071.470833 Z",
-            "fill": {
-              "type": "solid",
-              "color": "#000000",
-              "alpha": 1
-            },
-            "stroke": null
           },
           {
             "kind": "path",
@@ -1177,25 +1157,15 @@
             "aspect": "preserve"
           },
           {
-            "kind": "path",
-            "d": "M 150812.5 129645.833333 L 177270.833333 129645.833333 L 177270.833333 145520.833333 L 150812.5 145520.833333 Z",
-            "fill": {
-              "type": "solid",
-              "color": "#ffffff",
-              "alpha": 1
+            "kind": "svg",
+            "box": {
+              "x": 150812.5,
+              "y": 129645.833333,
+              "w": 26458.333333,
+              "h": 15875
             },
-            "stroke": {
-              "paint": {
-                "type": "solid",
-                "color": "#000000",
-                "alpha": 1
-              },
-              "width": 264.583333,
-              "cap": "butt",
-              "join": "miter",
-              "miterLimit": 10,
-              "dash": null
-            }
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iNjAiPjxwYXRoIGQ9Ik0gMCAwIEwgMTAwIDAgTCAxMDAgNjAgTCAwIDYwIFoiIGZpbGw9IiNmZmZmZmYiIHN0cm9rZT0iIzAwMDAwMCIgc3Ryb2tlLXdpZHRoPSIxIiBzdHJva2UtbGluZWNhcD0iYnV0dCIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPjxwYXRoIGQ9Ik0gMCA2MCBMIDAgMCBMIDEwIDEwIEwgMTAgNTAgWiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjMDAwMDAwIiBzdHJva2Utd2lkdGg9IjEiIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+PHBhdGggZD0iTSAwIDAgTCAxMDAgMCBMIDkwIDEwIEwgMTAgMTAgWiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjMDAwMDAwIiBzdHJva2Utd2lkdGg9IjEiIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+PHBhdGggZD0iTSAxMDAgMCBMIDEwMCA2MCBMIDkwIDUwIEwgOTAgMTAgWiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjMDAwMDAwIiBzdHJva2Utd2lkdGg9IjEiIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+PHBhdGggZD0iTSAwIDYwIEwgMTAgNTAgTCA5MCA1MCBMIDEwMCA2MCBaIiBmaWxsPSIjZmZmZmZmIiBzdHJva2U9IiMwMDAwMDAiIHN0cm9rZS13aWR0aD0iMSIgc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz48cGF0aCBkPSJNIDAgNjAgTCAwIDAgTCAxMCAxMCBMIDEwIDUwIFoiIGZpbGw9IiNmZmZmZmYiIHN0cm9rZT0iIzAwMDAwMCIgc3Ryb2tlLXdpZHRoPSIxIiBzdHJva2UtbGluZWNhcD0iYnV0dCIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPjwvc3ZnPg==",
+            "aspect": "preserve"
           },
           {
             "kind": "text",
@@ -1242,7 +1212,7 @@
           },
           {
             "kind": "path",
-            "d": "M 21166.666667 119062.5 L 47625 92604.166667",
+            "d": "M 11812.322917 109708.15625 L 30521.010417 128416.84375 M 15791.391667 107807.654167 L 32421.5125 124437.775 M 19770.725 105907.152083 L 34322.014583 120458.441667 M 23749.79375 104006.65 L 36222.516667 116479.372917 M 27729.127083 102106.4125 L 38122.754167 112500.039583 M 31708.195833 100205.910417 L 40023.25625 108520.970833 M 35687.529167 98305.408333 L 41923.758333 104541.6375 M 39666.597917 96404.90625 L 43824.260417 100562.56875 M 43645.93125 94504.66875 L 45724.497917 96583.235417 M 47437.939583 92417.10625 L 47812.060417 92791.227083",
             "fill": null,
             "stroke": {
               "paint": {

@@ -231,7 +231,7 @@ test('D5: bake notices → 422 job refused', async () => {
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
-      <mxCell id="2" vertex="1" value="" style="shape=mxgraph.aws4.user;" parent="1">
+      <mxCell id="2" vertex="1" value="" style="shape=definitelyUnknownShape;" parent="1">
         <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
       </mxCell>
     </root>

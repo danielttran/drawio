@@ -18,6 +18,32 @@ const fixtureDir = resolve(here, '../../src/main/native-print-engine/tests/fixtu
 const simpleDrawio = join(fixtureDir, 'simple.drawio');
 const simpleGolden = join(fixtureDir, 'simple.contract.golden.json');
 
+function svgText(node) {
+  if (!node || node.kind !== 'svg' || typeof node.source !== 'string') return '';
+  try {
+    return Buffer.from(node.source, 'base64').toString('utf8')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  } catch {
+    return '';
+  }
+}
+
+function paintNodeText(node) {
+  if (!node) return '';
+  if (node.kind === 'text') {
+    if (node.content?.type === 'rich') {
+      return node.content.paragraphs
+        .flatMap((p) => p.runs || [])
+        .map((r) => r.text || '')
+        .join(' ');
+    }
+    return (node.content?.lines || []).join(' ');
+  }
+  return svgText(node);
+}
+
 // --- px-to-um converter ---
 
 test('SCALE factor is exactly 25400/96', () => {
@@ -325,12 +351,12 @@ test('C1: bake output matches shapes.contract.golden.json', async () => {
 // These run against the bake output and verify that every labelled cell
 // maps faithfully to paint nodes — no silent drops, no re-derived geometry.
 
-test('C3: every vertex with a non-empty value has a text paint node', async () => {
+test('C3: every vertex with a non-empty value has a label paint node', async () => {
   const xml = await readFile(shapesDrawio, 'utf8');
   const { cells } = parseDrawio(xml);
   const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
-  const textNodes = paint.filter((n) => n.kind === 'text');
+  const labelNodes = paint.filter((n) => n.kind === 'text' || n.kind === 'svg');
 
   // Collect all labelled vertices (non-empty value, skip layers/root)
   const labelledCells = Object.values(cells).filter(
@@ -338,14 +364,11 @@ test('C3: every vertex with a non-empty value has a text paint node', async () =
   );
   assert.ok(labelledCells.length > 0, 'fixture should have labelled cells');
 
-  // Each labelled cell must have at least one text node matching its label
+  // Each labelled cell must have at least one label node matching its label
   for (const cell of labelledCells) {
     const label = cell.value.trim();
-    const found = textNodes.some((n) => {
-      const lines = n.content && n.content.lines;
-      return Array.isArray(lines) && lines.some((l) => l.includes(label));
-    });
-    assert.ok(found, `no text node found for label "${label}" (cell id=${cell.id})`);
+    const found = labelNodes.some((n) => paintNodeText(n).includes(label));
+    assert.ok(found, `no label node found for label "${label}" (cell id=${cell.id})`);
   }
 });
 
@@ -693,16 +716,11 @@ test('C4: multipage.drawio produces zero degradation notices', async () => {
 });
 
 const templateDrawio = join(here, '../../src/main/native-print-engine/tests/fixtures/labels/test.drawio');
-test('C4: test.drawio emits only ExporterUnsupportedShape notices (no silent divergence)', async () => {
-  // Notices are expected for JS-registered shapes (mxgraph.basic.button,
-  // mxgraph.arrows2.wedgeArrowDashed2, flexArrow) that have no stencil XML
-  // and no live DOM to harvest — these are loud per §5. Any other notice kind
-  // is a regression (unexpected silent divergence or new unhandled failure).
+test('C4: test.drawio produces zero degradation notices', async () => {
   const xml = await readFile(templateDrawio, 'utf8');
   const { notices } = await bake(xml);
-  const unexpected = notices.filter((n) => n.kind !== 'ExporterUnsupportedShape');
-  assert.equal(unexpected.length, 0,
-    `C4 failed — unexpected notices: ${unexpected.map((n) => `${n.kind}:${n.cellId || ''}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => `${n.kind}:${n.cellId || ''}:${n.detail && n.detail.detail || ''}`).join('; ')}`);
 });
 
 // C5: vocabulary coverage — connector, gradient, groups all produce non-empty output
@@ -746,7 +764,7 @@ test('C5: multitext.drawio — all text nodes have non-zero-area boxes', async (
   const xml = await readFile(multitextDrawio, 'utf8');
   const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
-  const texts = paint.filter((n) => n.kind === 'text');
+  const texts = paint.filter((n) => n.kind === 'text' || n.kind === 'svg');
   assert.ok(texts.length >= 4, `C5: expected ≥4 text nodes, got ${texts.length}`);
   for (const t of texts) {
     assert.ok(t.box && t.box.w > 0 && t.box.h > 0,
@@ -1080,7 +1098,7 @@ test('C4: master-test-images.drawio produces zero degradation notices', async ()
 });
 
 // GAP 3: labelPosition=right — text node x coordinate must exceed cell right edge
-test('stencil: labelPosition=right places text node beyond cell right edge', async () => {
+test('stencil: labelPosition=right places label node beyond cell right edge', async () => {
   // Cell at x=100, w=120: right edge = 220; with labelPosition=right the text box x should be >= 220
   const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -1090,10 +1108,11 @@ test('stencil: labelPosition=right places text node beyond cell right edge', asy
   </root></mxGraphModel>`;
   const { contract } = await bake(xml);
   const paint = contract.document.pages[0].paint;
-  const textNodes = paint.filter((n) => n.kind === 'text');
-  assert.ok(textNodes.length >= 1, 'expected at least one text node for labelPosition=right cell');
+  const textNodes = paint.filter((n) => (n.kind === 'text' || n.kind === 'svg') &&
+    paintNodeText(n).includes('Right'));
+  assert.ok(textNodes.length >= 1, 'expected at least one label node for labelPosition=right cell');
   // Cell right edge in px = 100 + 120 = 220; text box x should be at or beyond that
   const rightEdgePx = 100 + 120;
   const textBeyondRight = textNodes.some((n) => n.box && n.box.x >= rightEdgePx);
-  assert.ok(textBeyondRight, 'text node x should be >= cell right edge (labelPosition=right)');
+  assert.ok(textBeyondRight, 'label node x should be >= cell right edge (labelPosition=right)');
 });

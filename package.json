@@ -12,6 +12,7 @@
     "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs"
   },
   "devDependencies": {
+    "playwright": "^1.60.0",
     "vite": "^8.0.14"
   }
 }

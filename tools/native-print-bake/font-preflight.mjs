@@ -18,6 +18,20 @@ export function referencedFonts(contract) {
   if (!doc || !Array.isArray(doc.pages)) return families;
   for (const page of doc.pages) {
     for (const node of (page.paint || [])) {
+      if (node.kind === 'svg' && typeof node.source === 'string') {
+        try {
+          const svg = Buffer.from(node.source, 'base64').toString('utf8');
+          const re = /font-family="([^"]+)"/g;
+          let m;
+          while ((m = re.exec(svg)) !== null) {
+            const first = m[1].split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+            if (first) families.add(first);
+          }
+        } catch {
+          // Ignore malformed SVG payloads here; contract validation/rendering
+          // owns that error path.
+        }
+      }
       if (node.kind !== 'text') continue;
       if (node.font && node.font.family) {
         families.add(node.font.family);

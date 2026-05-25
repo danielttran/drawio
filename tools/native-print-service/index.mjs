@@ -194,7 +194,7 @@ export class PrintService {
 
     if (source.kind === 'drawio') {
       // D1: bake the .drawio XML (D5 gate inside bake with unattended:true)
-      const { contract: baked, notices } = _bake(source.content, {
+      const { contract: baked, notices } = await _bake(source.content, {
         unattended: false,  // we apply D5 ourselves below
         pages: pages || undefined
       });
