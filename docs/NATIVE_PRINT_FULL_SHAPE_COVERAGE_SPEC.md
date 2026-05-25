@@ -116,7 +116,7 @@ key = shapes_element_name_attr.toLowerCase() + "." + shape_name.replace(/ /g, "_
 ```
 
 Examples:
-- `stencils/basic.xml` has `<shapes name="mxgraph.basic">` → `"mxgraph.basic.4_point_star"`, `"mxgraph.basic.star"`, etc. (NOT `"mxgraph.basic.4 Point Star"`)
+- `stencils/basic.xml` has `<shapes name="mxgraph.basic">` → `"mxgraph.basic.4_point_star"`, `"mxgraph.basic.6_point_star"`, etc. (NOT `"mxgraph.basic.4 Point Star"`) (Note: `"star"`, `"hexagon"`, `"arrow"` do NOT exist in basic.xml — use `6_point_star`, `moon`, `flash`)
 - `stencils/flowchart.xml` has `<shapes name="mxGraph.flowchart">` → lowercased → `"mxgraph.flowchart.card"`, `"mxgraph.flowchart.start_1"`
 - `stencils/aws2/compute.xml` has `<shapes name="mxgraph.aws2.compute">` → `"mxgraph.aws2.compute.ec2"`
 
@@ -454,7 +454,7 @@ Required test cases:
 |---|---|---|
 | Variable-aspect stencil | `shape=mxgraph.flowchart.start_1` | `kind:'svg'`, no notice |
 | Fixed-aspect stencil (centering) | `shape=mxgraph.aws2.general.generic_office_365` (or any `aspect="fixed"`) | `kind:'svg'`, SVG width=height when cell is square |
-| Stencil with gradient | `shape=mxgraph.basic.star` + `gradientColor=#ff0000` | `kind:'svg'`, SVG defs contains `linearGradient` |
+| Stencil with gradient | `shape=mxgraph.basic.6_point_star` + `gradientColor=#ff0000` | `kind:'svg'`, SVG defs contains `linearGradient` |
 | Stencil with rotation | `shape=mxgraph.flowchart.card` + `rotation=30` | `kind:'svg'`, SVG contains `rotate(30` |
 | Stencil with direction | `shape=mxgraph.flowchart.start_1` + `direction=north` | `kind:'svg'`, SVG contains rotation transform |
 | Inline base64 stencil | `shape=stencil(<base64 of simple shape XML>)` | `kind:'svg'`, no notice |
@@ -594,24 +594,27 @@ All files live in `src/main/native-print-engine/tests/fixtures/labels/`.
 
 New cells to add (on top of existing 22 cells):
 
+**Corrected shape names** (verified against `basic.xml`): `star`, `hexagon`, `arrow` do not exist
+in `mxgraph.basic`. Actual shapes: `6_point_star`, `moon`, `flash`.
+
 | Cell ID | Shape style | Label | Rotation |
 |---|---|---|---|
-| b01 | `shape=mxgraph.basic.star` | `Star` | 0° |
+| b01 | `shape=mxgraph.basic.6_point_star` | `6pt Star` | 0° |
 | b02 | `shape=mxgraph.basic.4_point_star` | `4pt Star` | 20° |
 | b03 | `shape=mxgraph.basic.cross` | `Cross` | 0° |
 | b04 | `shape=mxgraph.basic.x` | `X Shape` | 15° |
-| b05 | `shape=mxgraph.basic.hexagon` | `Hex Stencil` | 0° |
+| b05 | `shape=mxgraph.basic.moon` | `Moon` | 0° |
 | b06 | `shape=mxgraph.basic.pentagon` | `Pentagon` | −15° |
 | b07 | `shape=mxgraph.basic.octagon` | `Octagon` | 0° |
-| b08 | `shape=mxgraph.basic.arrow` | `Arrow` | 30° |
+| b08 | `shape=mxgraph.basic.flash` | `Flash` | 30° |
 | b09 | `shape=hexagon` | `Built-in Hex` | 0° |
 | b10 | `shape=doubleEllipse` | `Dbl Ellipse` | 0° |
 | b11 | `shape=actor` | `Actor` | 10° |
 | b12 | `shape=swimlane` | `Swimlane` | 0° |
-| b13 | `shape=mxgraph.basic.star;flipH=1` | `Star FlipH` | 0° |
-| b14 | `shape=mxgraph.basic.arrow;flipV=1` | `Arrow FlipV` | 0° |
-| b15 | `shape=mxgraph.basic.star;direction=north` | `Star North` | 0° |
-| b16 | `shape=mxgraph.basic.arrow;gradientColor=#ff0000` | `Gradient Arrow` | 0° |
+| b13 | `shape=mxgraph.basic.6_point_star;flipH=1` | `Star FlipH` | 0° |
+| b14 | `shape=mxgraph.basic.cross;flipV=1` | `Cross FlipV` | 0° |
+| b15 | `shape=mxgraph.basic.6_point_star;direction=north` | `Star North` | 0° |
+| b16 | `shape=mxgraph.basic.cross;gradientColor=#ff0000` | `Gradient Cross` | 0° |
 | b17 | `shape=mxgraph.basic.trapezoid` | `Trapezoid` | 15° |
 | b18 | `shape=arrowConnector` | `Arrow Conn` | 0° |
 
