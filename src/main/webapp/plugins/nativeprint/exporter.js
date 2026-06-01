@@ -91,7 +91,7 @@
   // ---------------------------------------------------------------------------
   // stencilToSvg: render a parsed stencil <shape> node to an SVG string.
   // Returns SVG string, or null if unsupported feature encountered (notice pushed).
-  function stencilToSvg(shapeNode, cellW, cellH, style, notices) {
+  function stencilToSvg(shapeNode, cellW, cellH, style, notices, resolved) {
     // Step 1: Read shape metadata
     var w0 = parseFloat(shapeNode.attrs.w) || 100;
     var h0 = parseFloat(shapeNode.attrs.h) || 100;
@@ -433,13 +433,15 @@
             state.fontFamily = a.family || state.fontFamily;
             break;
 
-          // image: emit inline if src is already a data URI; otherwise loud notice.
-          // Uses break (not return) so subsequent siblings (fillstroke etc.) still run.
+          // image: emit inline when the source is already a data URI OR the
+          // browser-free bake resolved its URL to one. Uses break (not return)
+          // so subsequent siblings (fillstroke etc.) still run.
           case 'image': {
             var imgSrc = a.src || '';
-            if (imgSrc.indexOf('data:') === 0) {
+            var embeddedImgSrc = (resolved && resolved[imgSrc]) || imgSrc;
+            if (embeddedImgSrc.indexOf('data:') === 0) {
               var imgPar = a.aspect === 'fixed' ? 'xMidYMid meet' : 'none';
-              elems.push('<image href="' + imgSrc + '"' +
+              elems.push('<image href="' + embeddedImgSrc + '"' +
                 ' x="' + fmt(tx(parseFloat(a.x) || 0)) + '"' +
                 ' y="' + fmt(ty(parseFloat(a.y) || 0)) + '"' +
                 ' width="' + fmt(trx(parseFloat(a.w) || 0)) + '"' +
@@ -447,7 +449,7 @@
                 ' preserveAspectRatio="' + imgPar + '"/>');
             } else {
               if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedStencilFeature',
-                'stencil uses <image> with external URL (cannot embed headlessly)', ''));
+                'stencil uses <image> with unresolved external URL', ''));
             }
             break;
           }
@@ -463,7 +465,7 @@
               break;
             }
             // stencilToSvg() creates fresh state/elems — parent state is never mutated.
-            var isSvg = stencilToSvg(isNode, isW * sw, isH * sh, style, notices);
+            var isSvg = stencilToSvg(isNode, isW * sw, isH * sh, style, notices, resolved);
             if (isSvg) {
               // stencilToSvg() never emits nested <svg>, so this regex is safe.
               var isM = /^<svg[^>]*>([\s\S]*)<\/svg>\s*$/.exec(isSvg);
@@ -3762,6 +3764,44 @@
     }
   }
 
+  // Collect image URLs embedded in stencil command trees. This is deliberately
+  // structural: the headless bake already owns parsed stencil XML, so no browser DOM
+  // is needed. Follow include-shape references too because their artwork is painted
+  // into the parent stencil SVG.
+  function collectStencilImageUrls(shapeNode, urls, seen) {
+    if (!shapeNode || !shapeNode.children) return;
+    seen = seen || [];
+    if (seen.indexOf(shapeNode) >= 0) return;
+    seen.push(shapeNode);
+    for (var i = 0; i < shapeNode.children.length; i++) {
+      var child = shapeNode.children[i];
+      if (!child) continue;
+      if (child.name === 'image' && child.attrs && imageSrcNeedsResolve(child.attrs.src)) {
+        urls[child.attrs.src] = true;
+      } else if (child.name === 'include-shape' && child.attrs && child.attrs.name) {
+        var included = _stencilRegistry && _stencilRegistry.get(child.attrs.name.toLowerCase());
+        if (included) collectStencilImageUrls(included, urls, seen);
+      }
+      collectStencilImageUrls(child, urls, seen);
+    }
+  }
+
+  function inlineStencilNode(shapeName) {
+    if (typeof shapeName !== 'string' || shapeName.indexOf('stencil(') !== 0 ||
+        shapeName.charAt(shapeName.length - 1) !== ')') return null;
+    try {
+      var b64 = shapeName.slice(8, -1);
+      var xmlDecoded = (typeof Buffer !== 'undefined')
+        ? Buffer.from(b64, 'base64').toString('utf8') : decodeUtf8B64(b64);
+      var parsed = parseXml(xmlDecoded);
+      if (parsed && parsed.name === 'shape') return parsed;
+      for (var i = 0; parsed && parsed.children && i < parsed.children.length; i++) {
+        if (parsed.children[i].name === 'shape') return parsed.children[i];
+      }
+      return parsed;
+    } catch (e) { return null; }
+  }
+
   // Resolve EVERY image the diagram references that isn't already embeddable —
   // external http(s) (image cells, inline <img>, CSS url() backgrounds) AND
   // data URIs in formats resvg can't draw (webp/bmp/…) — into an embeddable
@@ -3794,6 +3834,10 @@
       var style = (typeof graph.getCellStyle === 'function' &&
         graph.getCellStyle(cell)) || {};
       if (imageSrcNeedsResolve(style.image)) urls[style.image] = true;
+      var shapeName = style.shape || '';
+      var stencilNode = inlineStencilNode(shapeName) ||
+        (_stencilRegistry && _stencilRegistry.get(shapeName));
+      if (stencilNode) collectStencilImageUrls(stencilNode, urls);
       var state = (view && typeof view.getState === 'function')
         ? view.getState(cell) : null;
       var tnode = state && state.text && state.text.node;
@@ -4227,7 +4271,7 @@
           });
           return;
         }
-        var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices);
+        var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices, resolved);
         if (stencilSvg) {
           var rotDegS = number(style.rotation, 0);
           if (rotDegS) {

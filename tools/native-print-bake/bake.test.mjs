@@ -3,11 +3,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve, join } from 'node:path';
+import { dirname, relative, resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
-import { bake } from './bake.mjs';
+import { bake, localFileFetch } from './bake.mjs';
 import { pxContractToUm, SCALE } from './px-to-um.mjs';
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { ShimDocument, ShimElement, ShimTextNode, ShimXMLSerializer } from './svg-shim/index.mjs';
@@ -511,6 +512,26 @@ test('D5: unattended mode succeeds when no notices', async () => {
   assert.equal(contract.document.units, 'um');
 });
 
+test('localFileFetch: bundled assets resolve but paths outside webapp stay blocked', async () => {
+  const bundled = await localFileFetch('img/clipart/Gear_128x128.png');
+  assert.equal(bundled.ok, true, 'bundled relative webapp asset should remain readable');
+  assert.equal((await localFileFetch('/img/clipart/Gear_128x128.png')).ok, true,
+    'bundled root-relative webapp asset should remain readable');
+
+  const dir = await mkdtemp(join(tmpdir(), 'native-print-local-fetch-'));
+  const outside = join(dir, 'secret.png');
+  await writeFile(outside, Buffer.from('not-for-embedding'));
+  try {
+    const traversal = relative(resolve(here, '../../src/main/webapp'), outside);
+    assert.equal((await localFileFetch(traversal)).ok, false,
+      '../ traversal must not escape the bundled webapp asset root');
+    assert.equal((await localFileFetch('//' + outside.replace(/^\/+/, ''))).ok, false,
+      'protocol-relative path must not become an absolute filesystem read');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('Gap 1B: bake() accepts fetchFn option; injectable fetch resolves external image URLs', async () => {
   // Build a diagram with an external image URL
   const pngDataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -988,13 +1009,32 @@ test('stencil: <image> with data URI src embeds inline (no notice)', async () =>
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil with data-URI image');
 });
 
-test('stencil: <image> with external URL raises ExporterUnsupportedStencilFeature notice', async () => {
+test('stencil: external <image> URL resolves to inline artwork headlessly', async () => {
   const stencilXml = '<shape name="exturltest" w="50" h="50" aspect="variable"><foreground><image x="0" y="0" w="50" h="50" src="https://example.com/img.png"/><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
-  const { notices } = await bake(xml);
+  const fakeFetch = async (url) => ({
+    ok: url === 'https://example.com/img.png',
+    blob: async () => new Blob([Buffer.from('pngbytes')], { type: 'image/png' }),
+  });
+  const { contract, notices } = await bake(xml, { fetchFn: fakeFetch });
   const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
-  assert.ok(stencilNotices.length >= 1, 'expected ExporterUnsupportedStencilFeature for external-URL <image>');
+  assert.equal(stencilNotices.length, 0, 'resolved stencil artwork should not degrade');
+  const svg = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svg, 'expected stencil SVG paint node');
+  assert.match(Buffer.from(svg.source, 'base64').toString('utf8'),
+    /<image href="data:image\/png;base64,cG5nYnl0ZXM="/,
+    'stencil artwork should be embedded as an inline data URI');
+});
+
+test('stencil: unresolved external <image> URL stays loud', async () => {
+  const stencilXml = '<shape name="exturltest" w="50" h="50" aspect="variable"><foreground><image x="0" y="0" w="50" h="50" src="https://example.com/missing.png"/><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
+  const { notices } = await bake(xml, { fetchFn: async () => ({ ok: false }) });
+  const stencilNotices = notices.filter((n) => n.kind === 'ExporterUnsupportedStencilFeature');
+  assert.ok(stencilNotices.length >= 1, 'unresolved stencil artwork must remain loud');
+  assert.match(stencilNotices[0].detail.detail, /unresolved external URL/);
 });
 
 test('stencil: <path rounded="1"> renders as Bezier path (no notice)', async () => {

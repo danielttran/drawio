@@ -660,3 +660,36 @@ RPC failed with `ContractValidationError`. Fixed by:
 1. **`bake.mjs`**: added `keepPx` option to skip px→um conversion.
 2. **`vite.config.mjs`**: `headlessBake()` now passes `keepPx: true` so the broker always
    sends px-unit contracts to the engine. CLI/golden generation still defaults to um.
+
+---
+
+## UPDATE 2026-06-01 round 19 (headless stencil image embedding)
+
+- **Closed an avoidable native-print fidelity gap:** stencil `<image>` commands previously
+  embedded only pre-existing `data:` URIs. Any URL-backed stencil artwork emitted an
+  `ExporterUnsupportedStencilFeature` notice even though the browser-free bake already
+  had a deterministic fetch-and-inline pipeline for ordinary image cells.
+- **Exporter change:** `embedExternalImages()` now structurally walks parsed stencil trees
+  (including `include-shape` references), collects URL-backed stencil image sources, and
+  resolves them with the existing browser-free byte embedding pipeline. `stencilToSvg()`
+  consumes the resolved map and emits the resulting inline data URI. If the artwork cannot
+  be resolved, the exporter remains loud with an unresolved-external-URL notice.
+- **Regression coverage:** bake tests now prove both outcomes: a fetched stencil URL becomes
+  inline SVG artwork with no degradation, while an unreadable stencil URL still produces a
+  blocking `ExporterUnsupportedStencilFeature` notice.
+
+---
+
+## UPDATE 2026-06-01 round 20 (audit: contain browser-free local image reads)
+
+- **Audit finding:** the default Node `localFileFetch()` accepted any non-HTTP string and
+  resolved it against `WEBAPP_DIR` without verifying containment. A `../` traversal or a
+  protocol-relative `//absolute/path.png` source could escape the bundled webapp asset root.
+  The round-19 stencil image discovery inherited that existing resolver behavior and expanded
+  the paths that could reach it.
+- **Fix:** `localFileFetch()` now rejects URL schemes and protocol-relative sources, strips
+  only root-relative URL slashes, and verifies the resolved path remains beneath `WEBAPP_DIR`
+  before reading bytes, including after filesystem symlink resolution. Legitimate bundled
+  relative clipart remains supported.
+- **Regression coverage:** a browser-free bake test verifies a real bundled clipart asset is
+  still readable while traversal and protocol-relative filesystem escape attempts are refused.
