@@ -2392,7 +2392,7 @@
         host.innerHTML = String(s);
         useFallback = true;
         // Only emit the notice when getComputedStyle is unavailable — when the
-        // shim provides it (Path B headless), the detached parse is faithful for
+        // headless SVG shim provides it, the detached parse is faithful for
         // draw.io's HTML label vocabulary (all properties set explicitly via
         // inline styles, semantic tags, and font attributes; no CSS cascade).
         if (typeof root.getComputedStyle !== 'function') {
@@ -3876,12 +3876,13 @@
   }
 
   function buildResult(graph, paper, opts) {
-    // Native print is headless-only. Mode 'B' is the only mode the product
-    // uses: vertices render from stencil geometry (no live-DOM harvest) and the
-    // bake runs with zero browser dependency. The legacy live-canvas vertex
-    // path (mode 'A', which read the browser's rendered SVG) is no longer wired
-    // up by any caller, so 'B' is the default.
-    var mode = (opts && opts.mode) || 'B';
+    // Render strategy: the headless strategy renders from stencil geometry with
+    // zero browser dependency (no svgCellNode for vertices) and is what native
+    // print uses everywhere — pass `opts.headless: true` (or, equivalently, the
+    // legacy `opts.mode: 'B'`). The live-DOM strategy ('A', svgCellNode/
+    // harvestShape) requires a rendered browser DOM and is exercised only by
+    // the exporter's own unit tests; it is the default purely for back-compat.
+    var mode = (opts && opts.mode) || (opts && opts.headless ? 'B' : 'A');
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
@@ -3954,7 +3955,7 @@
     return {
       contract: {
         schema: { major: 1, minor: 0 },
-        meta: { bakePath: mode },
+        meta: { bakePath: 'native-print' },
         document: {
           units: 'px',
           pages: [{
@@ -4700,7 +4701,7 @@
   }
 
   function buildContract(graph) {
-    return buildResult(graph, undefined, { mode: 'B' }).contract;
+    return buildResult(graph).contract;
   }
 
   var api = { buildContract: buildContract, buildResult: buildResult,

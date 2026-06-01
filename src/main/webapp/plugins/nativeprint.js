@@ -146,10 +146,10 @@
     cRow.appendChild(copies);
     root.appendChild(cRow);
 
-    // ── Rendering mode ────────────────────────────────────────────────────────
-    // Headless only: shapes render from their stencil XML geometry directly —
-    // no browser, no live DOM. The compatibility panel below reports any shapes
-    // the headless bake cannot render before the operator commits to print.
+    // ── Diagram compatibility classification ─────────────────────────────────
+    // Native print renders every shape from its stencil XML geometry directly —
+    // no browser, no live DOM. These notice kinds flag shapes the render cannot
+    // reproduce; the compatibility panel below surfaces them before print.
     var PROBE_BLOCKING = ['ExporterUnsupportedShape', 'ExporterUnsupportedStencilFeature',
       'ExporterUnsupportedImage'];
     var NOTICE_HUMAN = {
@@ -170,47 +170,19 @@
         'Fatal rendering error — diagram cannot be printed',
     };
 
-    var modeSection = el('div', { style: 'margin:8px 0' });
-    modeSection.appendChild(el('div', {
-      style: 'font-weight:bold;margin-bottom:4px' }, 'Rendering mode'));
-
-    // Helper: build a mode option row with radio + title + subtitle
-    function modeOptionRow(id, value, title, subtitle) {
-      var row = el('div', {
-        style: 'display:flex;align-items:flex-start;gap:6px;padding:7px 8px;' +
-               'border:1px solid #ddd;border-radius:4px;margin-bottom:4px;cursor:pointer' });
-      var rd = el('input', { type: 'radio', name: 'nativePrintMode',
-        value: value, id: id, style: 'margin-top:3px;flex-shrink:0' });
-      var text = el('div');
-      text.appendChild(el('div', { style: 'font-weight:500' }, title));
-      text.appendChild(el('div', { style: 'font-size:11px;color:#666;margin-top:1px' }, subtitle));
-      row.appendChild(rd);
-      row.appendChild(text);
-      row.addEventListener('click', function () { rd.checked = true; rd.dispatchEvent(new Event('change')); });
-      return { row: row, rd: rd };
-    }
-
-    var bOpt = modeOptionRow('npmB', 'B',
-      'Headless',
-      'Renders every shape from its stencil XML definition — no browser required, ' +
-      'deterministic, and the fastest path to print.');
-    // The native print pipeline is headless-only — there is no live-canvas
-    // (browser) bake. The mode is always 'B'.
-    var rdB = bOpt.rd;
-    rdB.checked = true;
-
-    // Headless compatibility panel — shows per-diagram shape support status
+    // Diagram compatibility panel — reports per-diagram shape support before
+    // the operator commits to print. Native print renders every shape from its
+    // stencil XML geometry (no browser, no live DOM), so this lists any shapes
+    // the render cannot reproduce.
+    var compatSection = el('div', { style: 'margin:8px 0' });
+    compatSection.appendChild(el('div', {
+      style: 'font-weight:bold;margin-bottom:4px' }, 'Diagram compatibility'));
     var compatPanel = el('div', { style:
-      'margin:2px 0 4px 26px;padding:6px 8px;border-radius:3px;font-size:11px;' +
+      'padding:6px 8px;border-radius:3px;font-size:11px;' +
       'background:#f5f5f5;border:1px solid #e0e0e0;color:#555' });
     compatPanel.textContent = 'Checking diagram…';
-    bOpt.row.appendChild(compatPanel);
-
-    modeSection.appendChild(bOpt.row);
-    // Live-canvas option deliberately NOT appended — headless-only UI.
-    root.appendChild(modeSection);
-
-    function selectedMode() { return 'B'; }
+    compatSection.appendChild(compatPanel);
+    root.appendChild(compatSection);
 
     // Count shape-producing vertices in the live graph model (text-only cells excluded).
     function countShapeVerts() {
@@ -242,7 +214,7 @@
       } catch (e) { return '#' + cellId; }
     }
 
-    function runPathBProbe() {
+    function runSupportProbe() {
       var ex = window.NativePrintExporter;
       if (!ex || !ex.buildResult) {
         compatPanel.style.background = '#fce4ec'; compatPanel.style.borderColor = '#ef9a9a';
@@ -251,7 +223,7 @@
         return;
       }
       try {
-        var probeResult = ex.buildResult(ui.editor.graph, paperPx(), { mode: 'B' });
+        var probeResult = ex.buildResult(ui.editor.graph, paperPx(), { headless: true });
         var blocking = (probeResult.notices || []).filter(function (n) {
           return PROBE_BLOCKING.indexOf(n.kind) >= 0;
         });
@@ -264,7 +236,7 @@
         } else {
           compatPanel.style.background = '#fff8e1'; compatPanel.style.borderColor = '#ffe082';
           compatPanel.style.color = '#7a4500';
-          // Show which specific shapes need live canvas
+          // Show which specific shapes the headless render can't reproduce
           var ul = el('ul', { style: 'margin:4px 0 0;padding-left:16px;list-style:disc' });
           blocking.forEach(function (n) {
             var li = el('li', { style: 'margin:2px 0' });
@@ -289,13 +261,6 @@
         compatPanel.textContent = 'Headless check failed: ' + e.message;
       }
     }
-
-    [rdB].forEach(function (rd) {
-      rd.addEventListener('change', function () {
-        rearm();
-        rebake().then(function (ok) { if (ok) doPreview(); });
-      });
-    });
 
     root.appendChild(el('div', { style:
       'margin:8px 0 4px;font-weight:bold' }, 'Preview (exactly what prints)'));
@@ -381,21 +346,19 @@
     function rebake() {
       var ex = window.NativePrintExporter;
       if (!ex || !ex.buildResult) return Promise.resolve(true);
-      var mode = selectedMode();
-      // Both modes pre-fetch external image URLs so cells with http(s):// style.image
-      // are embedded as data URIs before baking. Path A also transcodes WebP/BMP via
-      // canvas; Path B skips the canvas transcode (no canvas headlessly) but still
-      // resolves plain PNG/JPEG/GIF external URLs via fetch.
+      // Pre-fetch external image URLs so cells with http(s):// style.image are
+      // embedded as data URIs before baking; plain PNG/JPEG/GIF external URLs
+      // are resolved via fetch.
       var resolve = ex.embedExternalImages
         ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
         : Promise.resolve({});
       return resolve.then(function (resolvedImages) {
         try {
           var r = ex.buildResult(ui.editor.graph, paperPx(),
-            { resolvedImages: resolvedImages, mode: mode });
+            { resolvedImages: resolvedImages, headless: true });
           contract = r.contract;
           exporterNotices = r.notices || [];
-          if (mode === 'B') runPathBProbe();
+          runSupportProbe();
           return true;
         } catch (e) {
           contract = null;
@@ -580,8 +543,8 @@
     });
 
     ui.showDialog(root, 760, 620, true, false);
-    // Run the Path B probe immediately so the status panel shows before printers load.
-    runPathBProbe();
+    // Run the support probe immediately so the status panel shows before printers load.
+    runSupportProbe();
 
     status.textContent = 'Querying printers…';
     rpc({ action: 'capabilities' }).then(function (m) {
