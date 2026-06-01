@@ -2392,7 +2392,7 @@
         host.innerHTML = String(s);
         useFallback = true;
         // Only emit the notice when getComputedStyle is unavailable — when the
-        // shim provides it (Path B headless), the detached parse is faithful for
+        // headless SVG shim provides it, the detached parse is faithful for
         // draw.io's HTML label vocabulary (all properties set explicitly via
         // inline styles, semantic tags, and font attributes; no CSS cascade).
         if (typeof root.getComputedStyle !== 'function') {
@@ -3876,10 +3876,13 @@
   }
 
   function buildResult(graph, paper, opts) {
-    // 'A' = legacy (uses live browser DOM via svgCellNode); 'B' = unattended
-    // (headless fallback only, no svgCellNode). Default 'A' for backwards compat;
-    // bake.mjs always passes 'B'.
-    var mode = (opts && opts.mode) || 'A';
+    // Render strategy: the headless strategy renders from stencil geometry with
+    // zero browser dependency (no svgCellNode for vertices) and is what native
+    // print uses everywhere — pass `opts.headless: true` (or, equivalently, the
+    // legacy `opts.mode: 'B'`). The live-DOM strategy ('A', svgCellNode/
+    // harvestShape) requires a rendered browser DOM and is exercised only by
+    // the exporter's own unit tests; it is the default purely for back-compat.
+    var mode = (opts && opts.mode) || (opts && opts.headless ? 'B' : 'A');
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
@@ -3952,7 +3955,7 @@
     return {
       contract: {
         schema: { major: 1, minor: 0 },
-        meta: { bakePath: mode },
+        meta: { bakePath: 'native-print' },
         document: {
           units: 'px',
           pages: [{

@@ -29,8 +29,8 @@ import { randomBytes } from 'node:crypto';
 async function headlessBake(xml, opts) {
   // Dev: reload exporter.js + the bake on every request so edits are picked up
   // WITHOUT restarting the dev server. The broker process otherwise
-  // module-caches them, serving stale bakes via the ?headlessBake=1 print path
-  // (the browser being fresh does not refresh this server-side module).
+  // module-caches them, serving stale bakes (the browser being fresh does not
+  // refresh this server-side module).
   const require = createRequire(import.meta.url);
   const currentDir = dirname(fileURLToPath(import.meta.url));
   try {
@@ -287,29 +287,11 @@ async function handleRpc(body) {
     const { msg } = await engine.request({ op: 'GetCapabilities' });
     return msg;
   }
-  if (body.action === 'preview') {
-    return withContractFile(body.contract, async (file) => {
-      const { msg, blob } = await engine.request({
-        op: 'RenderPreview', contractRef: { path: file },
-        mergeData: body.mergeData || {}, dpi: body.dpi || 150 });
-      if (msg.result === 'PreviewResult' && blob) {
-        const token = randomBytes(8).toString('hex');
-        previews.set(token, blob);
-        if (previews.size > 8) previews.delete(previews.keys().next().value);
-        msg.previewUrl = '/native-print/preview?token=' + token;
-      }
-      return msg;
-    });
-  }
-  if (body.action === 'print') {
-    return withContractFile(body.contract, async (file) => {
-      const { msg } = await engine.request({
-        op: 'Print', contractRef: { path: file },
-        mergeData: body.mergeData || {}, printerId: body.printerId,
-        stockId: body.stockId, copies: body.copies || 1 });
-      return msg;
-    });
-  }
+  // Native print is headless-only. The browser never bakes a contract; it
+  // sends raw .drawio XML and the broker bakes it low-level via headlessBake
+  // before forwarding to the engine. The legacy contract-receiving 'preview'
+  // and 'print' actions (the browser/live-DOM bake path) were removed so the
+  // print pipeline has zero browser dependency.
 
   if (body.action === 'bake-and-preview') {
     const { drawioXml, dpi, mergeData } = body;

@@ -134,7 +134,7 @@ export async function bake(drawioXml, options) {
   for (let idx = 0; idx < pagesToBake.length; idx++) {
     const pageData = pagesToBake[idx];
     const result = await bakePage(
-      pageData, { ...(opts.exporterOpts || {}), mode: 'B' }, opts.fetchFn);
+      pageData, { ...(opts.exporterOpts || {}), headless: true }, opts.fetchFn);
     allNotices.push(...result.notices);
     // Take the single page the exporter produced, tag with ordinal id
     const page = result.contract.document.pages[0];
