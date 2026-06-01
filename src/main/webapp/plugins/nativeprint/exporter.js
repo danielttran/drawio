@@ -3876,10 +3876,12 @@
   }
 
   function buildResult(graph, paper, opts) {
-    // 'A' = legacy (uses live browser DOM via svgCellNode); 'B' = unattended
-    // (headless fallback only, no svgCellNode). Default 'A' for backwards compat;
-    // bake.mjs always passes 'B'.
-    var mode = (opts && opts.mode) || 'A';
+    // Native print is headless-only. Mode 'B' is the only mode the product
+    // uses: vertices render from stencil geometry (no live-DOM harvest) and the
+    // bake runs with zero browser dependency. The legacy live-canvas vertex
+    // path (mode 'A', which read the browser's rendered SVG) is no longer wired
+    // up by any caller, so 'B' is the default.
+    var mode = (opts && opts.mode) || 'B';
     var model = graph.getModel();
     var view = graph.view;
     var paint = [];
@@ -4698,7 +4700,7 @@
   }
 
   function buildContract(graph) {
-    return buildResult(graph).contract;
+    return buildResult(graph, undefined, { mode: 'B' }).contract;
   }
 
   var api = { buildContract: buildContract, buildResult: buildResult,

@@ -26,16 +26,12 @@
 
   var RPC = '/native-print/rpc';
 
-  // Phase 3 bake convergence: when enabled, the UI sends the raw diagram XML
-  // to the broker which bakes it headlessly (same path as the unattended
-  // service).  Set window.nativePrintHeadlessBake = true before loading the
-  // plugin, or pass ?headlessBake=1 in the dev URL, to activate.
-  // The live-DOM browser bake (buildResult) stays as fallback until this flag
-  // is set and the corpus is green (Phase 3 acceptance criteria).
-  // Now set to true by default because the headless bake is 100% complete and verified.
-  var HEADLESS_BAKE = true;
+  // Native print is headless-only: the UI sends the raw diagram XML to the
+  // broker, which bakes it headlessly (the same low-level path the unattended
+  // service uses) and forwards a frozen contract to the engine. There is no
+  // browser/live-DOM bake — printing has zero browser dependency.
 
-  // Get the current diagram XML for headless-bake mode.  Returns a bare
+  // Get the current diagram XML for the headless bake.  Returns a bare
   // <mxGraphModel> string which the headless bake accepts (§3.1 parser).
   function getDiagramXml() {
     try {
@@ -150,10 +146,10 @@
     cRow.appendChild(copies);
     root.appendChild(cRow);
 
-    // ── Rendering mode selector ───────────────────────────────────────────────
-    // Two modes: Headless (Path B) uses stencil XML geometry directly — no
-    // browser required.  Live canvas (Path A) harvests shapes from the
-    // active DOM — supports everything but requires a fully-rendered diagram.
+    // ── Rendering mode ────────────────────────────────────────────────────────
+    // Headless only: shapes render from their stencil XML geometry directly —
+    // no browser, no live DOM. The compatibility panel below reports any shapes
+    // the headless bake cannot render before the operator commits to print.
     var PROBE_BLOCKING = ['ExporterUnsupportedShape', 'ExporterUnsupportedStencilFeature',
       'ExporterUnsupportedImage'];
     var NOTICE_HUMAN = {
@@ -198,17 +194,10 @@
       'Headless',
       'Renders every shape from its stencil XML definition — no browser required, ' +
       'deterministic, and the fastest path to print.');
-    // Live canvas (Path A) is intentionally disabled in the UI to avoid confusion:
-    // the native print pipeline is headless-only. The option object is still built
-    // (so selectedMode/probe code references stay valid) but never shown, and the
-    // mode is forced to 'B'.
-    var aOpt = modeOptionRow('npmA', 'A',
-      'Live canvas',
-      'Captures shapes directly from the active drawing canvas.');
+    // The native print pipeline is headless-only — there is no live-canvas
+    // (browser) bake. The mode is always 'B'.
     var rdB = bOpt.rd;
     rdB.checked = true;
-    var rdA = aOpt.rd;
-    rdA.checked = false;
 
     // Headless compatibility panel — shows per-diagram shape support status
     var compatPanel = el('div', { style:
@@ -507,14 +496,11 @@
 
     function doPreview() {
       rearm();
-      if (!contract && !HEADLESS_BAKE) return;   // bake hard-failed; never preview stale output
       status.textContent = 'Rendering preview…';
-      var previewRpc = HEADLESS_BAKE
-        ? rpc({ action: 'bake-and-preview',
-            drawioXml: getDiagramXml(),
-            dpi: selectedDpi() })
-        : rpc({ action: 'preview', contract: contract,
-            dpi: selectedDpi() });
+      // Headless-only: send the raw diagram XML and let the broker bake it.
+      var previewRpc = rpc({ action: 'bake-and-preview',
+        drawioXml: getDiagramXml(),
+        dpi: selectedDpi() });
       previewRpc.then(function (m) {
         if (m.result !== 'PreviewResult') {
           status.textContent = 'Preview error: ' +
@@ -572,17 +558,13 @@
       }
       printBtn.disabled = true;
       status.textContent = 'Sending to printer…';
-      // Phase 3: use headless bake path if enabled; fall back to browser bake.
-      var printRpc = HEADLESS_BAKE
-        ? rpc({ action: 'bake-and-print',
-            drawioXml: getDiagramXml(),
-            printerId: printers[printerSel.selectedIndex].id,
-            stockId: sid,
-            copies: parseInt(copies.value, 10) || 1 })
-        : rpc({ action: 'print', contract: contract,
-            printerId: printers[printerSel.selectedIndex].id,
-            stockId: sid,
-            copies: parseInt(copies.value, 10) || 1 });
+      // Headless-only: send the raw diagram XML; the broker bakes it low-level
+      // and forwards the contract to the engine. Zero browser dependency.
+      var printRpc = rpc({ action: 'bake-and-print',
+        drawioXml: getDiagramXml(),
+        printerId: printers[printerSel.selectedIndex].id,
+        stockId: sid,
+        copies: parseInt(copies.value, 10) || 1 });
       printRpc.then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';
