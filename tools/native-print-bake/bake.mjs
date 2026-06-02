@@ -19,10 +19,10 @@
 //       const { contract } = bake(xmlString, { unattended: true }); // throws on notices
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { pxContractToUm } from './px-to-um.mjs';
@@ -33,17 +33,34 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 
 // The webapp root for resolving relative image URLs (e.g. img/clipart/Gear_128x128.png).
 const WEBAPP_DIR = resolve(__dir, '../../src/main/webapp');
+const WEBAPP_REAL_DIR = realpathSync(WEBAPP_DIR);
 
 // Fetch implementation for relative/root-relative URLs that resolves against
 // WEBAPP_DIR. Used as the default fetchFn so local images print WYSIWYG.
-// Falls back to { ok: false } for http(s) URLs (no outbound network in headless).
-function localFileFetch(url) {
+// Rejects URL schemes, protocol-relative URLs, and filesystem escapes: this
+// default resolver is only for checked-in bundled assets beneath WEBAPP_DIR.
+export function localFileFetch(url) {
   return Promise.resolve().then(function () {
-    if (/^https?:\/\//i.test(url)) return { ok: false };
-    var rel = url.replace(/^\//, '');
+    if (typeof url !== 'string' || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(url)) {
+      return { ok: false };
+    }
+    var rel = url.replace(/^\/+/, '');
     var filePath = resolve(WEBAPP_DIR, rel);
+    var fromWebapp = relative(WEBAPP_DIR, filePath);
+    if (fromWebapp === '..' || fromWebapp.indexOf('..' + sep) === 0 ||
+        isAbsolute(fromWebapp)) {
+      return { ok: false };
+    }
     var bytes;
-    try { bytes = readFileSync(filePath); } catch (_) { return { ok: false }; }
+    try {
+      filePath = realpathSync(filePath);
+      fromWebapp = relative(WEBAPP_REAL_DIR, filePath);
+      if (fromWebapp === '..' || fromWebapp.indexOf('..' + sep) === 0 ||
+          isAbsolute(fromWebapp)) {
+        return { ok: false };
+      }
+      bytes = readFileSync(filePath);
+    } catch (_) { return { ok: false }; }
     var ext = filePath.split('.').pop().toLowerCase();
     var mimeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml' };
     var mime = mimeMap[ext] || 'application/octet-stream';
