@@ -68,7 +68,13 @@ function parseHtmlFrag(html, doc) {
     const closing = full[1] === '/';
     const tagName = (m[2] || '').toLowerCase();
     const attrsStr = m[3] || '';
-    const selfClose = full.endsWith('/>') || tagName === 'br';
+    // HTML void elements never have children and never need a closing tag.
+    // Without this, a void tag (e.g. <hr>, <img>) would be pushed onto the
+    // open-tag stack and swallow all following siblings as its "children"
+    // (e.g. <p>A</p><hr><p>B</p> would lose <p>B</p>).
+    const VOID = { area: 1, base: 1, br: 1, col: 1, embed: 1, hr: 1, img: 1,
+      input: 1, link: 1, meta: 1, param: 1, source: 1, track: 1, wbr: 1 };
+    const selfClose = full.endsWith('/>') || VOID[tagName] === 1;
 
     if (closing) {
       // Pop stack back to matching open tag

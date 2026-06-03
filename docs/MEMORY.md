@@ -693,3 +693,71 @@ RPC failed with `ContractValidationError`. Fixed by:
   relative clipart remains supported.
 - **Regression coverage:** a browser-free bake test verifies a real bundled clipart asset is
   still readable while traversal and protocol-relative filesystem escape attempts are refused.
+
+## UPDATE 2026-06-03 round 21 (audit: headless HTML text fidelity — the big one)
+
+**Audit scope:** "native print must support all possible object types, especially
+text with all configurations (they convert to HTML in the back) and foreign
+objects, at highest fidelity with no warning/alert/error." Audited the `print`
+branch end-to-end.
+
+**Root finding (silent C1 violation in the PRODUCTION path).** Native print is
+headless-only (the broker bakes raw .drawio XML via `bake.mjs` with
+`headless:true` = mode B; the live-DOM harvest path is unit-test-only). The
+headless label renderer `textSvgNode` used the regex `htmlTextBlocks`, which
+`stripHtml()`-flattened every label to ONE font/colour/weight per *block* and
+dropped all inline runs. So drawio's everyday rich-text toolbar output printed
+**silently wrong**:
+- `<b>Bold</b>` → weight 400 (bold lost); `<i>`/`<u>`/`<s>` lost when top-level.
+- `<font color>` / `<span style="color">` → base colour (per-run colour lost).
+- `<font face>` / inline `font-family` → base family lost.
+- inline `font-size` → base size lost.
+- `<sub>`/`<sup>`, `<ul>/<ol>/<li>` markers, `<table>`, highlight
+  (`background-color`), `<mark>`, per-paragraph alignment → all dropped, NO
+  notice. Rotated cells (`rotation≠0`) flattened too via `textSvgStr`.
+
+**Fix — faithful browser-free rich-text renderer** (`exporter.js`):
+- New `renderRichLabel()` + `buildRichModel()` + `layoutBlocks()`: parse the
+  label HTML (via the existing svg-shim DOM, browser-free), build an inline
+  run/line model carrying per-run family/size/weight/italic/underline/
+  line-through/overline/colour(+alpha)/highlight/baseline-shift, then lay it out
+  into plain SVG `<text>`/`<rect>`/`<image>`/`<line>` (+ nested `<g translate>`
+  for table cells). Covers: per-run inline formatting, named CSS colours,
+  sub/sup (0.75 size + baseline shift), ordered/unordered/**nested** lists with
+  correct markers + indent, `<hr>`, plain + bordered `<table>`, links, headings,
+  blockquote, `<mark>`, `<code>/<tt>` monospace, per-paragraph `text-align`,
+  letter-spacing, and the `horizontal=0` vertical-label rotation.
+- `textSvgNode` routes HTML labels through it (falls back to the old
+  `htmlTextBlocks` only when no DOM is available); `rotatedLabelEls` does the
+  same for the 3 rotated-cell builders. `labelTextNode`/`textSvgNode` now thread
+  `notices`+`resolved` so inline `<img>` embeds via the existing pipeline.
+- **svg-shim bug fixed:** void elements (`<hr>`, `<img>`, …) weren't treated as
+  self-closing, so `<p>A</p><hr><p>B</p>` nested `<p>B</p>` inside `<hr>` and
+  dropped it. Added the HTML void-element set to `parseHtmlFrag`.
+
+**Result:** every HTML text configuration bakes faithfully with **zero notices**.
+The renderer emits a loud `RichUnsupported` only for a genuinely unresolvable
+inline `<img>` (missing resource, not a text config).
+
+**Verification (all browser-free):**
+- exporter `node --test` 174 pass (1 skip = engine binary), bake `node --test`
+  **117** pass (incl. 23 new per-config "text fidelity" assertions + 2 new
+  golden/notice tests for the new fixture).
+- New fixture `master-test-rich-text.drawio` (+golden): sub/sup, lists, nested
+  lists, `<hr>`, tables (plain+bordered), links, highlight, mixed sizes,
+  alignment, headings, deep combos, blockquote, mono, `<mark>` — bakes with 0
+  notices; `wysiwyg-compare --all` now 19/19.
+- Regenerated 2 affected goldens (`master-test-html-labels`, `test`) — diffs are
+  the per-run fidelity upgrade only; production-audit still zero notices
+  (8910 stencils + 86 shapes).
+- C++ `ctest` **172/172** (built with the resvg cdylib): added a `[richtext]`
+  rasterization conformance case proving the exact new SVG shape (per-run runs,
+  highlight rects, sub/sup shifts, bullets, `<hr>` line, nested table groups,
+  rotated label) renders to >0 opaque pixels through real resvg — no silent
+  blank. Build: `-DSVG_RASTERIZER_LIB=<libsvg_rasterizer.so>` after
+  `cargo build --release` in `host/svg-rasterizer/`.
+
+**Note:** the live-DOM `richContent` path still emits `RichUnsupported` for
+img/table/sub/sup, but it is mode-A (unit-test-only) and superseded by
+`transcribeForeignObjects` (client-rect based) there — not reachable in the
+headless production print.

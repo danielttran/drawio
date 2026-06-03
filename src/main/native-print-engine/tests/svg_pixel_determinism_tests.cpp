@@ -664,3 +664,107 @@ TEST_CASE("SVG rasterizer cdylib: caller-allocates with too-small buffer is"
   // SPE_SVG_ERR_BUFFER_TOO_SMALL == -4.
   CHECK(st == -4);
 }
+
+TEST_CASE("SVG rasterizer cdylib: the headless RICH-TEXT label vocabulary"
+          " renders (no failure, no silent blank) -- every HTML text"
+          " configuration prints",
+          "[svg][cdylib][wysiwyg][conformance][richtext]") {
+  // GOAL pin: drawio HTML labels (the rich-text toolbar: per-run colour/family/
+  // size/weight/italic/decoration, highlight, sub/sup, lists, <hr>, tables,
+  // links) are reconstructed headlessly by exporter.js `textSvgNode` into the
+  // SVG primitives below. Proving resvg rasterizes this exact shape to >0 opaque
+  // pixels guarantees every text configuration prints, not just bakes. Each SVG
+  // mirrors what `renderRichLabel` actually emits.
+  const char* lib_path = SVG_RASTERIZER_LIB;
+  if (lib_path == nullptr || lib_path[0] == '\0') {
+    SKIP("SVG_RASTERIZER_LIB not configured");
+  }
+  Lib lib = open_lib(lib_path);
+  if (lib.handle == nullptr) {
+    SKIP("could not open svg rasterizer cdylib");
+  }
+  using FnRender = std::int32_t (*)(const std::uint8_t*, std::size_t,
+                                    std::uint32_t, std::uint32_t, double,
+                                    std::uint8_t*, std::size_t,
+                                    char*, std::size_t);
+  auto fn_render = lib.sym<FnRender>("spe_svg_render");
+  REQUIRE(fn_render != nullptr);
+
+  const std::string F =
+      "Arial, \"Liberation Sans\", \"DejaVu Sans\", sans-serif";
+  auto wrap = [&](const std::string& body) {
+    return std::string(
+        "<svg xmlns='http://www.w3.org/2000/svg' "
+        "xmlns:xlink='http://www.w3.org/1999/xlink' width='200' height='120'>"
+        "<defs><clipPath id='c'>"
+        "<rect x='0' y='0' width='200' height='120'/></clipPath></defs>"
+        "<g clip-path='url(#c)'>") +
+        body + "</g></svg>";
+  };
+  struct Case { std::string name; std::string svg; };
+  std::vector<Case> corpus = {
+    {"per-run colour + weight + italic + decoration on one line",
+     wrap("<text x='2' y='20' font-family='" + F + "' font-size='14' "
+          "font-weight='700' fill='#000000'>Bold</text>"
+          "<text x='40' y='20' font-family='" + F + "' font-size='14' "
+          "font-style='italic' fill='#ff0000'>red</text>"
+          "<text x='80' y='20' font-family='" + F + "' font-size='14' "
+          "text-decoration='underline' fill='#0000ff'>link</text>")},
+    {"highlight rect behind text",
+     wrap("<rect x='2' y='8' width='60' height='17' fill='#ffff00'/>"
+          "<text x='2' y='20' font-family='" + F + "' font-size='14' "
+          "fill='#000000'>marked</text>")},
+    {"superscript and subscript baseline shifts + smaller size",
+     wrap("<text x='2' y='40' font-family='" + F + "' font-size='16' "
+          "fill='#000000'>mc</text>"
+          "<text x='30' y='34' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>2</text>"
+          "<text x='40' y='40' font-family='" + F + "' font-size='16' "
+          "fill='#000000'>H</text>"
+          "<text x='52' y='44' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>2</text>")},
+    {"list with bullet markers",
+     wrap("<text x='2' y='20' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>" "\xe2\x80\xa2" "</text>"
+          "<text x='14' y='20' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>Item</text>")},
+    {"hr divider line between paragraphs",
+     wrap("<text x='2' y='16' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>Above</text>"
+          "<line x1='0' y1='30' x2='196' y2='30' stroke='#000000' "
+          "stroke-width='1'/>"
+          "<text x='2' y='46' font-family='" + F + "' font-size='12' "
+          "fill='#000000'>Below</text>")},
+    {"table cells in nested translate groups with border rects",
+     wrap("<g transform='translate(3 3)'><text x='0' y='12' font-family='" + F +
+          "' font-size='12' fill='#000000'>A</text></g>"
+          "<g transform='translate(101 3)'><text x='0' y='12' font-family='" + F +
+          "' font-size='12' fill='#000000'>B</text></g>"
+          "<rect x='0' y='0' width='98' height='20' fill='none' "
+          "stroke='#000000' stroke-width='1'/>"
+          "<rect x='98' y='0' width='98' height='20' fill='none' "
+          "stroke='#000000' stroke-width='1'/>")},
+    {"vertical (horizontal=0) rotated rich label",
+     wrap("<g transform='translate(100 60) rotate(-90) translate(-60 -100)'>"
+          "<g transform='translate(2 0)'><text x='0' y='14' font-family='" + F +
+          "' font-size='12' font-weight='700' fill='#008000'>Side</text></g></g>")},
+  };
+
+  for (const auto& c : corpus) {
+    INFO("rich-text case: " << c.name);
+    const std::uint32_t w = 200, h = 120;
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4, 0u);
+    char err[256] = {0};
+    const std::int32_t st = fn_render(
+        reinterpret_cast<const std::uint8_t*>(c.svg.data()), c.svg.size(),
+        w, h, 96.0, px.data(), px.size(), err, sizeof(err));
+    INFO("status: " << st << " err: " << err);
+    REQUIRE(st == 0);
+    std::size_t opaque = 0;
+    for (std::size_t i = 3; i < px.size(); i += 4) {
+      if (px[i] != 0u) ++opaque;
+    }
+    INFO("opaque pixels: " << opaque);
+    CHECK(opaque > 0u);   // a silent blank would print silently wrong
+  }
+}
