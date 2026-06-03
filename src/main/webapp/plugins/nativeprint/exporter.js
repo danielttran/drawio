@@ -192,6 +192,9 @@
           ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
           : [3, 3];
         if (!dp.length) dp = [3, 3];
+        // Match drawio: dash values scale with stroke width (createDashPattern).
+        var dsc = state.strokeWidth || 1;
+        if (dsc > 0 && dsc !== 1) dp = dp.map(function (v) { return Math.round(v * dsc * 100) / 100; });
         s += ' stroke-dasharray="' + dp.map(fmt).join(' ') + '"';
       }
       if (state.alpha < 1) s += ' stroke-opacity="' + fmt(state.alpha) + '"';
@@ -957,7 +960,14 @@
     var out = String(raw).split(/[ ,]+/).map(function (v) {
       return number(v, 0);
     }).filter(function (v) { return v > 0; });
-    return out.length ? out : [3, 3];
+    if (!out.length) out = [3, 3];
+    // drawio mxSvgCanvas2D.createDashPattern multiplies each dash value by the
+    // stroke width (unless fixDash=1), so thick dashed strokes have
+    // proportionally larger dashes/gaps. Match it — previously strokeWidth was
+    // ignored, making thick dashes look near-solid.
+    var sc = boolish(style.fixDash) ? 1 : number(style.strokeWidth, 1);
+    if (sc > 0 && sc !== 1) out = out.map(function (v) { return Math.round(v * sc * 100) / 100; });
+    return out;
   }
 
   function fmt(n) {

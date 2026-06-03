@@ -1227,6 +1227,24 @@ test('shape: rounded rectangle radius matches drawio (arcSize / absoluteArcSize)
   assert.equal(radiusOf((await bake(mk('rounded=1;absoluteArcSize=1;arcSize=20;'), { keepPx: true })).contract), 10, 'absoluteArcSize not honored');
 });
 
+test('shape: dash pattern scales with stroke width (drawio createDashPattern)', async () => {
+  // REGRESSION (WYSIWYG): dash values were emitted unscaled, so a thick dashed
+  // stroke printed near-solid. drawio multiplies each dash value by the stroke
+  // width (unless fixDash=1).
+  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const dashOf = (contract) => {
+    for (const n of contract.document.pages[0].paint) if (n.kind === 'path' && n.stroke) return n.stroke.dash;
+    return null;
+  };
+  assert.deepEqual(dashOf((await bake(mk('rounded=0;dashed=1;strokeWidth=1;'), { keepPx: true })).contract), [3, 3]);
+  assert.deepEqual(dashOf((await bake(mk('rounded=0;dashed=1;strokeWidth=4;'), { keepPx: true })).contract), [12, 12]);
+  assert.deepEqual(dashOf((await bake(mk('rounded=0;dashed=1;strokeWidth=4;dashPattern=8 4;'), { keepPx: true })).contract), [32, 16]);
+  assert.deepEqual(dashOf((await bake(mk('rounded=0;dashed=1;strokeWidth=4;fixDash=1;'), { keepPx: true })).contract), [3, 3]);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

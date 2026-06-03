@@ -210,7 +210,7 @@ test('exporter carries fill gradients opacity dash and remains zoom independent'
   assert.equal(path.d, 'M 10 20 L 70 20 L 70 60 L 10 60 Z');
   assert.equal(path.fill.type, 'linear');
   assert.deepEqual(path.fill.stops[0], { offset: 0, color: '#ff0000', alpha: 0.5 });
-  assert.deepEqual(path.stroke.dash, [5, 2]);
+  assert.deepEqual(path.stroke.dash, [20, 8]); // dashPattern 5 2 * strokeWidth 4 (drawio createDashPattern)
   assert.equal(path.stroke.paint.alpha, 0.25);
 });
 
@@ -1224,7 +1224,7 @@ test('stroke: none / width / dashed / cap / join faithfully captured', () => {
     dashed: '1', dashPattern: '8 3', lineCap: 'round', lineJoin: 'bevel'
   }).contract.document.pages[0].paint[0].stroke;
   assert.equal(s.width, 5);
-  assert.deepEqual(s.dash, [8, 3]);
+  assert.deepEqual(s.dash, [40, 15]); // dashPattern 8 3 * strokeWidth 5 (drawio createDashPattern)
   assert.equal(s.cap, 'round');
   assert.equal(s.join, 'bevel');
   const rounded = oneVertex({ shape: 'rectangle', strokeColor: '#000000', rounded: '1' })
