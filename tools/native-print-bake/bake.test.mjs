@@ -1111,6 +1111,41 @@ test('edge: arrowhead types render faithfully or are loudly noticed (no silent t
   }
 });
 
+test('label: non-HTML labels render literal angle brackets (drawio isHtmlLabel parity)', async () => {
+  // REGRESSION (WYSIWYG): the rich-vs-plain choice keyed on the presence of '<'
+  // instead of drawio's Graph.isHtmlLabel (style html==1 || whiteSpace==wrap).
+  // So a NON-HTML label like "List<String>" was HTML-parsed and "<String>" was
+  // SILENTLY dropped (rendered "List"); drawio shows it verbatim. HTML labels
+  // (html=1 or wrap) legitimately interpret the tag (drawio does too).
+  const mk = (val, style) => `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="${val}" style="${style}" parent="1"><mxGeometry x="10" y="10" width="360" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const shownText = (contract) => {
+    let out = '';
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      for (const m of s.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)) out += m[1];
+    }
+    return out.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  };
+  // Non-HTML: literal angle brackets survive.
+  for (const style of ['text;html=0;', 'rounded=0;', 'rounded=0;html=0;']) {
+    const { contract } = await bake(mk('List&lt;String&gt;', style), { keepPx: true });
+    assert.match(shownText(contract), /List<String>/, `non-HTML label lost literal markup (style=${style})`);
+  }
+  // Non-HTML ampersand renders literally too.
+  assert.match(shownText((await bake(mk('Tom &amp; Jerry', 'rounded=0;'), { keepPx: true })).contract),
+    /Tom & Jerry/, 'non-HTML ampersand not literal');
+  // HTML label (html=1 or whiteSpace=wrap) interprets the tag — same as drawio.
+  for (const style of ['rounded=0;html=1;', 'rounded=0;whiteSpace=wrap;']) {
+    const shown = shownText((await bake(mk('List&lt;String&gt;', style), { keepPx: true })).contract);
+    assert.doesNotMatch(shown, /List<String>/, `HTML label should interpret the tag (style=${style})`);
+    assert.match(shown, /List/, `HTML label kept surrounding text (style=${style})`);
+  }
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

@@ -1085,7 +1085,8 @@
   function rotatedLabelEls(graph, cell, style, ox, oy, w, h, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
     var src = raw != null ? raw : label;
-    if (String(src == null ? '' : src).indexOf('<') >= 0) {
+    // Non-HTML labels are literal text: a '<' must not trigger rich HTML parsing.
+    if (isHtmlLabelStyle(style) && String(src == null ? '' : src).indexOf('<') >= 0) {
       var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
       if (!rich || rich.body === '') return '';
       var v = textDefaultValign(style);
@@ -1114,6 +1115,14 @@
     return decodeHtmlEntities(String(s == null ? '' : s).replace(/<[^>]+>/g, ''));
   }
 
+  // drawio Graph.isHtmlLabel: a label is HTML iff style html==1 OR
+  // whiteSpace==wrap. Otherwise it is PLAIN text and any '<' is a literal
+  // character (e.g. a UML label "List<String>" shows the angle brackets).
+  function isHtmlLabelStyle(style) {
+    return number(style && style.html, 0) === 1 ||
+      (style && style.whiteSpace === 'wrap');
+  }
+
   function textDefaultAlign(style) {
     return alignH(style.align || (style.shape === 'text' ? 'left' : 'center'));
   }
@@ -1122,9 +1131,11 @@
     return alignV(style.verticalAlign || (style.shape === 'text' ? 'top' : 'middle'));
   }
 
-  function htmlTextBlocks(raw, style) {
+  function htmlTextBlocks(raw, style, plain) {
     var s = String(raw == null ? '' : raw);
-    if (s.indexOf('<') < 0) {
+    // `plain` (non-HTML label): the text is already literal/decoded — split on
+    // newlines only, never interpret tags, so literal '<'/'>' survive verbatim.
+    if (plain || s.indexOf('<') < 0) {
       return String(s).split('\n').map(function (line) {
         return { text: line, size: Math.max(1, number(style.fontSize, 12)),
           weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
@@ -1776,6 +1787,7 @@
   function textSvgNode(graph, cell, style, box, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
     var src = raw != null ? raw : label;
+    var labelIsHtml = isHtmlLabelStyle(style);
     var fst = parseInt(style.fontStyle || 0, 10) || 0;
     var family = style.fontFamily || 'Arial';
     var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
@@ -1797,7 +1809,7 @@
     var vertical = String(style.horizontal) === '0';
     var lw = vertical ? box.h : box.w;
     var lh = vertical ? box.w : box.h;
-    var rich = String(src == null ? '' : src).indexOf('<') >= 0
+    var rich = (labelIsHtml && String(src == null ? '' : src).indexOf('<') >= 0)
       ? renderRichLabel(src, style, { w: lw, h: lh }, resolved, notices, cell && cell.id)
       : null;
     if (rich) {
@@ -1826,7 +1838,9 @@
       return { kind: 'svg', box: box, source: base64(richSvg), aspect: 'preserve' };
     }
 
-    var blocks = htmlTextBlocks(src, style);
+    // Non-HTML labels are literal text: render verbatim (no tag stripping), so
+    // e.g. "List<String>" keeps its angle brackets exactly as drawio shows them.
+    var blocks = htmlTextBlocks(src, style, !labelIsHtml);
     var usableW = Math.max(1, box.w - pad * 2);
     var rows = [];
     blocks.forEach(function (b) {
