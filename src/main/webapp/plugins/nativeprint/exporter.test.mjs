@@ -153,8 +153,8 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
   assert.equal(paint[2].align.h, 'center');
 });
 
-test('exporter reports unsupported shapes while preserving a valid fallback path', () => {
-  // Non-mxgraph unknown shape emits ExporterUnsupportedShape + rect fallback
+test('exporter bakes flowchart parallelogram without print-warning notice', () => {
+  // Flowchart parallelogram is a supported headless object type.
   const cells = { weird: { id: 'weird', vertex: true } };
   const states = { weird: { x: 10, y: 20, width: 100, height: 50 } };
   const styles = { weird: { shape: 'parallelogram', fillColor: '#abcdef', strokeColor: '#fedcba' } };
@@ -162,9 +162,8 @@ test('exporter reports unsupported shapes while preserving a valid fallback path
   const result = exporter.buildResult(graphFixture(cells, states, {}, styles));
   const path = result.contract.document.pages[0].paint[0];
 
-  assert.equal(result.notices.length, 1);
-  assert.equal(result.notices[0].kind, 'ExporterUnsupportedShape');
-  assert.equal(path.d, 'M 0 0 L 50 0 L 50 25 L 0 25 Z');
+  assert.equal(result.notices.length, 0);
+  assert.equal(path.d, 'M 12.5 0 L 50 0 L 37.5 25 L 0 25 Z');
 });
 
 test('mxgraph.custom.thing: rect fallback WITH ExporterUnsupportedShape notice (§5)', () => {
@@ -389,21 +388,28 @@ test('supported shape faithfully baked: note', () => {
   assertSchemaValid(r.contract, 'note');
 });
 
-// ---- Every UNSUPPORTED stencil is loudly flagged (never silent) ----------
-// Note: hexagon, actor, process, umlActor are now implemented (moved to SUPPORTED /
-// builtinShapeSvg). mxgraph.* shapes silently fall back to rect (matching live canvas).
-const UNSUPPORTED = [
+test('html shape is label-only and emits no print-warning notice', () => {
+  const r = oneVertex({ shape: 'html', fillColor: 'none', strokeColor: 'none', html: 1 }, 'HTML object');
+  assert.equal(r.notices.length, 0, 'html shape must not degrade');
+  const paint = r.contract.document.pages[0].paint;
+  assert.equal(paint.length, 1, 'html object contributes its label only');
+  assert.equal(paint[0].kind, 'text');
+  assert.match(JSON.stringify(paint[0].content), /HTML object/);
+  assertSchemaValid(r.contract, 'html shape');
+});
+
+// ---- Standard flowchart/general shapes are browser-free and warning-free ----
+const SUPPORTED_HEADLESS_SHAPES = [
   'step', 'parallelogram', 'callout', 'tape', 'card', 'cube'
 ];
-for (const shape of UNSUPPORTED) {
-  test(`unsupported stencil loudly degraded, not silent: ${shape}`, () => {
+for (const shape of SUPPORTED_HEADLESS_SHAPES) {
+  test(`headless standard shape bakes without print-warning notice: ${shape}`, () => {
     const r = oneVertex({ shape, fillColor: '#abcdef', strokeColor: '#fedcba' });
-    const notice = r.notices.find((n) => n.kind === 'ExporterUnsupportedShape');
-    assert.ok(notice, `${shape} MUST emit ExporterUnsupportedShape`);
-    assert.ok(String(notice.detail.detail).includes(shape), 'notice names shape');
+    assert.equal(r.notices.length, 0, `${shape} must not emit print warnings`);
     const path = r.contract.document.pages[0].paint[0];
-    assert.match(path.d, /^M 0 0 L \d+ 0 L \d+ \d+ L 0 \d+ Z$/,
-      'fallback is a valid bounding-box rect');
+    assert.equal(path.kind, 'path');
+    assert.ok(path.d && path.d !== 'M 0 0 L 50 0 L 50 25 L 0 25 Z',
+      'shape uses its own geometry, not a generic bounding box');
     assertSchemaValid(r.contract, shape);
   });
 }
@@ -1051,15 +1057,15 @@ test('one unplaceable sub-element does not discard the whole shape', () => {
   assertSchemaValid(r.contract, 'partial harvest');
 });
 
-test('harvest absent (headless) -> builtinShapeSvg covers known shapes, notice for unknown', () => {
+test('harvest absent (headless) -> builtinShapeSvg and standard shapes are warning-free', () => {
   // umlActor is now implemented in builtinShapeSvg → no notice, kind:'svg'
   const r = oneVertex({ shape: 'umlActor', fillColor: '#abcdef', strokeColor: '#fedcba' });
   assert.equal(r.notices.length, 0, 'umlActor is covered by builtinShapeSvg — no notice');
   assert.equal(r.contract.document.pages[0].paint[0].kind, 'svg', 'umlActor emits kind:svg');
-  // An actually-unsupported shape still gets a notice
+  // Standard palette shapes have browser-free geometry too.
   const r2 = oneVertex({ shape: 'step', fillColor: '#abcdef', strokeColor: '#fedcba' });
-  assert.ok(r2.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
-    'step (no headless impl) still emits ExporterUnsupportedShape');
+  assert.equal(r2.notices.length, 0, 'step emits no print-warning notice');
+  assert.equal(r2.contract.document.pages[0].paint[0].kind, 'path');
 });
 
 // ---- Fill variants -------------------------------------------------------
@@ -1571,7 +1577,7 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
     labels[id] = label || '';
   };
   for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Lbl');
-  for (const shape of UNSUPPORTED) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
+  for (const shape of SUPPORTED_HEADLESS_SHAPES) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
   add({ strokeColor: '#000000', endArrow: 'block', rounded: '1' }, true, 'edge');
   add({ strokeColor: '#0a0b0c', dashed: '1', dashPattern: '4 4' }, true, '');
   add({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#00ff00', fillOpacity: 60,
@@ -1583,13 +1589,13 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
   const r = exporter.buildResult(graphFixture(cells, states, labels, styles));
   // Invariant 1: schema-valid (engine will accept every node — no silent reject).
   assertSchemaValid(r.contract, 'complex');
-  // Invariant 2: exactly one notice per unsupported stencil — none silent.
+  // Invariant 2: standard headless object types are now covered without print-warning notices.
   const degraded = r.notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
-  assert.equal(degraded.length, UNSUPPORTED.length,
-    'every unsupported stencil must be loudly flagged');
+  assert.equal(degraded.length, 0,
+    'standard headless shapes must not emit unsupported-shape print warnings');
   // Invariant 3: nothing vanished — every cell contributed >=1 paint node.
   assert.ok(r.contract.document.pages[0].paint.length >=
-    SUPPORTED_SHAPES.length + UNSUPPORTED.length,
+    SUPPORTED_SHAPES.length + SUPPORTED_HEADLESS_SHAPES.length,
     'no cell silently dropped');
 });
 
@@ -1623,7 +1629,7 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
     labels[id] = label || '';
   };
   for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Body Text');
-  for (const shape of UNSUPPORTED) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'Stencil');
+  for (const shape of SUPPORTED_HEADLESS_SHAPES) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'Stencil');
   add({ shape: 'text', whiteSpace: 'wrap', fillColor: 'none', strokeColor: 'none' }, false, 'Plain text element');
   add({ shape: 'rectangle', strokeColor: '#000000' }, false, '<p>Para one</p><p>Para two</p><div>Para three</div>');
   add({ strokeColor: '#000000', endArrow: 'block' }, true, 'Edge label');

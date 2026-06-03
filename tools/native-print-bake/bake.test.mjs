@@ -13,6 +13,7 @@ import { pxContractToUm, SCALE } from './px-to-um.mjs';
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
 import { ShimDocument, ShimElement, ShimTextNode, ShimXMLSerializer } from './svg-shim/index.mjs';
 import { referencedFonts, checkFontAvailability, assertFontsAvailable } from './font-preflight.mjs';
+import { loadStencils } from './stencil-loader.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(here, '../../src/main/native-print-engine/tests/fixtures/labels');
@@ -281,8 +282,8 @@ test('C1: bake output matches simple.contract.golden.json', async () => {
     'bake output diverged from golden — update golden if bake logic changed intentionally');
 });
 
-test('bake: ExporterUnsupportedShape notice for unknown non-mxgraph shape', async () => {
-  // Non-mxgraph shapes with no built-in or stencil implementation emit a loud notice
+test('bake: flowchart parallelogram emits no print-warning notice', async () => {
+  // Parallelogram is a supported browser-free object type.
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -292,10 +293,65 @@ test('bake: ExporterUnsupportedShape notice for unknown non-mxgraph shape', asyn
     </root>
   </mxGraphModel>`;
   const { contract, notices } = await bake(xml);
-  assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
-    'expected ExporterUnsupportedShape notice for unknown shape');
-  // Even with unsupported shape, bake produces a paint node (bounding box fallback)
+  assert.equal(notices.length, 0);
   assert.ok(contract.document.pages[0].paint.length >= 1);
+});
+
+test('bake: html object type emits no print-warning notice', async () => {
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="&lt;b&gt;HTML&lt;/b&gt; object" style="shape=html;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;" parent="1">
+        <mxGeometry x="10" y="10" width="80" height="60" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const { contract, notices } = await bake(xml);
+  assert.equal(notices.length, 0);
+  const svgNode = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'html object emits printable svg text');
+  const decoded = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  assert.ok(/HTML object/.test(decoded), 'html object keeps its label text');
+});
+
+function graphXmlForShapes(shapes, label) {
+  let cells = '<mxCell id="0"/><mxCell id="1" parent="0"/>';
+  shapes.forEach((shape, i) => {
+    cells += `<mxCell id="c${i}" vertex="1" value="${label || ''}" ` +
+      `style="shape=${shape};fillColor=#ffffff;strokeColor=#000000;" parent="1">` +
+      `<mxGeometry x="${(i % 20) * 60}" y="${Math.floor(i / 20) * 60}" ` +
+      `width="50" height="50" as="geometry"/></mxCell>`;
+  });
+  return `<mxGraphModel pageWidth="1200" pageHeight="3000"><root>${cells}</root></mxGraphModel>`;
+}
+
+test('coverage: every draw.io registered Shapes.js object bakes browser-free with no unsupported-shape warning', async () => {
+  const shapesJs = await readFile(resolve(here, '../../src/main/webapp/js/grapheditor/Shapes.js'), 'utf8');
+  const registered = [...new Set([...shapesJs.matchAll(/mxCellRenderer\.registerShape\('([^']+)'/g)]
+    .map((m) => m[1]))];
+  assert.ok(registered.length >= 80, `expected full Shapes.js catalogue, got ${registered.length}`);
+
+  const { contract, notices } = await bake(graphXmlForShapes(registered, 'T'), { keepPx: true });
+  const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+  assert.equal(unsupported.length, 0,
+    `registered shape(s) still warn: ${unsupported.map((n) => n.detail?.detail).join('; ')}`);
+  assert.ok(contract.document.pages[0].paint.length >= registered.length,
+    'every registered object contributes printable paint or text');
+});
+
+test('coverage: every checked-in draw.io stencil object bakes browser-free with no unsupported-shape warning', async () => {
+  const registry = await loadStencils(resolve(here, '../../src/main/webapp/stencils'));
+  const stencilKeys = [...registry.keys()];
+  assert.ok(stencilKeys.length >= 8000, `expected full stencil catalogue, got ${stencilKeys.length}`);
+
+  for (let start = 0; start < stencilKeys.length; start += 1000) {
+    const chunk = stencilKeys.slice(start, start + 1000);
+    const { notices } = await bake(graphXmlForShapes(chunk, ''), { keepPx: true });
+    const unsupported = notices.filter((n) => n.kind === 'ExporterUnsupportedShape');
+    assert.equal(unsupported.length, 0,
+      `stencil shape(s) ${start}-${start + chunk.length - 1} still warn: ` +
+      unsupported.map((n) => n.detail?.detail).join('; '));
+  }
 });
 
 test('bake: empty diagram produces valid zero-paint contract', async () => {
@@ -481,8 +537,8 @@ test('bake: pages option selects subset of pages', async () => {
   assert.equal(contract.document.pages[0].id, 'page-1'); // ordinal from selected set
 });
 
-test('D5: unattended mode throws on degradation notices', async () => {
-  // Non-mxgraph unknown shape triggers ExporterUnsupportedShape notice → D5 rejects
+test('D5: unattended mode succeeds for supported browser-free flowchart shape', async () => {
+  // Flowchart parallelogram no longer triggers a degradation notice.
   const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
     <root>
       <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -491,10 +547,8 @@ test('D5: unattended mode throws on degradation notices', async () => {
       </mxCell>
     </root>
   </mxGraphModel>`;
-  await assert.rejects(
-    () => bake(xml, { unattended: true }),
-    (err) => err.code === 'BAKE_NOTICES' && Array.isArray(err.notices) && err.notices.length > 0
-  );
+  const { notices } = await bake(xml, { unattended: true });
+  assert.equal(notices.length, 0);
 });
 
 test('D5: unattended mode succeeds when no notices', async () => {
