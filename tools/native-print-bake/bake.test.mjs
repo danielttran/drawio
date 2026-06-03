@@ -1401,6 +1401,21 @@ test('edge: perimeterSpacing creates a gap between shape and connector', async (
   assert.ok(Math.abs((e0.x1 - e20.x1) - 20) < 0.01, `target endpoint should pull in by 20: ${e0.x1}->${e20.x1}`);
 });
 
+test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () => {
+  // REGRESSION: cylinder cap was min(0.18h, 0.28w) (width-dependent, wrong
+  // proportion). drawio getCylinderSize = min(maxHeight=40, h/5).
+  // 200x100 cylinder -> cap = min(40, 20) = 20: top ellipse passes through y=20.
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=cylinder;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="200" height="100" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const cyl = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /C/.test(n.d || ''));
+  assert.ok(cyl, 'cylinder path present');
+  // first move-to is the cap line at y = cap = 20 (box-relative origin 0).
+  assert.match(cyl.d, /^M 0 20 C/, `cylinder cap should be h/5=20: ${cyl.d.slice(0, 24)}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

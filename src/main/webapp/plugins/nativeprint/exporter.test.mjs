@@ -110,7 +110,7 @@ test('exporter bakes common vertex shapes as real paths', () => {
   assert.match(paths[0], /^M 0 10 A 20 10 0 1 0 40 10/);
   assert.equal(paths[1], 'M 70 0 L 90 10 L 70 20 L 50 10 Z');
   assert.match(paths[2], / A 3 3 0 0 1 /); // rounded-rect radius = 15% of min side (drawio default)
-  assert.match(paths[3], /^M 0 45\.4 C /);
+  assert.match(paths[3], /^M 0 46 C /); // cylinder cap = min(40, h/5) (drawio mxCylinder)
   assert.match(paths[4], /^M 60 62\.5 C /);
 });
 

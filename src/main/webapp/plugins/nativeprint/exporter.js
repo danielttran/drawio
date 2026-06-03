@@ -2099,7 +2099,9 @@
   }
 
   function cylinderPath(x, y, w, h) {
-    var e = Math.min(h * 0.18, w * 0.28);
+    // drawio mxCylinder.getCylinderSize: min(maxHeight=40, h/5) — width-
+    // independent. Was min(0.18h, 0.28w), giving the wrong cap proportion.
+    var e = Math.min(40, h / 5);
     var k = 0.5522847498;
     return 'M ' + p(x, y + e) +
       ' C ' + p(x, y + e - e * k) + ' ' + p(x + w, y + e - e * k) + ' ' + p(x + w, y + e) +
