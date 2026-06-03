@@ -1069,6 +1069,48 @@ test('edge: default connector renders its classic arrowhead (no silent drop on d
   assert.ok(!/L ([\d.]+) ([\d.]+) L \1 \2/.test(edge.d), `edge path has a degenerate duplicate point: ${edge.d}`);
 });
 
+test('edge: arrowhead types render faithfully or are loudly noticed (no silent triangle)', async () => {
+  // REGRESSION (C1): the headless re-derivation drew EVERY non-open marker as a
+  // classic triangle with no notice — diamond/oval/circle/box/ER/etc. silently
+  // wrong. Now common markers render with their own geometry, and genuinely
+  // unsupported ones (ER crow's-foot, cross, async, circlePlus) raise a loud
+  // notice instead of a silent substitution.
+  const mk = (end) => `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="60" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="280" y="60" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" style="endArrow=${end};" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const markerOf = (contract) => {
+    // The end-arrow marker is the LAST path node emitted (after the vertex
+    // shapes and the connector line); these edges have no label/start-arrow.
+    const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+    return paths[paths.length - 1];
+  };
+  const segs = (d) => (d.match(/ L /g) || []).length;
+
+  // Faithful, no notice:
+  for (const [type, check] of [
+    ['diamond', (m) => segs(m.d) === 3 && /Z$/.test(m.d) && m.fill],          // rhombus, filled
+    ['oval',    (m) => /A /.test(m.d) && m.fill],                              // filled circle
+    ['circle',  (m) => /A /.test(m.d) && !m.fill && m.stroke],                // hollow circle
+    ['box',     (m) => segs(m.d) === 3 && /Z$/.test(m.d) && m.fill],          // square, filled
+    ['open',    (m) => segs(m.d) === 2 && !/Z$/.test(m.d) && !m.fill],        // open V
+  ]) {
+    const { contract, notices } = await bake(mk(type), { keepPx: true });
+    assert.equal(notices.length, 0, `${type}: unexpected notice ${notices.map((n) => n.kind).join(',')}`);
+    const m = markerOf(contract);
+    assert.ok(m && check(m), `${type}: marker geometry not faithful (d=${m && m.d})`);
+  }
+
+  // Unsupported -> loud notice (never silent):
+  for (const type of ['ERmany', 'cross', 'async', 'circlePlus']) {
+    const { notices } = await bake(mk(type), { keepPx: true });
+    assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+      `${type}: must raise a loud notice rather than silently substitute`);
+  }
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

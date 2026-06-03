@@ -2618,6 +2618,70 @@
       ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45);
   }
 
+  // Faithful headless edge-marker renderer. drawio has ~30 arrowhead types; the
+  // re-derivation path (headless fallback) previously drew EVERY non-open marker
+  // as a classic filled triangle with NO notice — a silent WYSIWYG divergence
+  // (C1) for diamond/oval/box/circle/ER/etc. This renders the common ones
+  // faithfully and emits a LOUD notice for the genuinely-unsupported ones
+  // (drawing the closest approximation so the operator still sees a marker).
+  // Returns a paint node ({kind:'path', d, fill, stroke}) or null.
+  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices) {
+    var dx = to.x - from.x, dy = to.y - from.y;
+    var len = Math.sqrt(dx * dx + dy * dy);
+    if (len <= 0.001) return null;
+    var ux = dx / len, uy = dy / len, px = -uy, py = ux;
+    var base = { x: to.x - ux * size, y: to.y - uy * size };
+    var t = String(type).replace(/Thin$/, '');
+    // Open V (stroked, not filled).
+    if (t === 'open' || t === 'openAsync') {
+      return { kind: 'path', d: openArrowPath(from, to, size), fill: null, stroke: stroke };
+    }
+    // Filled triangle: classic (notched back) and block (flat back). We render
+    // both as a flat-back triangle — visually equivalent at print marker sizes.
+    if (t === 'classic' || t === 'block' || t === '') {
+      return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
+    }
+    // Filled rhombus.
+    if (t === 'diamond') {
+      var dm = { x: to.x - ux * size * 0.5, y: to.y - uy * size * 0.5 };
+      var dd = 'M ' + p(to.x, to.y) +
+        ' L ' + p(dm.x + px * size * 0.5, dm.y + py * size * 0.5) +
+        ' L ' + p(base.x, base.y) +
+        ' L ' + p(dm.x - px * size * 0.5, dm.y - py * size * 0.5) + ' Z';
+      return { kind: 'path', d: dd, fill: arrowFill, stroke: null };
+    }
+    // Circle/ellipse, centered half a marker back from the tip. circle = hollow.
+    if (t === 'oval' || t === 'circle' || t === 'circlePlus') {
+      var c = { x: to.x - ux * size * 0.5, y: to.y - uy * size * 0.5 }, r = size * 0.5;
+      var cd = 'M ' + p(c.x - r, c.y) +
+        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x + r) + ' ' + fmt(c.y) +
+        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x - r) + ' ' + fmt(c.y) + ' Z';
+      var hollow = (t === 'circle' || t === 'circlePlus');
+      var node = { kind: 'path', d: cd, fill: hollow ? null : arrowFill,
+        stroke: hollow ? stroke : null };
+      if (t === 'circlePlus') {
+        // notice: the plus glyph is not rendered, only the circle outline.
+        if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
+          'edge marker "' + type + '" rendered as circle (plus omitted)', cellId));
+      }
+      return node;
+    }
+    // Filled square.
+    if (t === 'box') {
+      var bd = 'M ' + p(to.x + px * size * 0.45, to.y + py * size * 0.45) +
+        ' L ' + p(to.x - px * size * 0.45, to.y - py * size * 0.45) +
+        ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45) +
+        ' L ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' Z';
+      return { kind: 'path', d: bd, fill: arrowFill, stroke: null };
+    }
+    // Genuinely unsupported (async half-arrow, ER crow's-foot family, cross,
+    // dash, halfCircle, …): loud notice + classic-triangle placeholder so the
+    // edge still terminates visibly. NEVER a silent wrong marker.
+    if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
+      'edge marker "' + type + '" approximated as a classic arrowhead', cellId));
+    return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
+  }
+
   function alignH(a) {
     return a === 'center' || a === 'right' ? a : 'left';
   }
@@ -5574,20 +5638,14 @@
     var arrowFill = stroke.paint || solid('#000000', 1);
     var arrowSize = Math.max(7, stroke.width * 5);
     if (style.endArrow && style.endArrow !== 'none') {
-      var end = style.endArrow === 'open'
-        ? openArrowPath(points[points.length - 2], points[points.length - 1], arrowSize)
-        : arrowPath(points[points.length - 2], points[points.length - 1], arrowSize);
-      if (end) paint.push({ kind: 'path', d: end,
-        fill: style.endArrow === 'open' ? null : arrowFill,
-        stroke: style.endArrow === 'open' ? stroke : null });
+      var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
+        points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices);
+      if (endNode) paint.push(endNode);
     }
     if (style.startArrow && style.startArrow !== 'none') {
-      var start = style.startArrow === 'open'
-        ? openArrowPath(points[1], points[0], arrowSize)
-        : arrowPath(points[1], points[0], arrowSize);
-      if (start) paint.push({ kind: 'path', d: start,
-        fill: style.startArrow === 'open' ? null : arrowFill,
-        stroke: style.startArrow === 'open' ? stroke : null });
+      var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
+        arrowSize, stroke, arrowFill, cell.id, notices);
+      if (startNode) paint.push(startNode);
     }
 
     var label = plainLabel(graph, cell);
