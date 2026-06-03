@@ -182,6 +182,54 @@ function opaqueCount(rgba) {
   return n;
 }
 
+// Arity-aware SVG-path bounding box for the per-object blank check. A naive
+// even/odd split of all numbers is WRONG for arcs (`A rx ry rot f f x y`, where
+// rx/ry/flags are NOT coordinates) and curves. We walk commands by arity and
+// include Bézier control points (which bound the curve hull) plus the arc
+// radii, so the box conservatively CONTAINS the rendered ink — it never clips a
+// real shape into a false "blank". Contract paths are absolute, but relative
+// commands are handled for safety.
+function pathBBox(d) {
+  const toks = d.match(/[a-zA-Z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+  let i = 0, cx = 0, cy = 0, sx = 0, sy = 0, cmd = '';
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const ext = (x, y) => {
+    if (x < minX) minX = x; if (y < minY) minY = y;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+  };
+  const num = () => parseFloat(toks[i++]);
+  while (i < toks.length) {
+    if (/[a-zA-Z]/.test(toks[i])) cmd = toks[i++];
+    if (cmd === '' || i > toks.length) break;
+    const rel = cmd >= 'a' && cmd <= 'z';
+    const C = cmd.toUpperCase();
+    const ax = (x) => (rel ? cx + x : x);
+    const ay = (y) => (rel ? cy + y : y);
+    if (C === 'M' || C === 'L' || C === 'T') {
+      const x = ax(num()), y = ay(num()); cx = x; cy = y; ext(x, y);
+      if (C === 'M') { sx = cx; sy = cy; cmd = rel ? 'l' : 'L'; } // extra pairs are lineto
+    } else if (C === 'H') { const x = ax(num()); cx = x; ext(x, cy); }
+    else if (C === 'V') { const y = ay(num()); cy = y; ext(cx, y); }
+    else if (C === 'C') {
+      ext(ax(num()), ay(num())); ext(ax(num()), ay(num()));
+      const x = ax(num()), y = ay(num()); cx = x; cy = y; ext(x, y);
+    } else if (C === 'S' || C === 'Q') {
+      ext(ax(num()), ay(num()));
+      const x = ax(num()), y = ay(num()); cx = x; cy = y; ext(x, y);
+    } else if (C === 'A') {
+      const rx = Math.abs(num()), ry = Math.abs(num()); num(); num(); num();
+      const x = ax(num()), y = ay(num());
+      // conservative: the arc lies within the union of endpoint boxes grown by r
+      ext(cx - rx, cy - ry); ext(cx + rx, cy + ry);
+      ext(x - rx, y - ry); ext(x + rx, y + ry);
+      cx = x; cy = y;
+    } else if (C === 'Z') { cx = sx; cy = sy; }
+    else { i++; } // unknown token: skip defensively
+  }
+  if (!isFinite(minX)) return { x: 0, y: 0, w: 1, h: 1 };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
 // Programmatic entry point. Returns a structured result so the verification
 // gate can be driven from a test (browser-free) as well as the CLI.
 //   { ok, srcHash, lib, dpi, notices, blockingNotices, pages:[{pageOut,w,h,paint,checked,blanks}] }
@@ -240,11 +288,8 @@ export async function renderArtifact({ inputFile, dpi = 300, outPng, lib }) {
         let bx, by, bw, bh;
         if (node.box) { bx = node.box.x; by = node.box.y; bw = node.box.w; bh = node.box.h; }
         else {
-          // path: derive bbox from d
-          const nums = node.d.match(/-?\d+(?:\.\d+)?/g).map(Number);
-          const xs = nums.filter((_, i) => i % 2 === 0), ys = nums.filter((_, i) => i % 2 === 1);
-          bx = Math.min(...xs); by = Math.min(...ys);
-          bw = Math.max(...xs) - bx; bh = Math.max(...ys) - by;
+          const b = pathBBox(node.d); // path: arity-aware bbox from d
+          bx = b.x; by = b.y; bw = b.w; bh = b.h;
         }
         bw = Math.max(1, bw); bh = Math.max(1, bh);
         const mini = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +

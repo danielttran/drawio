@@ -145,7 +145,7 @@
     // — a silent WYSIWYG violation. Only the default-attr branch changes prior
     // behaviour; concrete colors and unresolved-no-default keys are untouched.
     function resolveStencilColor(rawColor, defaultAttr, prev) {
-      if (rawColor == null) return prev;
+      if (rawColor == null || rawColor === '') return prev; // match prior `a.color || prev`
       if (rawColor === 'fill') return style.fillColor;
       if (rawColor === 'stroke') return style.strokeColor;
       if (rawColor === 'font') return style.fontColor || '#000000';
