@@ -54,16 +54,19 @@ function paintToSvg(paint, role, defs) {
     const op = a < 1 ? ` ${role}-opacity="${a}"` : '';
     return `${role}="${esc(paint.color)}"${op}`;
   }
-  if (paint.type === 'gradient') {
-    // Host fallback renders linear L->R / radial box-centered (GradientDirectionApprox).
+  if (paint.type === 'linear' || paint.type === 'radial') {
+    // Contract gradient fill = { type:'linear'|'radial', stops:[{offset,color,alpha}] }.
+    // A path-node gradient is a fallback path; the engine/host has no direction
+    // in the v1 contract and renders linear L->R / radial box-centered (and the
+    // exporter raises a loud GradientDirectionApprox, which the gate treats as a
+    // blocking notice). Match that here so the artifact mirrors the printer.
     const id = `g${gradSeq++}`;
-    const stops = (paint.stops && paint.stops.length)
-      ? paint.stops
-      : [{ offset: 0, color: paint.color, alpha: paint.alpha ?? 1 },
-         { offset: 1, color: paint.gradColor ?? paint.color, alpha: paint.gradAlpha ?? 1 }];
+    const stops = (paint.stops && paint.stops.length) ? paint.stops
+      : [{ offset: 0, color: paint.color || '#000000', alpha: 1 },
+         { offset: 1, color: paint.gradColor || paint.color || '#000000', alpha: 1 }];
     const stopsXml = stops.map((s) =>
-      `<stop offset="${s.offset}" stop-color="${esc(s.color)}" stop-opacity="${s.alpha ?? 1}"/>`).join('');
-    if (paint.radial) {
+      `<stop offset="${s.offset}" stop-color="${esc(s.color)}" stop-opacity="${s.alpha == null ? 1 : s.alpha}"/>`).join('');
+    if (paint.type === 'radial') {
       defs.push(`<radialGradient id="${id}" cx="0.5" cy="0.5" r="0.5">${stopsXml}</radialGradient>`);
     } else {
       defs.push(`<linearGradient id="${id}" x1="0" y1="0" x2="1" y2="0">${stopsXml}</linearGradient>`);
