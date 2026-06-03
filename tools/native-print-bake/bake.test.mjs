@@ -1424,3 +1424,28 @@ test('text fidelity: no text is silently dropped across a complex label', async 
       'word "' + w + '" present in faithful output');
   });
 });
+
+test('text fidelity: nested unordered list cycles bullet style by depth', async () => {
+  const { svg, notices } = await bakeRichLabel(
+    '<ul><li>Top<ul><li>Inner</li></ul></li></ul>', 'align=left;', 320, 200);
+  assert.equal(notices.length, 0);
+  const top = findRun(svg, 'Top'), inner = findRun(svg, 'Inner');
+  assert.ok(inner.x > top.x, 'nested item is indented further than its parent');
+  // CSS default: depth-0 disc, depth-1 circle.
+  assert.ok(richRuns(svg).some((r) => r.text === '•'), 'top level uses disc bullet');
+  assert.ok(richRuns(svg).some((r) => r.text === '◦'), 'nested level uses circle bullet');
+});
+
+test('text fidelity: a tall inline image never overflows above the line top', async () => {
+  // A 1x1 PNG sized to 80px tall — far taller than the 12px text ascent.
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1Pe' +
+    'AAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const { svg, notices } = await bakeRichLabel(
+    `text <img src="${png}" width="80" height="80"> more`, '', 320, 200);
+  assert.equal(notices.length, 0, 'embeddable inline image raises no notice');
+  const m = /<image\b[^>]*\by="(-?[\d.]+)"/.exec(svg);
+  assert.ok(m, 'inline image is emitted');
+  // y is relative to the content group's top; the image must sit at or below it,
+  // never negative (which would overlap the line above).
+  assert.ok(parseFloat(m[1]) >= 0, `image y must be >= 0, got ${m[1]}`);
+});

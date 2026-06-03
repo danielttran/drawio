@@ -1244,8 +1244,10 @@
     var f = parseFloat(s);
     if (s.indexOf('px') >= 0) return Number.isFinite(f) ? f : null;
     if (s.indexOf('pt') >= 0) return Number.isFinite(f) ? f * 96 / 72 : null;
+    // `rem` is relative to the document root font-size (16px default), not the
+    // parent; check it before the substring `em` test (which also matches "rem").
+    if (s.indexOf('rem') >= 0) return Number.isFinite(f) ? f * 16 : null;
     if (s.indexOf('em') >= 0) return Number.isFinite(f) ? f * parentSize : null;
-    if (s.indexOf('rem') >= 0) return Number.isFinite(f) ? f * parentSize : null;
     if (s.indexOf('%') >= 0) return Number.isFinite(f) ? f / 100 * parentSize : null;
     if (s === 'smaller') return parentSize * 0.83;
     if (s === 'larger') return parentSize * 1.2;
@@ -1477,12 +1479,14 @@
         if (li.nodeType !== 1) continue;
         var ltag = String(li.tagName || '').toLowerCase();
         if (ltag === 'ul' || ltag === 'ol') {
-          // stray nested list directly under ul/ol
-          processList(li, st, align, indent, pre, listDepth, ltag === 'ol');
+          // stray nested list directly under ul/ol (malformed): one level deeper.
+          processList(li, st, align, indent + LIST_INDENT_PX, pre, listDepth + 1, ltag === 'ol');
           continue;
         }
         if (ltag !== 'li') continue;
         var lst = applyElStyle(st, li);
+        // Unordered marker cycles disc → circle → square with nesting depth
+        // (CSS default); ordered stays decimal unless the list declares a type.
         var liType = listStyleType(li) || declType ||
           (ordered ? 'decimal' : (listDepth % 3 === 0 ? 'disc' : listDepth % 3 === 1 ? 'circle' : 'square'));
         var idxVal = parseInt(li.getAttribute && li.getAttribute('value'), 10);
@@ -1490,7 +1494,9 @@
         var marker = listMarker(liType, counter);
         if (marker === null) marker = '•';   // unknown system -> faithful bullet substitute
         counter++;
-        var liIndent = indent + LIST_INDENT_PX * (listDepth + 1);
+        // `indent` already accumulates one LIST_INDENT_PX per ancestor list, so
+        // each level adds exactly one more step (do NOT also scale by depth).
+        var liIndent = indent + LIST_INDENT_PX;
         var markerSt = { family: lst.family, size: lst.size, weight: lst.weight,
           italic: false, underline: false, strike: false, overline: false,
           color: lst.color, colorAlpha: lst.colorAlpha, bg: null, bgAlpha: 1,
@@ -1498,7 +1504,9 @@
         cur = emptyPara(align, liIndent, lst.size);
         if (marker !== '') cur.frags.push({ type: 'text', text: marker + ' ', st: markerSt });
         out.push(cur);
-        process(li, lst, align, liIndent, pre, listDepth);
+        // Descend one nesting level so a nested <ul>/<ol> inside this <li>
+        // gets the next bullet style + one more indent step.
+        process(li, lst, align, liIndent, pre, listDepth + 1);
         cur = null;
       }
     }
@@ -1606,18 +1614,26 @@
         if (curRow.length) rows.push(curRow);
       }
       rows.forEach(function (row) {
+        // Row metrics in one pass: maxSize = tallest text run (drives the text
+        // line box + baseline); imgMax = tallest inline image (an image sits on
+        // the baseline, so the line box must also clear its height).
         var maxSize = entry.baseSize || 12;
+        var imgMax = 0;
         var rowW = 0;
         row.forEach(function (tk, i) {
-          var s = tk.img ? tk.st.size : tk.st.size;
-          if ((tk.img ? tk.img.h : tk.st.size) > maxSize && !tk.img) maxSize = Math.max(maxSize, tk.st.size);
-          if (tk.img) maxSize = Math.max(maxSize, tk.st.size);
+          if (tk.img) { if (tk.img.h > imgMax) imgMax = tk.img.h; }
+          else if (tk.st.size > maxSize) maxSize = tk.st.size;
           rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
         });
-        var imgMax = 0;
-        row.forEach(function (tk) { if (tk.img) imgMax = Math.max(imgMax, tk.img.h); });
-        var lineH = Math.max(maxSize, imgMax) * RICH_LINE_FACTOR;
-        var baseline = y + Math.max(maxSize, imgMax) * RICH_ASCENT;
+        // Baseline = distance from the line-box top. An inline image sits ON the
+        // baseline (CSS-default `vertical-align:baseline`) with its whole height
+        // ABOVE it, so the baseline must clear the tallest image — otherwise a
+        // tall image's top (baseline - img.h) goes negative and overlaps the
+        // line above. Text-only rows are unchanged: ascent = size*0.92,
+        // lineH = size*1.2.
+        var ascent = Math.max(maxSize * RICH_ASCENT, imgMax);
+        var lineH = ascent + maxSize * (RICH_LINE_FACTOR - RICH_ASCENT);
+        var baseline = y + ascent;
         var align = alignH(entry.align || defAlign);
         var x0 = indent + (align === 'right' ? (avail - rowW)
           : align === 'center' ? (avail - rowW) / 2 : 0);
@@ -1636,7 +1652,7 @@
             var st = tk.st;
             if (st.bg) {
               bgRects.push('<rect x="' + fmt(x) + '" y="' + fmt(y) +
-                '" width="' + fmt(tw + sp * 0) + '" height="' + fmt(lineH) +
+                '" width="' + fmt(tw) + '" height="' + fmt(lineH) +
                 '" fill="' + st.bg + '"' +
                 (st.bgAlpha < 1 ? ' fill-opacity="' + fmt(st.bgAlpha) + '"' : '') + '/>');
             }
