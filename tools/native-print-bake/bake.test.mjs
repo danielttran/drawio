@@ -311,7 +311,12 @@ test('bake: html object type emits no print-warning notice', async () => {
   const svgNode = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
   assert.ok(svgNode, 'html object emits printable svg text');
   const decoded = Buffer.from(svgNode.source, 'base64').toString('utf8');
-  assert.ok(/HTML object/.test(decoded), 'html object keeps its label text');
+  // The rich renderer keeps every run verbatim (now per-run, so "HTML" and
+  // "object" are separate <text> elements) AND faithfully — the <b> run is bold.
+  assert.ok(/>HTML</.test(decoded), 'html object keeps its bold run text');
+  assert.ok(/>object</.test(decoded), 'html object keeps its plain run text');
+  assert.ok(/font-weight="700"[^>]*>HTML</.test(decoded),
+    'the <b> run prints bold (per-run fidelity)');
 });
 
 function graphXmlForShapes(shapes, label) {
@@ -1177,6 +1182,28 @@ test('C4: master-test-html-labels.drawio produces zero degradation notices', asy
     `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
 });
 
+// ── master-test-rich-text: the FULL HTML rich-text vocabulary (C1 + C4) ─────
+// sub/sup, ordered/unordered/nested lists, <hr>, tables (plain + bordered),
+// links, highlight, mixed sizes, per-paragraph alignment, headings, deeply
+// combined runs, blockquote, monospace/code, <mark>. Pins that every text
+// configuration drawio's editor can emit bakes faithfully with NO notice.
+const richTextDrawio = join(fixtureDir, 'master-test-rich-text.drawio');
+const richTextGolden = join(fixtureDir, 'master-test-rich-text.contract.golden.json');
+
+test('C1: bake output matches master-test-rich-text.contract.golden.json', async () => {
+  const xml    = await readFile(richTextDrawio, 'utf8');
+  const golden = JSON.parse(await readFile(richTextGolden, 'utf8'));
+  const { contract } = await bake(xml);
+  assert.deepEqual(contract, golden, 'rich-text bake output diverged from golden');
+});
+
+test('C4: master-test-rich-text.drawio produces zero degradation notices', async () => {
+  const xml = await readFile(richTextDrawio, 'utf8');
+  const { notices } = await bake(xml);
+  assert.equal(notices.length, 0,
+    `C4 failed: ${notices.map((n) => n.kind).join(', ')}`);
+});
+
 test('C1: bake output matches master-test-images.contract.golden.json', async () => {
   const xml    = await readFile(imagesDrawio, 'utf8');
   const golden = JSON.parse(await readFile(imagesGolden, 'utf8'));
@@ -1209,4 +1236,191 @@ test('stencil: labelPosition=right places label node beyond cell right edge', as
   const rightEdgePx = 100 + 120;
   const textBeyondRight = textNodes.some((n) => n.box && n.box.x >= rightEdgePx);
   assert.ok(textBeyondRight, 'label node x should be >= cell right edge (labelPosition=right)');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native-print TEXT FIDELITY audit: every HTML-label configuration drawio's
+// rich-text editor can emit must bake faithfully (per-run colour/family/size/
+// weight/italic/decoration/highlight, sub/sup, lists, <hr>, tables, links,
+// paragraph alignment) with ZERO degradation notices and NO dropped text.
+// These pin the headless production path (mode B) the broker actually runs.
+// ─────────────────────────────────────────────────────────────────────────────
+const escHtmlAttr = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+async function bakeRichLabel(html, extraStyle = '', w = 240, h = 160) {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>` +
+    `<mxCell id="0"/><mxCell id="1" parent="0"/>` +
+    `<mxCell id="2" vertex="1" value="${escHtmlAttr(html)}" ` +
+    `style="whiteSpace=wrap;html=1;fontSize=12;fontFamily=Arial;${extraStyle}" parent="1">` +
+    `<mxGeometry x="20" y="20" width="${w}" height="${h}" as="geometry"/>` +
+    `</mxCell></root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml);
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const svg = node ? Buffer.from(node.source, 'base64').toString('utf8') : '';
+  return { svg, notices };
+}
+// All <text> elements with their attributes + content, for per-run assertions.
+function richRuns(svg) {
+  const out = [];
+  const re = /<text\b([^>]*)>([\s\S]*?)<\/text>/g;
+  let m;
+  while ((m = re.exec(svg)) !== null) {
+    const attrs = m[1];
+    const get = (k) => { const a = new RegExp(k + '="([^"]*)"').exec(attrs); return a ? a[1] : null; };
+    out.push({
+      text: m[2], x: parseFloat(get('x')), y: parseFloat(get('y')),
+      size: parseFloat(get('font-size')), weight: get('font-weight'),
+      style: get('font-style'), decoration: get('text-decoration'),
+      fill: get('fill'), family: get('font-family')
+    });
+  }
+  return out;
+}
+const findRun = (svg, txt) => richRuns(svg).find((r) => r.text === txt);
+
+test('text fidelity: bold/italic/underline/strike each survive per-run', async () => {
+  const { svg, notices } = await bakeRichLabel('<b>B</b> <i>I</i> <u>U</u> <s>S</s>');
+  assert.equal(notices.length, 0, 'no notices for basic inline formatting');
+  assert.equal(findRun(svg, 'B').weight, '700');
+  assert.equal(findRun(svg, 'I').style, 'italic');
+  assert.match(findRun(svg, 'U').decoration || '', /underline/);
+  assert.match(findRun(svg, 'S').decoration || '', /line-through/);
+});
+
+test('text fidelity: per-run font colour is preserved (not the base colour)', async () => {
+  const { svg, notices } = await bakeRichLabel('plain <font color="#ff0000">red</font> <font color="#00aa00">green</font>');
+  assert.equal(notices.length, 0);
+  assert.equal(findRun(svg, 'plain').fill, '#000000');
+  assert.equal(findRun(svg, 'red').fill, '#ff0000');
+  assert.equal(findRun(svg, 'green').fill, '#00aa00');
+});
+
+test('text fidelity: named CSS colours resolve', async () => {
+  const { svg } = await bakeRichLabel('<font color="red">r</font> <span style="color:blue;">b</span>');
+  assert.equal(findRun(svg, 'r').fill, '#ff0000');
+  assert.equal(findRun(svg, 'b').fill, '#0000ff');
+});
+
+test('text fidelity: per-run font family and size are preserved', async () => {
+  const { svg, notices } = await bakeRichLabel(
+    '<font face="Times New Roman">T</font> <span style="font-size:20px;">big</span>');
+  assert.equal(notices.length, 0);
+  assert.match(findRun(svg, 'T').family, /Times New Roman/);
+  assert.equal(findRun(svg, 'big').size, 20);
+});
+
+test('text fidelity: mixed runs on one line keep independent styling', async () => {
+  const { svg } = await bakeRichLabel('<b>Bold</b> and <i>italic</i> mix');
+  assert.equal(findRun(svg, 'Bold').weight, '700');
+  assert.equal(findRun(svg, 'and').weight, '400');
+  assert.equal(findRun(svg, 'italic').style, 'italic');
+  assert.equal(findRun(svg, 'mix').style, null);
+});
+
+test('text fidelity: background-color highlight emits a backing rect, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('<span style="background-color:#ffff00;">hi</span>');
+  assert.equal(notices.length, 0);
+  assert.match(svg, /<rect[^>]*fill="#ffff00"/);
+  assert.ok(findRun(svg, 'hi'));
+});
+
+test('text fidelity: subscript and superscript shrink and shift, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('x<sup>2</sup>+H<sub>2</sub>O');
+  assert.equal(notices.length, 0, 'sub/sup must NOT raise RichUnsupported');
+  const base = findRun(svg, 'x');
+  const sup = findRun(svg, '2');               // first "2" is the superscript
+  assert.ok(sup.size < base.size, 'superscript is smaller');
+  assert.ok(sup.y < base.y, 'superscript sits above the baseline');
+  const subs = richRuns(svg).filter((r) => r.text === '2');
+  const sub = subs[subs.length - 1];           // the H2O subscript
+  assert.ok(sub.y > base.y, 'subscript sits below the baseline');
+});
+
+test('text fidelity: unordered list renders bullets, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('<ul><li>Apple</li><li>Pear</li></ul>');
+  assert.equal(notices.length, 0);
+  assert.ok(findRun(svg, 'Apple') && findRun(svg, 'Pear'));
+  assert.equal(richRuns(svg).filter((r) => r.text === '•').length, 2, 'two bullets');
+});
+
+test('text fidelity: ordered list renders numbers, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('<ol><li>One</li><li>Two</li><li>Three</li></ol>');
+  assert.equal(notices.length, 0);
+  assert.ok(findRun(svg, '1.') && findRun(svg, '2.') && findRun(svg, '3.'));
+});
+
+test('text fidelity: nested list indents deeper', async () => {
+  const { svg } = await bakeRichLabel(
+    '<ul><li>Top<ul><li>Child</li></ul></li></ul>', '', 320, 160);
+  const top = findRun(svg, 'Top'), child = findRun(svg, 'Child');
+  assert.ok(child.x > top.x, 'nested item indented further than its parent');
+});
+
+test('text fidelity: <hr> divider renders a line, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('<p>Above</p><hr><p>Below</p>');
+  assert.equal(notices.length, 0);
+  assert.match(svg, /<line\b/);
+  assert.ok(findRun(svg, 'Above') && findRun(svg, 'Below'));
+});
+
+test('text fidelity: table renders every cell, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel(
+    '<table><tr><td>A1</td><td>B1</td></tr><tr><td>A2</td><td>B2</td></tr></table>', '', 320, 160);
+  assert.equal(notices.length, 0, 'tables must NOT raise RichUnsupported');
+  ['A1', 'B1', 'A2', 'B2'].forEach((t) => assert.ok(findRun(svg, t), 'cell ' + t + ' present'));
+  // Each cell's text sits inside a <g transform="translate(cx cy)">; the column/
+  // row geometry lives in those translates. Collect the distinct x/y offsets.
+  const tx = [...svg.matchAll(/translate\(([\d.]+) ([\d.]+)\)/g)].map((m) => ({ x: +m[1], y: +m[2] }));
+  const xs = [...new Set(tx.map((t) => t.x))].sort((a, b) => a - b);
+  const ys = [...new Set(tx.map((t) => t.y))].sort((a, b) => a - b);
+  assert.ok(xs.length >= 2 && xs[1] > xs[0], 'two columns at distinct x offsets');
+  assert.ok(ys.length >= 2 && ys[1] > ys[0], 'two rows at distinct y offsets');
+});
+
+test('text fidelity: bordered table draws cell rects', async () => {
+  const { svg } = await bakeRichLabel(
+    '<table border="1"><tr><td>X</td></tr></table>', '', 200, 120);
+  assert.match(svg, /<rect[^>]*fill="none"[^>]*stroke=/);
+});
+
+test('text fidelity: link text is preserved verbatim, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel('see <a href="https://x.test">site</a> now');
+  assert.equal(notices.length, 0, 'a link must NOT raise a notice');
+  assert.ok(findRun(svg, 'site'));
+});
+
+test('text fidelity: per-paragraph alignment is honoured', async () => {
+  const { svg } = await bakeRichLabel(
+    '<p style="text-align:left;">L</p><p style="text-align:right;">R</p>', '', 240, 160);
+  const l = findRun(svg, 'L'), r = findRun(svg, 'R');
+  assert.ok(r.x > l.x, 'right-aligned paragraph starts further right than left-aligned');
+});
+
+test('text fidelity: heading is larger than body text', async () => {
+  const { svg } = await bakeRichLabel('<h1>Title</h1><p>body</p>');
+  assert.ok(findRun(svg, 'Title').size > findRun(svg, 'body').size);
+});
+
+test('text fidelity: deeply combined run keeps every attribute, no notice', async () => {
+  const { svg, notices } = await bakeRichLabel(
+    '<b><i><u><font color="#123456" style="font-size:18px;">deep</font></u></i></b>');
+  assert.equal(notices.length, 0);
+  const r = findRun(svg, 'deep');
+  assert.equal(r.weight, '700');
+  assert.equal(r.style, 'italic');
+  assert.match(r.decoration || '', /underline/);
+  assert.equal(r.fill, '#123456');
+  assert.equal(r.size, 18);
+});
+
+test('text fidelity: no text is silently dropped across a complex label', async () => {
+  const { svg, notices } = await bakeRichLabel(
+    '<p><b>Quarterly</b> report:</p><ul><li>Up 5%</li><li>Down 2%</li></ul>' +
+    '<p>E=mc<sup>2</sup></p>', '', 360, 220);
+  assert.equal(notices.length, 0);
+  ['Quarterly', 'report:', 'Up', '5%', 'Down', '2%', 'E=mc', '2'].forEach((w) => {
+    assert.ok(richRuns(svg).some((r) => r.text === w),
+      'word "' + w + '" present in faithful output');
+  });
 });

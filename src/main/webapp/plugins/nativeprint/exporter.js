@@ -1052,6 +1052,27 @@
     return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' + spans + '</text>';
   }
 
+  // Label SVG for the rotated-cell builders (rotation≠0). HTML labels route
+  // through the faithful rich renderer so per-run formatting survives rotation;
+  // plain labels use the centered single-block textSvgStr. `ox,oy,w,h` is the
+  // shape's box inside the (un-rotated) expanded viewport.
+  function rotatedLabelEls(graph, cell, style, ox, oy, w, h, label, notices, resolved) {
+    var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
+    var src = raw != null ? raw : label;
+    if (String(src == null ? '' : src).indexOf('<') >= 0) {
+      var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
+      if (!rich || rich.body === '') return '';
+      var v = textDefaultValign(style);
+      if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
+      var off = v === 'middle' ? (h - rich.height) / 2 : v === 'bottom' ? h - rich.height : 0;
+      off = Math.max(0, off);
+      var pad = style.shape === 'text' ? 0 : 2;
+      return '<g transform="translate(' + fmt(ox + pad) + ' ' + fmt(oy + off) + ')">' +
+        rich.body + '</g>';
+    }
+    return label !== '' ? textSvgStr(label, ox + w / 2, oy + h / 2, style) : '';
+  }
+
   function decodeHtmlEntities(s) {
     return String(s == null ? '' : s)
       .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -1165,9 +1186,554 @@
     return lines;
   }
 
-  function textSvgNode(graph, cell, style, box, label) {
+  // ── Headless rich-text (HTML label) faithful renderer ──────────────────────
+  // drawio stores HTML labels as markup; its rich-text toolbar emits <b>,<i>,
+  // <u>,<s>, <font color/face/size>, <span style>, <sub>,<sup>, <ul>/<ol>/<li>,
+  // <hr>, <a>, <img>, <table>, per-paragraph alignment, highlight colours, and
+  // mixed font sizes. The live path harvests the browser's rendered SVG; the
+  // headless path (native print's production path) must reconstruct each run
+  // FAITHFULLY with no browser — otherwise inline formatting silently collapses
+  // to the cell's base font (a C1 silent-divergence). This builds an inline-run
+  // line model from the markup (browser-free) and lays it out into plain SVG
+  // <text>/<rect>/<image>/<line> that any SVG rasterizer draws 1:1.
+
+  var LIST_INDENT_PX = 24;   // left indent added per nested list level
+  var CSS_NAMED_COLORS = {
+    black: '#000000', white: '#ffffff', red: '#ff0000', lime: '#00ff00',
+    green: '#008000', blue: '#0000ff', yellow: '#ffff00', cyan: '#00ffff',
+    aqua: '#00ffff', magenta: '#ff00ff', fuchsia: '#ff00ff', silver: '#c0c0c0',
+    gray: '#808080', grey: '#808080', maroon: '#800000', olive: '#808000',
+    navy: '#000080', teal: '#008080', purple: '#800080', orange: '#ffa500',
+    pink: '#ffc0cb', brown: '#a52a2a', gold: '#ffd700', indigo: '#4b0082',
+    violet: '#ee82ee', darkgray: '#a9a9a9', darkgrey: '#a9a9a9',
+    lightgray: '#d3d3d3', lightgrey: '#d3d3d3', transparent: null, none: null
+  };
+
+  // Resolve any CSS colour the drawio editor can emit (#rgb/#rrggbb, rgb()/
+  // rgba(), or a named colour) to { hex, alpha } or { none:true } or null.
+  function cssColor(v) {
+    if (v == null) return null;
+    var s = String(v).trim();
+    if (s === '') return null;
+    var lc = s.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, lc)) {
+      var h = CSS_NAMED_COLORS[lc];
+      return h == null ? { none: true } : { hex: h, alpha: 1 };
+    }
+    var cp = colorParts(s);
+    if (cp) return cp;
+    if (/^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return { hex: hex(s), alpha: 1 };
+    return null;
+  }
+
+  function parseInlineStyle(el) {
+    var out = {};
+    var sv = (el && el.getAttribute && el.getAttribute('style')) || '';
+    String(sv).split(';').forEach(function (p) {
+      var i = p.indexOf(':');
+      if (i < 0) return;
+      out[p.slice(0, i).trim().toLowerCase()] = p.slice(i + 1).trim();
+    });
+    return out;
+  }
+
+  // CSS font-size value -> px (relative to the parent run's px size).
+  function cssFontSizePx(v, parentSize) {
+    if (v == null || v === '') return null;
+    var s = String(v).trim().toLowerCase();
+    var f = parseFloat(s);
+    if (s.indexOf('px') >= 0) return Number.isFinite(f) ? f : null;
+    if (s.indexOf('pt') >= 0) return Number.isFinite(f) ? f * 96 / 72 : null;
+    if (s.indexOf('em') >= 0) return Number.isFinite(f) ? f * parentSize : null;
+    if (s.indexOf('rem') >= 0) return Number.isFinite(f) ? f * parentSize : null;
+    if (s.indexOf('%') >= 0) return Number.isFinite(f) ? f / 100 * parentSize : null;
+    if (s === 'smaller') return parentSize * 0.83;
+    if (s === 'larger') return parentSize * 1.2;
+    if (s === 'xx-small') return 7; if (s === 'x-small') return 10;
+    if (s === 'small') return 13; if (s === 'medium') return 16;
+    if (s === 'large') return 18; if (s === 'x-large') return 24;
+    if (s === 'xx-large') return 32;
+    if (Number.isFinite(f)) return f;   // bare number -> px
+    return null;
+  }
+
+  // HTML <font size="1..7"> attribute -> px (the legacy 7-step scale).
+  function htmlFontSizePx(n) {
+    var t = { 1: 10, 2: 13, 3: 16, 4: 18, 5: 24, 6: 32, 7: 48 };
+    return t[n] || 16;
+  }
+
+  function baseRunStyle(style) {
+    var fst = parseInt(style.fontStyle || 0, 10) || 0;
+    return {
+      family: style.fontFamily || 'Arial',
+      size: Math.max(1, number(style.fontSize, 12)),
+      weight: (fst & 1) ? 700 : 400,
+      italic: !!(fst & 2),
+      underline: !!(fst & 4),
+      strike: !!(fst & 8),
+      overline: false,
+      color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000',
+      colorAlpha: 1,
+      bg: null,
+      bgAlpha: 1,
+      vshift: 0,
+      letterSpacing: 0
+    };
+  }
+
+  // Derive a run style from a parent run style + one element's own declared
+  // styling (tag semantics + inline CSS + legacy font attributes). Inheritance
+  // is explicit (we copy the parent) so this is identical in a real browser and
+  // in the headless shim — it never relies on getComputedStyle's cascade.
+  function applyElStyle(parentSt, el) {
+    var st = Object.assign({}, parentSt);
+    var tag = String(el.tagName || '').toLowerCase();
+    var inl = parseInlineStyle(el);
+    if (tag === 'b' || tag === 'strong') st.weight = 700;
+    if (tag === 'i' || tag === 'em' || tag === 'cite' || tag === 'var' ||
+      tag === 'dfn' || tag === 'address') st.italic = true;
+    if (tag === 'u' || tag === 'ins') st.underline = true;
+    if (tag === 's' || tag === 'strike' || tag === 'del') st.strike = true;
+    if (tag === 'mark' && !inl['background-color']) { st.bg = '#ffff00'; st.bgAlpha = 1; }
+    if (tag === 'small') st.size = st.size * 0.83;
+    if (tag === 'big') st.size = st.size * 1.2;
+    if (tag === 'tt' || tag === 'code' || tag === 'kbd' || tag === 'samp' || tag === 'pre') {
+      if (!inl['font-family']) st.family = 'Courier New';
+    }
+    if (tag === 'sup' || tag === 'sub') {
+      st.vshift = st.vshift + (tag === 'sup' ? -0.5 : 0.25) * st.size;
+      st.size = st.size * 0.75;
+    }
+    if (tag === 'font') {
+      var fc = el.getAttribute && el.getAttribute('color');
+      if (fc) { var c0 = cssColor(fc); if (c0 && !c0.none) { st.color = c0.hex; st.colorAlpha = c0.alpha; } }
+      var ff = el.getAttribute && el.getAttribute('face');
+      if (ff) st.family = ff.split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+      var fz = el.getAttribute && el.getAttribute('size');
+      if (fz) { var ni = parseInt(fz, 10); if (Number.isFinite(ni)) st.size = htmlFontSizePx(ni); }
+    }
+    if (inl['font-weight']) {
+      var w = inl['font-weight'];
+      st.weight = (w === 'bold' || w === 'bolder' || (parseInt(w, 10) || 0) >= 600) ? 700 : 400;
+    }
+    if (inl['font-style']) st.italic = inl['font-style'].indexOf('italic') >= 0 ||
+      inl['font-style'].indexOf('oblique') >= 0;
+    if (inl['font-family']) st.family = inl['font-family'].split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+    if (inl['font-size']) { var fs2 = cssFontSizePx(inl['font-size'], parentSt.size); if (fs2) st.size = Math.max(1, fs2); }
+    var dec = ((inl['text-decoration'] || '') + ' ' + (inl['text-decoration-line'] || '')).toLowerCase();
+    if (dec.trim()) {
+      if (/\bnone\b/.test(dec)) { st.underline = false; st.strike = false; st.overline = false; }
+      if (dec.indexOf('underline') >= 0) st.underline = true;
+      if (dec.indexOf('line-through') >= 0) st.strike = true;
+      if (dec.indexOf('overline') >= 0) st.overline = true;
+    }
+    if (inl['color']) { var c1 = cssColor(inl['color']); if (c1 && !c1.none) { st.color = c1.hex; st.colorAlpha = c1.alpha; } }
+    var bgv = inl['background-color'] || inl['background'];
+    if (bgv) { var b1 = cssColor(bgv); if (b1) { if (b1.none) st.bg = null; else { st.bg = b1.hex; st.bgAlpha = b1.alpha; } } }
+    if (inl['letter-spacing']) { var lsp = parseFloat(inl['letter-spacing']); if (Number.isFinite(lsp)) st.letterSpacing = lsp; }
+    if (inl['vertical-align']) {
+      var va = inl['vertical-align'].toLowerCase();
+      if (va === 'super') st.vshift += -0.5 * st.size;
+      else if (va === 'sub') st.vshift += 0.25 * st.size;
+    }
+    return st;
+  }
+
+  function inlineAlign(el) {
+    var inl = parseInlineStyle(el);
+    var a = inl['text-align'];
+    if (a === 'left' || a === 'center' || a === 'right' || a === 'justify') {
+      return a === 'justify' ? 'left' : a;
+    }
+    var attr = el.getAttribute && el.getAttribute('align');
+    if (attr === 'left' || attr === 'center' || attr === 'right') return attr;
+    return null;
+  }
+
+  var RICH_BLOCK_TAGS = {
+    p: 1, div: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, li: 1,
+    blockquote: 1, pre: 1, center: 1, section: 1, article: 1, header: 1,
+    footer: 1, figure: 1, figcaption: 1, dl: 1, dt: 1, dd: 1, address: 1,
+    fieldset: 1, form: 1, main: 1, nav: 1, aside: 1
+  };
+  function headingPx(tag, baseSize) {
+    var f = { h1: 2, h2: 1.5, h3: 1.17, h4: 1, h5: 0.83, h6: 0.67 };
+    return Math.max(baseSize, baseSize * (f[tag] || 1));
+  }
+  function listStyleType(node) {
+    var inl = parseInlineStyle(node);
+    var t = inl['list-style-type'] || inl['list-style'];
+    if (t) {
+      t = t.split(/\s+/)[0].toLowerCase().replace(/^['"]|['"]$/g, '');
+      if (t && t !== 'inherit' && t !== 'initial') return t;
+    }
+    var attr = node.getAttribute && node.getAttribute('type');
+    if (attr) {
+      var map = { '1': 'decimal', 'a': 'lower-alpha', 'A': 'upper-alpha',
+        i: 'lower-roman', I: 'upper-roman', disc: 'disc', circle: 'circle',
+        square: 'square' };
+      if (map[attr]) return map[attr];
+    }
+    return null;
+  }
+
+  function resolveInlineImage(el, resolved, notices, cellId) {
+    var src = el.getAttribute && el.getAttribute('src');
+    var w = parseFloat(el.getAttribute && el.getAttribute('width')) || 0;
+    var hh = parseFloat(el.getAttribute && el.getAttribute('height')) || 0;
+    var parsed = parseImage(src);
+    var mime = embeddableImageMime(parsed);
+    var href = (mime && parsed) ? 'data:' + mime + ';base64,' + parsed.data
+      : (resolved && src && resolved[src]) || null;
+    if (!href) {
+      if (Array.isArray(notices)) {
+        notices.push(degradation('RichUnsupported',
+          'inline <img> in HTML label cannot be embedded headlessly (' +
+          (parsed && parsed.externalUrl ? 'external URL not resolved'
+            : parsed && parsed.unsupportedFormat ? 'format=' + parsed.unsupportedFormat
+              : 'unreadable src') + '); printed without the image', cellId));
+      }
+      return null;
+    }
+    // Fall back to a sane default box if the markup omitted dimensions.
+    if (!(w > 0)) w = 16;
+    if (!(hh > 0)) hh = 16;
+    return { href: href, w: w, h: hh };
+  }
+
+  // Build the line/run model from a label's HTML root node (browser-free).
+  function buildRichModel(rootNode, baseSt, defaultAlign, resolved, notices, cellId) {
+    var out = [];
+    var cur = null;
+    function emptyPara(align, indent, size) {
+      return { kind: 'para', frags: [], align: align, indent: indent, baseSize: size };
+    }
+    function process(node, st, align, indent, pre, listDepth) {
+      var kids = node.childNodes || [];
+      for (var i = 0; i < kids.length; i++) {
+        var ch = kids[i];
+        if (ch.nodeType === 3) {
+          var tv = ch.nodeValue;
+          if (tv == null) continue;
+          if (!pre && tv.trim() === '') {
+            if (cur && cur.frags.length) cur.frags.push({ type: 'text', text: ' ', st: st });
+            continue;
+          }
+          if (!cur) { cur = emptyPara(align, indent, st.size); out.push(cur); }
+          cur.frags.push({ type: 'text', text: tv, st: st, pre: pre });
+          continue;
+        }
+        if (ch.nodeType !== 1) continue;
+        var tag = String(ch.tagName || '').toLowerCase();
+        if (tag === 'br') {
+          if (cur) cur = null; else out.push(emptyPara(align, indent, st.size));
+          continue;
+        }
+        if (tag === 'hr') { cur = null; out.push({ kind: 'rule', size: st.size, color: st.color }); continue; }
+        if (tag === 'wbr' || tag === 'script' || tag === 'style') continue;
+        if (tag === 'img') {
+          var im = resolveInlineImage(ch, resolved, notices, cellId);
+          if (im) {
+            if (!cur) { cur = emptyPara(align, indent, st.size); out.push(cur); }
+            cur.frags.push({ type: 'img', img: im, st: st });
+          }
+          continue;
+        }
+        if (tag === 'table') {
+          cur = null;
+          out.push(buildTableEntry(ch, st, align, resolved, notices, cellId));
+          continue;
+        }
+        if (tag === 'ul' || tag === 'ol') {
+          cur = null;
+          processList(ch, st, align, indent, pre, listDepth, tag === 'ol');
+          continue;
+        }
+        if (RICH_BLOCK_TAGS[tag]) {
+          cur = null;
+          var bst = applyElStyle(st, ch);
+          if (tag.charAt(0) === 'h' && tag.length === 2) { bst.weight = 700; bst.size = headingPx(tag, st.size); }
+          var bAlign = inlineAlign(ch) || align;
+          var bIndent = indent + (tag === 'blockquote' ? LIST_INDENT_PX : 0);
+          var bPre = pre || tag === 'pre';
+          var before = out.length;
+          process(ch, bst, bAlign, bIndent, bPre, listDepth);
+          if (out.length === before) out.push(emptyPara(bAlign, bIndent, bst.size));
+          cur = null;
+          continue;
+        }
+        // inline element (b/i/u/s/font/span/sub/sup/a/small/big/mark/code/…)
+        process(ch, applyElStyle(st, ch), align, indent, pre, listDepth);
+      }
+    }
+    function processList(listNode, st, align, indent, pre, listDepth, ordered) {
+      var declType = listStyleType(listNode);
+      var counter = parseInt(listNode.getAttribute && listNode.getAttribute('start'), 10);
+      if (!Number.isFinite(counter)) counter = 1;
+      var kids = listNode.childNodes || [];
+      for (var i = 0; i < kids.length; i++) {
+        var li = kids[i];
+        if (li.nodeType !== 1) continue;
+        var ltag = String(li.tagName || '').toLowerCase();
+        if (ltag === 'ul' || ltag === 'ol') {
+          // stray nested list directly under ul/ol
+          processList(li, st, align, indent, pre, listDepth, ltag === 'ol');
+          continue;
+        }
+        if (ltag !== 'li') continue;
+        var lst = applyElStyle(st, li);
+        var liType = listStyleType(li) || declType ||
+          (ordered ? 'decimal' : (listDepth % 3 === 0 ? 'disc' : listDepth % 3 === 1 ? 'circle' : 'square'));
+        var idxVal = parseInt(li.getAttribute && li.getAttribute('value'), 10);
+        if (Number.isFinite(idxVal)) counter = idxVal;
+        var marker = listMarker(liType, counter);
+        if (marker === null) marker = '•';   // unknown system -> faithful bullet substitute
+        counter++;
+        var liIndent = indent + LIST_INDENT_PX * (listDepth + 1);
+        var markerSt = { family: lst.family, size: lst.size, weight: lst.weight,
+          italic: false, underline: false, strike: false, overline: false,
+          color: lst.color, colorAlpha: lst.colorAlpha, bg: null, bgAlpha: 1,
+          vshift: 0, letterSpacing: 0 };
+        cur = emptyPara(align, liIndent, lst.size);
+        if (marker !== '') cur.frags.push({ type: 'text', text: marker + ' ', st: markerSt });
+        out.push(cur);
+        process(li, lst, align, liIndent, pre, listDepth);
+        cur = null;
+      }
+    }
+    function buildTableEntry(tableNode, st, align, resolved, notices, cellId) {
+      var tst = applyElStyle(st, tableNode);
+      var inl = parseInlineStyle(tableNode);
+      var borderAttr = parseFloat(tableNode.getAttribute && tableNode.getAttribute('border'));
+      var hasBorder = (Number.isFinite(borderAttr) && borderAttr > 0) ||
+        (inl['border'] && !/(^|\s)(0|none)(\s|$|px)/.test(inl['border']));
+      var rows = [];
+      var trList = [];
+      (function collectRows(n) {
+        var c = n.childNodes || [];
+        for (var i = 0; i < c.length; i++) {
+          var e = c[i];
+          if (e.nodeType !== 1) continue;
+          var t = String(e.tagName || '').toLowerCase();
+          if (t === 'tr') trList.push(e);
+          else if (t === 'thead' || t === 'tbody' || t === 'tfoot') collectRows(e);
+        }
+      })(tableNode);
+      trList.forEach(function (tr) {
+        var cells = [];
+        var tc = tr.childNodes || [];
+        for (var j = 0; j < tc.length; j++) {
+          var cell = tc[j];
+          if (cell.nodeType !== 1) continue;
+          var ct = String(cell.tagName || '').toLowerCase();
+          if (ct !== 'td' && ct !== 'th') continue;
+          var cst = applyElStyle(tst, cell);
+          if (ct === 'th') cst.weight = 700;
+          var calign = inlineAlign(cell) || (ct === 'th' ? 'center' : 'left');
+          cells.push({
+            blocks: buildRichModel(cell, cst, calign, resolved, notices, cellId),
+            align: calign
+          });
+        }
+        if (cells.length) rows.push(cells);
+      });
+      return { kind: 'table', rows: rows, border: hasBorder, color: tst.color };
+    }
+    process(rootNode, baseSt, defaultAlign, 0, false, 0);
+    return out;
+  }
+
+  // ── Layout: line/run model -> SVG body string ──────────────────────────────
+  var RICH_LINE_FACTOR = 1.2;       // CSS default line-height
+  var RICH_ASCENT = 0.92;           // baseline offset from line-box top (em)
+  function spaceWidthPx(size) { return glyphEmWidth(' ') * size; }
+  function tokenWidth(tk) {
+    if (tk.img) return tk.img.w;
+    var w = textWidthPx(tk.text, tk.st.size);
+    if (tk.st.letterSpacing) w += tk.st.letterSpacing * tk.text.length;
+    return w;
+  }
+  function tokenizeFrags(frags) {
+    var tokens = [];
+    var pendingSpace = false;
+    frags.forEach(function (fr) {
+      if (fr.type === 'img') {
+        tokens.push({ img: fr.img, st: fr.st, space: pendingSpace && tokens.length > 0 });
+        pendingSpace = false;
+        return;
+      }
+      var t = String(fr.text);
+      if (fr.pre) {
+        if (t !== '') tokens.push({ text: t, st: fr.st, space: pendingSpace && tokens.length > 0 });
+        pendingSpace = false;
+        return;
+      }
+      var lead = /^\s/.test(t);
+      var trail = /\s$/.test(t);
+      var words = t.replace(/\s+/g, ' ').trim().split(' ').filter(function (w) { return w !== ''; });
+      words.forEach(function (w, idx) {
+        var sp = (idx === 0) ? (pendingSpace || lead) : true;
+        tokens.push({ text: w, st: fr.st, space: sp && tokens.length > 0 });
+      });
+      if (words.length) pendingSpace = trail;
+      else if (lead || trail) pendingSpace = true;
+    });
+    return tokens;
+  }
+  // Lay out an array of block entries inside [0..width], from y=0 downward.
+  // Returns { svg, height }. `wrap` enables word wrapping (whiteSpace=wrap).
+  function layoutBlocks(entries, width, wrap, defAlign) {
+    var parts = [];
+    var y = 0;
+    function emitPara(entry) {
+      var indent = entry.indent || 0;
+      var avail = Math.max(1, width - indent);
+      var tokens = tokenizeFrags(entry.frags);
+      var rows = [];
+      if (!tokens.length) { rows.push([]); }
+      else {
+        var curRow = [], curW = 0;
+        tokens.forEach(function (tk) {
+          var tw = tokenWidth(tk);
+          var sp = (tk.space && curRow.length) ? spaceWidthPx(tk.st.size) : 0;
+          if (wrap && curRow.length && curW + sp + tw > avail) {
+            rows.push(curRow); curRow = []; curW = 0;
+            tk = Object.assign({}, tk, { space: false }); sp = 0;
+          }
+          curRow.push(tk); curW += sp + tw;
+        });
+        if (curRow.length) rows.push(curRow);
+      }
+      rows.forEach(function (row) {
+        var maxSize = entry.baseSize || 12;
+        var rowW = 0;
+        row.forEach(function (tk, i) {
+          var s = tk.img ? tk.st.size : tk.st.size;
+          if ((tk.img ? tk.img.h : tk.st.size) > maxSize && !tk.img) maxSize = Math.max(maxSize, tk.st.size);
+          if (tk.img) maxSize = Math.max(maxSize, tk.st.size);
+          rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
+        });
+        var imgMax = 0;
+        row.forEach(function (tk) { if (tk.img) imgMax = Math.max(imgMax, tk.img.h); });
+        var lineH = Math.max(maxSize, imgMax) * RICH_LINE_FACTOR;
+        var baseline = y + Math.max(maxSize, imgMax) * RICH_ASCENT;
+        var align = alignH(entry.align || defAlign);
+        var x0 = indent + (align === 'right' ? (avail - rowW)
+          : align === 'center' ? (avail - rowW) / 2 : 0);
+        if (x0 < indent) x0 = indent;
+        var x = x0;
+        var bgRects = [], texts = [];
+        row.forEach(function (tk, i) {
+          var sp = (tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0;
+          x += sp;
+          var tw = tokenWidth(tk);
+          if (tk.img) {
+            texts.push('<image x="' + fmt(x) + '" y="' + fmt(baseline - tk.img.h) +
+              '" width="' + fmt(tk.img.w) + '" height="' + fmt(tk.img.h) +
+              '" preserveAspectRatio="none" xlink:href="' + tk.img.href + '"/>');
+          } else {
+            var st = tk.st;
+            if (st.bg) {
+              bgRects.push('<rect x="' + fmt(x) + '" y="' + fmt(y) +
+                '" width="' + fmt(tw + sp * 0) + '" height="' + fmt(lineH) +
+                '" fill="' + st.bg + '"' +
+                (st.bgAlpha < 1 ? ' fill-opacity="' + fmt(st.bgAlpha) + '"' : '') + '/>');
+            }
+            var deco = [];
+            if (st.underline) deco.push('underline');
+            if (st.strike) deco.push('line-through');
+            if (st.overline) deco.push('overline');
+            texts.push('<text x="' + fmt(x) + '" y="' + fmt(baseline + st.vshift) +
+              '" font-family="' + escXml(st.family) + ', Arial, sans-serif"' +
+              ' font-size="' + fmt(st.size) + '" font-weight="' + st.weight + '"' +
+              (st.italic ? ' font-style="italic"' : '') +
+              (deco.length ? ' text-decoration="' + deco.join(' ') + '"' : '') +
+              (st.letterSpacing ? ' letter-spacing="' + fmt(st.letterSpacing) + '"' : '') +
+              ' fill="' + st.color + '"' +
+              (st.colorAlpha < 1 ? ' fill-opacity="' + fmt(st.colorAlpha) + '"' : '') +
+              ' xml:space="preserve">' + escXml(tk.text) + '</text>');
+          }
+          x += tw;
+        });
+        parts.push(bgRects.join('') + texts.join(''));
+        y += lineH;
+      });
+    }
+    function emitRule(entry) {
+      var size = entry.size || 12;
+      var ry = y + size * 0.6;
+      parts.push('<line x1="0" y1="' + fmt(ry) + '" x2="' + fmt(width) +
+        '" y2="' + fmt(ry) + '" stroke="' + (entry.color || '#000000') +
+        '" stroke-width="1"/>');
+      y += size * 1.2;
+    }
+    function emitTable(entry) {
+      var rows = entry.rows || [];
+      if (!rows.length) return;
+      var ncols = 0;
+      rows.forEach(function (r) { if (r.length > ncols) ncols = r.length; });
+      if (ncols === 0) return;
+      var colW = width / ncols;
+      var cellPad = 3;
+      var y0 = y;
+      rows.forEach(function (row) {
+        var rowH = 0;
+        var laid = [];
+        for (var c = 0; c < ncols; c++) {
+          var cell = row[c];
+          if (!cell) { laid.push(null); continue; }
+          var inner = layoutBlocks(cell.blocks, Math.max(1, colW - cellPad * 2),
+            wrap, cell.align);
+          laid.push(inner);
+          if (inner.height + cellPad * 2 > rowH) rowH = inner.height + cellPad * 2;
+        }
+        if (rowH <= 0) rowH = (entry.size || 12) * RICH_LINE_FACTOR + cellPad * 2;
+        for (var c2 = 0; c2 < ncols; c2++) {
+          var cx = c2 * colW;
+          if (entry.border) {
+            parts.push('<rect x="' + fmt(cx) + '" y="' + fmt(y) +
+              '" width="' + fmt(colW) + '" height="' + fmt(rowH) +
+              '" fill="none" stroke="' + (entry.color || '#000000') +
+              '" stroke-width="1"/>');
+          }
+          if (laid[c2]) {
+            parts.push('<g transform="translate(' + fmt(cx + cellPad) + ' ' +
+              fmt(y + cellPad) + ')">' + laid[c2].svg + '</g>');
+          }
+        }
+        y += rowH;
+      });
+      void y0;
+    }
+    entries.forEach(function (entry) {
+      if (entry.kind === 'rule') emitRule(entry);
+      else if (entry.kind === 'table') emitTable(entry);
+      else emitPara(entry);
+    });
+    return { svg: parts.join(''), height: y };
+  }
+
+  // Render an HTML label faithfully (headless) -> { body, height }.
+  function renderRichLabel(raw, style, box, resolved, notices, cellId) {
+    var doc = root.document;
+    if (!doc || typeof doc.createElement !== 'function') return null;
+    var host = doc.createElement('div');
+    host.innerHTML = String(raw);
+    var baseSt = baseRunStyle(style);
+    var defAlign = textDefaultAlign(style);
+    var entries = buildRichModel(host, baseSt, defAlign, resolved, notices, cellId);
+    if (!entries.length) return { body: '', height: 0 };
+    var pad = style.shape === 'text' ? 0 : 2;
+    var wrap = style.whiteSpace === 'wrap';
+    var contentW = Math.max(1, box.w - pad * 2);
+    var laid = layoutBlocks(entries, contentW, wrap, defAlign);
+    return { body: laid.svg, height: laid.height, pad: pad, contentW: contentW };
+  }
+
+  function textSvgNode(graph, cell, style, box, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
-    var blocks = htmlTextBlocks(raw != null ? raw : label, style);
+    var src = raw != null ? raw : label;
     var fst = parseInt(style.fontStyle || 0, 10) || 0;
     var family = style.fontFamily || 'Arial';
     var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
@@ -1179,6 +1745,46 @@
     // its title sits at the top in the editor.)
     if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
     var pad = style.shape === 'text' ? 0 : 2;
+    var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
+
+    // HTML label -> faithful per-run rich-text renderer (colour / family / size
+    // / weight / italic / decoration / highlight / sub-sup / lists / hr / inline
+    // images / tables). Plain labels keep the simple line renderer below.
+    // renderRichLabel returns null when no DOM is available (e.g. a harness with
+    // no shim); we then fall through to the regex htmlTextBlocks path below.
+    var vertical = String(style.horizontal) === '0';
+    var lw = vertical ? box.h : box.w;
+    var lh = vertical ? box.w : box.h;
+    var rich = String(src == null ? '' : src).indexOf('<') >= 0
+      ? renderRichLabel(src, style, { w: lw, h: lh }, resolved, notices, cell && cell.id)
+      : null;
+    if (rich) {
+      var richEls = '';
+      if (rich.body !== '') {
+        var oy = v === 'middle' ? (lh - rich.height) / 2 :
+          v === 'bottom' ? lh - rich.height : 0;
+        oy = Math.max(0, oy);
+        var body = '<g transform="translate(' + fmt(pad) + ' ' + fmt(oy) + ')">' +
+          rich.body + '</g>';
+        if (vertical) {
+          var vcx = box.w / 2, vcy = box.h / 2;
+          richEls = '<g transform="translate(' + fmt(vcx) + ' ' + fmt(vcy) +
+            ') rotate(-90) translate(' + fmt(-lw / 2) + ' ' + fmt(-lh / 2) + ')">' +
+            body + '</g>';
+        } else {
+          richEls = body;
+        }
+      }
+      var richSvg = '<svg xmlns="http://www.w3.org/2000/svg"' +
+        ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
+        '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
+        '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + richEls +
+        '</g></svg>';
+      return { kind: 'svg', box: box, source: base64(richSvg), aspect: 'preserve' };
+    }
+
+    var blocks = htmlTextBlocks(src, style);
     var usableW = Math.max(1, box.w - pad * 2);
     var rows = [];
     blocks.forEach(function (b) {
@@ -1242,7 +1848,6 @@
         escXml(String(label || stripHtml(raw))) + '</text></g>';
     }
 
-    var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
       '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
       '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
@@ -1251,9 +1856,9 @@
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
-  function labelTextNode(graph, cell, state, style, box, label, notices, mode) {
+  function labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved) {
     return mode === 'B'
-      ? textSvgNode(graph, cell, style, box, label)
+      ? textSvgNode(graph, cell, style, box, label, notices, resolved)
       : textNode(graph, cell, state, style, box, label, notices);
   }
 
@@ -4385,7 +4990,7 @@
         }
         var ilb = labelBoxNode(style, lb);
         if (ilb) paint.push(ilb);
-        paint.push(labelTextNode(graph, cell, state, style, lb, label, notices, mode));
+        paint.push(labelTextNode(graph, cell, state, style, lb, label, notices, mode, resolved));
       }
       return;
     }
@@ -4409,7 +5014,7 @@
       if (label !== '') {
         var hlb = labelBoxNode(style, box);
         if (hlb) paint.push(hlb);
-        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode));
+        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved));
       }
       return;
     }
@@ -4486,7 +5091,7 @@
             var rcyS = expHS / 2;
             // Re-render the stencil at (offX, offY) offset — re-generate with offset box
             // Since stencilToSvg renders starting at (0,0), we wrap in a translate group
-            var textElS = label !== '' ? textSvgStr(label, rcxS, rcyS, style) : '';
+            var textElS = rotatedLabelEls(graph, cell, style, offXS, offYS, box.w, box.h, label, notices, resolved);
             // Extract inner content from stencil SVG (between <svg...> and </svg>).
             // stencilToSvg already includes <defs> with gradient inside innerS — do not add a second.
             var innerS = stencilSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
@@ -4533,7 +5138,7 @@
               }
               var slb = labelBoxNode(style, lblBoxS);
               if (slb) paint.push(slb);
-              paint.push(labelTextNode(graph, cell, state, style, lblBoxS, label, notices, mode));
+              paint.push(labelTextNode(graph, cell, state, style, lblBoxS, label, notices, mode, resolved));
             }
           }
           return;
@@ -4556,7 +5161,7 @@
           var offXBI = (expWBI - box.w) / 2;
           var offYBI = (expHBI - box.h) / 2;
           var rcxBI = expWBI / 2, rcyBI = expHBI / 2;
-          var textElBI = label !== '' ? textSvgStr(label, rcxBI, rcyBI, style) : '';
+          var textElBI = rotatedLabelEls(graph, cell, style, offXBI, offYBI, box.w, box.h, label, notices, resolved);
           var innerBI = '<g transform="translate(' + fmt(offXBI) + ' ' + fmt(offYBI) + ')">' + builtinContent + '</g>';
           var rotGroupBI = '<g transform="rotate(' + fmt(rotDegBI) + ' ' + fmt(rcxBI) + ' ' + fmt(rcyBI) + ')">' + innerBI + textElBI + '</g>';
           var svgStrBI = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(expWBI) + '" height="' + fmt(expHBI) + '">' + rotGroupBI + '</svg>';
@@ -4594,7 +5199,7 @@
             }
             var blbBI = labelBoxNode(style, lblBoxBI);
             if (blbBI) paint.push(blbBI);
-            paint.push(labelTextNode(graph, cell, state, style, lblBoxBI, label, notices, mode));
+            paint.push(labelTextNode(graph, cell, state, style, lblBoxBI, label, notices, mode, resolved));
           }
         }
         return;
@@ -4609,7 +5214,7 @@
         }
         paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
-          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode));
+          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved));
         }
         return;
       }
@@ -4651,7 +5256,7 @@
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
-        var textEl = label !== '' ? textSvgStr(label, rcx, rcy, style) : '';
+        var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
         var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
           pathEl + textEl + '</g>';
         var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
@@ -4727,7 +5332,7 @@
     if (label !== '') {
       var vlb = labelBoxNode(style, swimLabelBx);
       if (vlb) paint.push(vlb);
-      paint.push(labelTextNode(graph, cell, state, style, swimLabelBx, label, notices, mode));
+      paint.push(labelTextNode(graph, cell, state, style, swimLabelBx, label, notices, mode, resolved));
     }
   }
 
@@ -4861,7 +5466,7 @@
         var hlBox = edgeLabelBox(state, style, origin, scale, hl);
         var hlb = labelBoxNode(style, hlBox);
         if (hlb) paint.push(hlb);
-        paint.push(labelTextNode(graph, cell, state, style, hlBox, hl, notices, mode));
+        paint.push(labelTextNode(graph, cell, state, style, hlBox, hl, notices, mode, resolved));
       }
       return;
     }
@@ -4884,7 +5489,7 @@
           var wd2Box = edgeLabelBox(state, style, origin, scale, wd2Label);
           var wd2lb = labelBoxNode(style, wd2Box);
           if (wd2lb) paint.push(wd2lb);
-          paint.push(labelTextNode(graph, cell, state, style, wd2Box, wd2Label, notices, mode));
+          paint.push(labelTextNode(graph, cell, state, style, wd2Box, wd2Label, notices, mode, resolved));
         }
         return;
       }
@@ -4898,7 +5503,7 @@
           var faBox = edgeLabelBox(state, style, origin, scale, faLabel);
           var falb = labelBoxNode(style, faBox);
           if (falb) paint.push(falb);
-          paint.push(labelTextNode(graph, cell, state, style, faBox, faLabel, notices, mode));
+          paint.push(labelTextNode(graph, cell, state, style, faBox, faLabel, notices, mode, resolved));
         }
         return;
       }
@@ -4939,7 +5544,7 @@
       var elBox = edgeLabelBox(state, style, origin, scale, label);
       var elb = labelBoxNode(style, elBox);
       if (elb) paint.push(elb);
-      paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, mode));
+      paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, mode, resolved));
     }
   }
 
@@ -4952,7 +5557,7 @@
     _embedImageHrefs: embedImageHrefs,
     // Revision marker so it is trivial to confirm in the browser console which
     // build of this file is actually loaded: run `NativePrintExporter.__rev`.
-    __rev: 'hl-2026-05-25-dbg1',
+    __rev: 'rich-text-headless-2026-06-03',
     registerStencils: function(registry) { _stencilRegistry = registry; } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.NativePrintExporter = api;
