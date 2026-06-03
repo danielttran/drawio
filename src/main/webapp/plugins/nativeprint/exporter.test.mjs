@@ -163,7 +163,7 @@ test('exporter bakes flowchart parallelogram without print-warning notice', () =
   const path = result.contract.document.pages[0].paint[0];
 
   assert.equal(result.notices.length, 0);
-  assert.equal(path.d, 'M 12.5 0 L 50 0 L 37.5 25 L 0 25 Z');
+  assert.equal(path.d, 'M 10 0 L 50 0 L 40 25 L 0 25 Z'); // slant = size*w = 0.2*50 = 10 (drawio)
 });
 
 test('mxgraph.custom.thing: rect fallback WITH ExporterUnsupportedShape notice (§5)', () => {

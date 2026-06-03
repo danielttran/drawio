@@ -2163,8 +2163,8 @@
   }
 
   // hexagon: 6-sided polygon (flat top, like a hex cell)
-  function hexagonPath(x, y, w, h) {
-    var dx = w / 4;
+  function hexagonPath(x, y, w, h, dx) {
+    if (dx == null) dx = w * 0.25;
     return 'M ' + p(x + dx, y) +
       ' L ' + p(x + w - dx, y) +
       ' L ' + p(x + w, y + h / 2) +
@@ -2207,14 +2207,14 @@
   // draw.io. The live exporter harvests their already-rendered SVG; these
   // headless equivalents keep browser-free bake output faithful enough to avoid
   // a degradation notice for normal object types.
-  function parallelogramPath(x, y, w, h) {
-    var dx = Math.min(w * 0.25, h * 0.5);
+  function parallelogramPath(x, y, w, h, dx) {
+    if (dx == null) dx = w * 0.2;
     return 'M ' + p(x + dx, y) + ' L ' + p(x + w, y) + ' L ' +
       p(x + w - dx, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
-  function stepPath(x, y, w, h) {
-    var dx = Math.min(w * 0.22, h * 0.5);
+  function stepPath(x, y, w, h, dx) {
+    if (dx == null) dx = w * 0.2;
     return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) + ' L ' +
       p(x + w, y + h / 2) + ' L ' + p(x + w - dx, y + h) +
       ' L ' + p(x, y + h) + ' Z';
@@ -2245,8 +2245,8 @@
       ' Z';
   }
 
-  function cardPath(x, y, w, h) {
-    var dx = Math.min(w * 0.18, h * 0.35);
+  function cardPath(x, y, w, h, dx) {
+    if (dx == null) dx = Math.min(w, h, 30);
     return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) + ' L ' +
       p(x + w, y + dx) + ' L ' + p(x + w, y + h) + ' L ' +
       p(x, y + h) + ' Z';
@@ -2262,8 +2262,8 @@
       ' L ' + p(x + w - dx, y + h);
   }
 
-  function trapezoidPath(x, y, w, h) {
-    var dx = Math.min(w * 0.25, h * 0.5);
+  function trapezoidPath(x, y, w, h, dx) {
+    if (dx == null) dx = w * 0.2;
     return 'M ' + p(x + dx, y) + ' L ' + p(x + w - dx, y) + ' L ' +
       p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
@@ -2372,6 +2372,16 @@
       ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
+  // drawio shape "size" resolution (parallelogram/step/trapezoid/hexagon etc.):
+  // relative w*min(relCap, size||relDefault), or absolute min(fixedCap, size||
+  // fixedDefault) when the fixedSize style flag is set. The bake previously
+  // hardcoded approximate proportions and ignored the size/fixedSize style.
+  function shapeSize(style, w, relDefault, relCap, fixedDefault, fixedCap) {
+    var fixed = style.fixedSize != null && String(style.fixedSize) !== '0';
+    if (fixed) return Math.max(0, Math.min(fixedCap, number(style.size, fixedDefault)));
+    return w * Math.max(0, Math.min(relCap, number(style.size, relDefault)));
+  }
+
   function shapePath(style, x, y, w, h) {
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
@@ -2379,7 +2389,7 @@
     if (shape === 'triangle') return trianglePath(x, y, w, h, style.direction);
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
-    if (shape === 'hexagon') return hexagonPath(x, y, w, h);
+    if (shape === 'hexagon') return hexagonPath(x, y, w, h, shapeSize(style, w, 0.25, 1, 20, w * 0.5));
     if (shape === 'doubleEllipse') return doubleEllipsePath(x, y, w, h);
     if (shape === 'actor') return actorPath(x, y, w, h);
     if (shape === 'swimlane') return swimlanePath(style, x, y, w, h);
@@ -2392,7 +2402,7 @@
     if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h);
     if (shape === 'dataStorage') return dataStoragePath(x, y, w, h);
     if (shape === 'document') return documentPath(x, y, w, h);
-    if (shape === 'trapezoid') return trapezoidPath(x, y, w, h);
+    if (shape === 'trapezoid') return trapezoidPath(x, y, w, h, shapeSize(style, w, 0.2, 0.5, 20, w * 0.5));
     if (shape === 'manualInput') return manualInputPath(x, y, w, h);
     if (shape === 'internalStorage') return internalStoragePath(x, y, w, h);
     if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h);
@@ -2402,11 +2412,11 @@
     if (shape === 'display') return displayPath(x, y, w, h);
     if (shape === 'delay') return delayPath(x, y, w, h);
     if (shape === 'loopLimit') return loopLimitPath(x, y, w, h);
-    if (shape === 'parallelogram') return parallelogramPath(x, y, w, h);
-    if (shape === 'step') return stepPath(x, y, w, h);
+    if (shape === 'parallelogram') return parallelogramPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
+    if (shape === 'step') return stepPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
     if (shape === 'callout') return calloutPath(x, y, w, h);
     if (shape === 'tape') return tapePath(x, y, w, h);
-    if (shape === 'card') return cardPath(x, y, w, h);
+    if (shape === 'card') return cardPath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 30)))));
     if (shape === 'cube') return cubePath(x, y, w, h);
     if (shape === 'note' || shape === 'note2') return rectPath(x, y, w, h);
     if (shape === 'cylinder2' || shape === 'cylinder3') return cylinderPath(x, y, w, h);

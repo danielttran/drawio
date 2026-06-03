@@ -1416,6 +1416,26 @@ test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () =
   assert.match(cyl.d, /^M 0 20 C/, `cylinder cap should be h/5=20: ${cyl.d.slice(0, 24)}`);
 });
 
+test('shape: size proportion matches drawio (parallelogram/step/card + size/fixedSize)', async () => {
+  // REGRESSION (WYSIWYG): built-in shape slant/notch sizes were hardcoded
+  // (parallelogram/trapezoid 0.25w, step 0.22w, card min(0.18w,0.35h)) and
+  // ignored the size/fixedSize style. drawio: relative w*(size||0.2) or absolute
+  // min(w,size) under fixedSize; card = min(w,h,size||30).
+  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const d = async (style) => {
+    const c = (await bake(mk(style), { keepPx: true })).contract;
+    return c.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  };
+  assert.equal(await d('shape=parallelogram;'), 'M 20 0 L 100 0 L 80 60 L 0 60 Z'); // 0.2*100=20
+  assert.equal(await d('shape=parallelogram;size=0.4;'), 'M 40 0 L 100 0 L 60 60 L 0 60 Z'); // honors size
+  assert.match(await d('shape=parallelogram;size=10;fixedSize=1;'), /^M 10 0 /); // absolute
+  assert.match(await d('shape=step;'), /^M 0 0 L 80 0 L 100 30 /); // notch 0.2*100=20 -> 80
+  assert.match(await d('shape=card;'), /^M 0 0 L 70 0 L 100 30 /); // corner min(100,60,30)=30 -> 70
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
