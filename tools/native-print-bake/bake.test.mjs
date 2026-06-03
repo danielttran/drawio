@@ -1346,6 +1346,23 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   assert.notEqual(pn, pf, 'parallelogram flipH must change the geometry');
 });
 
+test('image: cell opacity is applied (frozen contract has no image opacity field)', async () => {
+  // REGRESSION (WYSIWYG): a translucent image cell (style opacity<100) printed
+  // fully opaque because kind:image has no opacity field. Now routed through an
+  // svg <image opacity> when opacity<1; a fully-opaque image stays kind:image.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR42mNk+M9Qz0BkYBxVSF+FAP5FCB3+aV1nAAAAAElFTkSuQmCC';
+  const mk = (op) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;image=data:image/png;base64,${png};opacity=${op};" parent="1"><mxGeometry x="20" y="20" width="60" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const paint100 = (await bake(mk('100'), { keepPx: true })).contract.document.pages[0].paint;
+  assert.ok(paint100.some((n) => n.kind === 'image'), 'opaque image stays kind:image');
+  const paint50 = (await bake(mk('50'), { keepPx: true })).contract.document.pages[0].paint;
+  const svg = paint50.find((n) => n.kind === 'svg');
+  assert.ok(svg, 'translucent image routes through svg');
+  assert.match(Buffer.from(svg.source, 'base64').toString('utf8'), /opacity="0\.5"/, 'image opacity 0.5 applied');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

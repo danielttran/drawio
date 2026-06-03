@@ -4753,14 +4753,32 @@
         h: Math.max(1, box.h - pad * 2)
       };
     }
+    var fh = boolish(style.imageFlipH) || boolish(style.flipH);
+    var fv = boolish(style.imageFlipV) || boolish(style.flipV);
+    var op = opacity(style, 'opacity');
+    if (op < 1) {
+      // kind:image has no opacity field in the frozen contract; route through an
+      // svg <image opacity> so a translucent image (style opacity<100) prints
+      // faithfully instead of fully opaque.
+      var fit = String(style.imageAspect) === '0' ? 'none' : 'xMidYMid meet';
+      var sx = fh ? -1 : 1, sy = fv ? -1 : 1;
+      var tf = (fh || fv) ? ' transform="translate(' + fmt(fh ? box.w : 0) + ' ' +
+        fmt(fv ? box.h : 0) + ') scale(' + sx + ',' + sy + ')"' : '';
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
+        'width="' + fmt(box.w) + '" height="' + fmt(box.h) + '">' +
+        '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+        '" preserveAspectRatio="' + fit + '" opacity="' + fmt(op) + '"' + tf +
+        ' xlink:href="data:image/png;base64,' + parsed.data + '"/></svg>';
+      return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+    }
     return {
       kind: 'image',
       box: box,
       format: 'png',
       data: parsed.data,
       aspect: String(style.imageAspect) === '0' ? 'fill' : 'preserve',
-      flipH: boolish(style.imageFlipH) || boolish(style.flipH),
-      flipV: boolish(style.imageFlipV) || boolish(style.flipV)
+      flipH: fh,
+      flipV: fv
     };
   }
 
@@ -5239,9 +5257,11 @@
             ? ' transform="translate(' + fmt(imgFlipTx) + ' ' + fmt(imgFlipTy) +
               ') scale(' + imgFlipSx + ',' + imgFlipSy + ')"'
             : '';
+          var imgRotOp = opacity(style, 'opacity');
           var imgEl = '<image x="' + fmt(imgOffX) + '" y="' + fmt(imgOffY) + '"' +
             ' width="' + fmt(imageBox.w) + '" height="' + fmt(imageBox.h) + '"' +
             ' preserveAspectRatio="' + imgFit + '"' +
+            (imgRotOp < 1 ? ' opacity="' + fmt(imgRotOp) + '"' : '') +
             imgFlipAttr +
             ' xlink:href="data:image/png;base64,' + img.data + '"/>';
           var imgRotGroup = '<g transform="rotate(' + fmt(imgRotDeg) + ' ' +
