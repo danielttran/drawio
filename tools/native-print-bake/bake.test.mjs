@@ -958,6 +958,40 @@ test('stencil: variable-aspect flowchart shape bakes to kind:svg with no notice'
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for stencil shape');
 });
 
+test('stencil: <fillcolor color="key" default="#hex"> resolves to the default color (not invisible)', async () => {
+  // REGRESSION (WYSIWYG): the whole mxgraph.salesforce.* family paints via
+  // `<fillcolor color="fillColor2" default="#032d60"/>` — a style-key reference
+  // with a fallback `default`. The headless renderer previously stored the
+  // literal key "fillColor2" as the fill color; isPaintable() rejected it and
+  // every such path baked with fill="none", so the stencil printed INVISIBLE
+  // with no notice (a silent C1 violation caught by the native-engine render
+  // gate). mxStencil.parseColor/getColorValue fall back to the `default` attr.
+  const xml = makeStencilXml('shape=mxgraph.salesforce.apps;fillColor=#dae8fc;strokeColor=#6c8ebf;', 'SF Apps');
+  const { contract, notices } = await bake(xml);
+  assert.equal(notices.length, 0, `unexpected notice: ${notices.map(n => n.kind).join('; ')}`);
+  const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  const sources = svgNodes.map((n) => Buffer.from(n.source, 'base64').toString('utf8'));
+  const joined = sources.join('\n');
+  // The stencil's default fill colors must be present as real fills...
+  assert.ok(/fill="#032d60"/i.test(joined), 'apps stencil must paint its default fillColor2 (#032d60)');
+  assert.ok(/fill="#0d9dda"/i.test(joined), 'apps stencil must paint its default fillColor3 (#0d9dda)');
+  // ...and the literal style-key string must NEVER leak into a paint attribute.
+  assert.ok(!/fill="fillColor\d"/i.test(joined), 'style-key reference leaked as a literal fill color');
+});
+
+test('stencil: explicit <fillcolor color="#hex"> and unresolved-no-default keys are unchanged', async () => {
+  // Guard against the resolver over-reaching: a concrete color passes through,
+  // and a style-key with no `default` and no cell-style entry preserves prior
+  // behaviour (no surprise paint invented).
+  const concrete = '<shape name="c1" w="10" h="10"><background><path><move x="0" y="0"/><line x="10" y="0"/><line x="10" y="10"/><close/></path></background><foreground><fillcolor color="#123456"/><fillstroke/></foreground></shape>';
+  const b64 = Buffer.from(concrete, 'utf8').toString('base64');
+  const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;strokeColor=#000000;`, 'C');
+  const { contract } = await bake(xml);
+  const src = (contract.document.pages[0].paint.find((n) => n.kind === 'svg')?.source) || '';
+  assert.ok(/fill="#123456"/i.test(Buffer.from(src, 'base64').toString('utf8')),
+    'concrete stencil fill color must pass through untouched');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

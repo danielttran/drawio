@@ -61,3 +61,8 @@ src/main/webapp/WEB-INF/lib/threetenbp-*.jar
 /tools/native-print-bake/*.png
 /tools/native-print-bake/codex-*.contract.json
 /tools/native-print-bake/test-contract*.json
+# Compiled native-engine-render rasterize CLI (built via build:nativeprint-rasterizer)
+/tools/native-print-bake/native-engine-render/rasterize
+/tools/native-print-bake/native-engine-render/*.o
+# Generated verification artifacts (always regenerate from current .drawio source)
+*.artifact-*.png

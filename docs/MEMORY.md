@@ -761,3 +761,57 @@ inline `<img>` (missing resource, not a text config).
 img/table/sub/sup, but it is mode-A (unit-test-only) and superseded by
 `transcribeForeignObjects` (client-rect based) there — not reachable in the
 headless production print.
+
+## UPDATE 2026-06-03 round 22 (end-to-end Verification Gate + real WYSIWYG bug fixed)
+
+**Goal:** concrete, browser-free proof of WYSIWYG from drawio to the actual
+printer for ALL objects + style/text variations. Full dossier:
+`docs/NATIVE_PRINT_WYSIWYG_PROOF.md`.
+
+**Built the design plan's missing "Verification Gate"** (browser-free,
+cross-platform — runs on this Linux box, no Win32 GDI+ needed):
+- `tools/native-print-bake/native-engine-render/rasterize.cpp` — tiny C++ CLI
+  that `dlopen`s the **PRODUCTION resvg cdylib** (`host/svg-rasterizer`, the
+  exact backend the Win32 host loads behind `svg_rasterizer_abi.h`) and calls
+  the real `spe_svg_measure`/`spe_svg_render`. Build via
+  `npm run build:nativeprint-rasterizer` (cargo + g++; prints the
+  `export SVG_RASTERIZER_LIB=…` line). Binary is gitignored.
+- `tools/native-print-bake/render-artifact.mjs` — bakes a `.drawio` (mode B) →
+  composes the contract page as ONE SVG (svg/image nodes via `<image>`, path
+  nodes verbatim) → rasterizes through the production cdylib → PNG. Because the
+  Win32 print path rasterizes every `kind:"svg"` node (all styled shapes + ALL
+  rich-text labels) through that SAME cdylib and blits the device bitmap 1:1,
+  these pixels ARE the printer's pixels by rasterizer identity (`path`/`image`
+  faithful by construction). Exports `renderArtifact()`; prints source sha256.
+  NOT a pixel-comparison oracle (never diffs a reference image) → C2-clean.
+- `tools/native-print-bake/render-artifact.test.mjs` +
+  `npm run test:nativeprint-render-gate` — drives ALL fixtures, asserts per
+  object: zero blocking notices AND >0 opaque pixels ("no silent blank").
+  **SKIPS cleanly** when the cdylib/CLI aren't built (same posture as the
+  svg-rasterizer ctests).
+
+**Reproduced green on THIS box** (not quoted): exporter 174, bake 121 (+2 new
+stencil-colour regressions), service 17, validate 17, render-gate 1; production
+audit 86 shapes + 8910 stencils zero notices; **C++ ctest 172/172 against the
+real resvg-0.47 cdylib**; **render gate 19/19 fixtures, 477 visible objects,
+zero silent blanks, zero blocking notices**. test.drawio + master-test-rich-text
+visually confirmed object-by-object (sub/sup, nested lists, `<hr>`, tables,
+links, highlight, alignment, headings, bold+italic+underline+colour, blockquote,
+mono, mark/strike; sketch hachure, rotated titles, note dog-ear, embedded image).
+
+**Real WYSIWYG bug the gate caught + fixed (silent invisible render):** the whole
+`mxgraph.salesforce.*` family (and like stencils) printed INVISIBLE with no
+notice. Cause: they paint via `<fillcolor color="fillColor2" default="#032d60"/>`
+(a style-key ref + fallback). Headless stored the literal key `"fillColor2"` →
+`isPaintable()` false → `fill="none"`. Fix: `exporter.js` `resolveStencilColor()`
+mirrors drawio `mxStencil.parseColor`/`getColorValue` (concrete colour →
+style-key lookup → `default` attr → preserve prior). Applied to stencil
+strokecolor/fillcolor/fontcolor. Regenerated 4 goldens (arrows-bpmn, network,
+stencil-commands: strictly more real fills / fewer `fill="none"`). The
+8910-stencil audit missed this — it only checks notices+schema, NOT ink; the
+render gate is what checks ink.
+
+**Also:** `master-test-images.drawio` embedded PNG/JPEG placeholders had corrupt
+IDAT (bad Adler-32) → resvg blank. Replaced with verified-valid minimal images
+(distinct colours + a hand-rolled valid baseline JPEG), regenerated its golden,
+so the image path (PNG/JPEG/SVG/flip/rotate/label) is genuinely exercised.

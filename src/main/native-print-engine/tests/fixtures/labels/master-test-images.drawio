@@ -7,11 +7,11 @@
 
         <!-- Row 0: data URI images (i01-i04) -->
         <!-- i01: PNG data URI — should emit kind:image -->
-        <mxCell id="i01" value="PNG" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i01" value="PNG" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR42mO4Y2PzHx9mGBkKAKtclMHCQrgUAAAAAElFTkSuQmCC;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="100" y="100" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i02: JPEG data URI — should emit kind:svg (SVG wrapper) -->
-        <mxCell id="i02" value="JPEG" style="shape=image;image=data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoH7gYLDQwMCwsLDQ4SEA8OEQ4LCxAWEBESFBUVFQwPFxgWFBgSFBUU/wAARCAABAAEDASIAAhEBAxEB/8QAFgABAQEAAAAAAAAAAAAAAAAABwYI/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/EABYBAQEBAAAAAAAAAAAAAAAAAAMCAf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AKJgABn/2Q==;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i02" value="JPEG" style="shape=image;image=data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAALCAAIAAgBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APrCv//Z;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="320" y="100" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i03: SVG data URI — should emit kind:svg (SVG wrapper) -->
@@ -19,13 +19,13 @@
           <mxGeometry x="540" y="100" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i04: PNG image with flipH — should emit kind:image with flipH=true -->
-        <mxCell id="i04" value="Flip" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=;flipH=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i04" value="Flip" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR42mNwWxX1Hx9mGBkKADMNkkFKfAoEAAAAAElFTkSuQmCC;flipH=1;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="760" y="100" width="120" height="100" as="geometry"/>
         </mxCell>
 
         <!-- Row 1: image cells with rotation and stencil baseline (i05-i08) -->
         <!-- i05: PNG image with rotation=30 — should emit kind:svg (rotation) -->
-        <mxCell id="i05" value="Rot" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=;rotation=30;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i05" value="Rot" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAEklEQVR42mNwyzvxHx9mGBkKAJAnnsHOKhxBAAAAAElFTkSuQmCC;rotation=30;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="100" y="300" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i06: stencil shape with plain label — regression check -->
@@ -33,11 +33,11 @@
           <mxGeometry x="320" y="300" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i07: plain rect with image style property (not shape=image) -->
-        <mxCell id="i07" value="ImgProp" style="image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i07" value="ImgProp" style="image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAE0lEQVR42mOYFrDlPz7MMDIUAACLI6ZBOor9OgAAAABJRU5ErkJggg==;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="540" y="300" width="120" height="100" as="geometry"/>
         </mxCell>
         <!-- i08: PNG image with label — image + label in same cell -->
-        <mxCell id="i08" value="Labeled" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="i08" value="Labeled" style="shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAE0lEQVR42mN4Nk3jPz7MMDIUAAANgajByAWesQAAAABJRU5ErkJggg==;fillColor=#ffffff;strokeColor=#000000;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="760" y="300" width="120" height="100" as="geometry"/>
         </mxCell>
 

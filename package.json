@@ -10,6 +10,8 @@
     "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs",
     "test:nativeprint-bake": "node --test tools/native-print-bake/bake.test.mjs",
     "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs",
+    "test:nativeprint-render-gate": "node --test tools/native-print-bake/render-artifact.test.mjs",
+    "build:nativeprint-rasterizer": "bash tools/native-print-bake/native-engine-render/build.sh",
     "audit:nativeprint-production": "node tools/native-print-bake/production-audit.mjs"
   },
   "devDependencies": {

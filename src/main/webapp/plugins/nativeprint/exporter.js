@@ -135,6 +135,32 @@
     };
     var stateStack = [];
 
+    // mxStencil.parseColor / getColorValue parity (browser-free). A stencil
+    // color node's `color` attribute may be a CONCRETE color (hex/rgb/named) OR
+    // a STYLE-KEY reference (e.g. `fillColor2`). When it is a key, drawio looks
+    // it up in the cell style and, if absent, falls back to the node's `default`
+    // attribute. Without this, stencils that paint via
+    // `<fillcolor color="fillColor2" default="#032d60"/>` (e.g. the whole
+    // mxgraph.salesforce.* family) baked with fill="none" and printed INVISIBLE
+    // — a silent WYSIWYG violation. Only the default-attr branch changes prior
+    // behaviour; concrete colors and unresolved-no-default keys are untouched.
+    function resolveStencilColor(rawColor, defaultAttr, prev) {
+      if (rawColor == null) return prev;
+      if (rawColor === 'fill') return style.fillColor;
+      if (rawColor === 'stroke') return style.strokeColor;
+      if (rawColor === 'font') return style.fontColor || '#000000';
+      if (isPaintable(rawColor) || rawColor === 'none' || rawColor === 'transparent') {
+        return rawColor;
+      }
+      // style-key reference: resolve against the cell style, else the default attr.
+      var v = (style && style[rawColor] != null) ? String(style[rawColor]) : null;
+      if (v != null && v !== 'default') return v;
+      if (defaultAttr != null && defaultAttr !== '' && defaultAttr !== 'none') {
+        return defaultAttr;
+      }
+      return rawColor; // unresolved key, no usable default: preserve prior behaviour
+    }
+
     // Gradient support: if gradientColor is paintable, we'll emit a linearGradient
     var gradId = null;
     var gradDef = '';
@@ -384,10 +410,10 @@
             }
             break;
           case 'strokecolor':
-            state.strokeColor = a.color || state.strokeColor;
+            state.strokeColor = resolveStencilColor(a.color, a.default, state.strokeColor);
             break;
           case 'fillcolor':
-            state.fillColor = a.color || state.fillColor;
+            state.fillColor = resolveStencilColor(a.color, a.default, state.fillColor);
             // Update gradient if fill changed
             if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
               gradId = stableGradId(state.fillColor, style.gradientColor);
@@ -421,7 +447,7 @@
             state.alpha = clamp01(parseFloat(a.alpha) || 1);
             break;
           case 'fontcolor':
-            state.fontColor = a.color || state.fontColor;
+            state.fontColor = resolveStencilColor(a.color, a.default, state.fontColor);
             break;
           case 'fontsize':
             state.fontSize = (parseFloat(a.size) || 11) * su;
