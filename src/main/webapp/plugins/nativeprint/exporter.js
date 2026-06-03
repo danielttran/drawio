@@ -1953,6 +1953,20 @@
       p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
+  // Rounded-rectangle corner radius, matching drawio mxRectangleShape.
+  // Relative (default): f = arcSize/100 (default RECTANGLE_ROUNDING_FACTOR*100
+  // = 15), r = min(w,h)*f. Absolute (absoluteArcSize=1): r = min(w/2, h/2,
+  // arcSize/2) with arcSize default LINE_ARCSIZE = 20. Previously a hardcoded
+  // 0.12*min(w,h) that ignored arcSize/absoluteArcSize — wrong radius.
+  function roundedRectRadius(style, w, h) {
+    if (number(style && style.absoluteArcSize, 0) === 1) {
+      var as = number(style.arcSize, 20);
+      return Math.min(w / 2, Math.min(h / 2, as / 2));
+    }
+    var f = number(style && style.arcSize, 15) / 100;
+    return Math.min(w * f, h * f);
+  }
+
   function roundedRectPath(x, y, w, h, r) {
     r = Math.min(Math.max(0, r), w / 2, h / 2);
     if (r <= 0) return rectPath(x, y, w, h);
@@ -2040,7 +2054,7 @@
     var isHoriz = String(style.horizontal) !== '0';
     var startSize = Math.min(Math.max(0, number(style.startSize, 30)), isHoriz ? h : w);
     var body = boolish(style.rounded)
-      ? roundedRectPath(x, y, w, h, Math.min(w, h) * number(style.arcSize, 10) / 100)
+      ? roundedRectPath(x, y, w, h, roundedRectRadius(style, w, h))
       : rectPath(x, y, w, h);
     if (isHoriz) {
       return body +
@@ -2332,7 +2346,7 @@
     }
     if (shape === 'rectangle' || shape === 'label' || !shape) {
       return boolish(style.rounded)
-        ? roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12)
+        ? roundedRectPath(x, y, w, h, roundedRectRadius(style, w, h))
         : rectPath(x, y, w, h);
     }
     // group: draw.io's container group — rendered as a plain rectangle

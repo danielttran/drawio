@@ -1204,6 +1204,29 @@ test('edge: child-label cells (multi-label edges) are positioned along the edge'
   assert.ok(many.x > one.x + 20, `labels not distributed along the edge (one.x=${one.x}, many.x=${many.x})`);
 });
 
+test('shape: rounded rectangle radius matches drawio (arcSize / absoluteArcSize)', async () => {
+  // REGRESSION (WYSIWYG): rounded-rect corner radius was hardcoded
+  // 0.12*min(w,h) and ignored arcSize / absoluteArcSize. drawio uses
+  // f=arcSize/100 (default RECTANGLE_ROUNDING_FACTOR*100=15) → r=min(w,h)*f, or
+  // absolute mode r=min(w/2,h/2,arcSize/2) (arcSize default LINE_ARCSIZE=20).
+  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const radiusOf = (contract) => {
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'path' && /A /.test(n.d || '')) {
+        const m = n.d.match(/A ([\d.]+)/); if (m) return parseFloat(m[1]);
+      }
+    }
+    return null;
+  };
+  // box 120x60 -> default 0.15*60=9, arcSize=20 -> 0.20*60=12, absolute as=20 -> min(60,30,10)=10
+  assert.equal(radiusOf((await bake(mk('rounded=1;'), { keepPx: true })).contract), 9, 'default radius should be 15% of min side');
+  assert.equal(radiusOf((await bake(mk('rounded=1;arcSize=20;'), { keepPx: true })).contract), 12, 'arcSize=20 not honored');
+  assert.equal(radiusOf((await bake(mk('rounded=1;absoluteArcSize=1;arcSize=20;'), { keepPx: true })).contract), 10, 'absoluteArcSize not honored');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
