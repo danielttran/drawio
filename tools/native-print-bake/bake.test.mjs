@@ -1174,6 +1174,36 @@ test('label: plain shape honors labelPosition / verticalLabelPosition (label out
   assert.ok(top && top.y + top.h <= center.y + 0.5, `verticalLabelPosition=top not above shape (y=${top && top.y})`);
 });
 
+test('edge: child-label cells (multi-label edges) are positioned along the edge', async () => {
+  // REGRESSION (WYSIWYG): a label cell parented to an edge (UML multiplicity,
+  // ER cardinality) has relative geometry x in [-1,1] mapped to a fraction
+  // t=(x+1)/2 along the edge. The bake treated it as a standalone vertex,
+  // baking a degenerate 1x1 box at the wrong spot — the label was silently lost
+  // (clipped). Now positioned along the parent edge.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="80" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="300" y="80" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="lbl1" value="ONE" vertex="1" connectable="0" parent="e"><mxGeometry x="-0.7" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry></mxCell>
+    <mxCell id="lbl2" value="MANY" vertex="1" connectable="0" parent="e"><mxGeometry x="0.7" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, `unexpected notice: ${notices.map((n) => n.kind).join('; ')}`);
+  const find = (txt) => {
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'svg' && new RegExp('>' + txt + '<').test(Buffer.from(n.source, 'base64').toString('utf8'))) return n.box;
+    }
+    return null;
+  };
+  const one = find('ONE'), many = find('MANY');
+  assert.ok(one && many, 'both edge child-labels must render');
+  // Non-degenerate boxes (not the old 1x1), and ONE is left of MANY along the edge.
+  assert.ok(one.w > 2 && one.h > 2, `ONE label box degenerate: ${JSON.stringify(one)}`);
+  assert.ok(many.w > 2 && many.h > 2, `MANY label box degenerate: ${JSON.stringify(many)}`);
+  assert.ok(many.x > one.x + 20, `labels not distributed along the edge (one.x=${one.x}, many.x=${many.x})`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

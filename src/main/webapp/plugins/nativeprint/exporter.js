@@ -3567,6 +3567,61 @@
     return points[points.length - 1];
   }
 
+  // Point at fraction t in [0,1] of a polyline's arc length.
+  function polylinePointAt(points, t) {
+    if (!points || points.length === 0) return { x: 0, y: 0 };
+    if (points.length === 1) return points[0];
+    var total = 0, i;
+    for (i = 1; i < points.length; i++) {
+      var dx = points[i].x - points[i - 1].x, dy = points[i].y - points[i - 1].y;
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+    if (total <= 0) return points[0];
+    var target = Math.max(0, Math.min(1, t)) * total, walked = 0;
+    for (i = 1; i < points.length; i++) {
+      var sx = points[i].x - points[i - 1].x, sy = points[i].y - points[i - 1].y;
+      var seg = Math.sqrt(sx * sx + sy * sy);
+      if (walked + seg >= target) {
+        var f = (target - walked) / Math.max(seg, 0.001);
+        return { x: points[i - 1].x + sx * f, y: points[i - 1].y + sy * f };
+      }
+      walked += seg;
+    }
+    return points[points.length - 1];
+  }
+
+  // Render a label cell that is a CHILD of an edge (drawio multi-label edges:
+  // UML multiplicity, ER cardinality, mid-edge notes). Its relative geometry.x
+  // in [-1,1] maps to fraction t=(x+1)/2 along the edge; geometry.offset is an
+  // absolute pixel nudge. Without this the cell baked as a degenerate 1x1 box at
+  // the wrong spot, silently losing the label. Returns true if it handled the cell.
+  function emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, mode, resolved, label) {
+    if (label === '') return false;
+    var model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null;
+    if (!model || typeof model.isEdge !== 'function') return false;
+    var parentCell = typeof model.getParent === 'function' ? model.getParent(cell)
+      : (cell.parent != null ? model.cells[cell.parent] : null);
+    if (!parentCell || !model.isEdge(parentCell)) return false;
+    var pst = graph.view && typeof graph.view.getState === 'function'
+      ? graph.view.getState(parentCell) : null;
+    if (!pst || !pst.absolutePoints || pst.absolutePoints.length < 2) return false;
+    var geo = cell.geometry || {};
+    var t = (typeof geo.x === 'number' && geo.relative) ? (geo.x + 1) / 2 : 0.5;
+    var pt = polylinePointAt(pst.absolutePoints, t);
+    var offx = geo.offset && Number.isFinite(geo.offset.x) ? geo.offset.x : 0;
+    var offy = geo.offset && Number.isFinite(geo.offset.y) ? geo.offset.y : 0;
+    var cxw = (pt.x + offx - origin.x) / scale;
+    var cyw = (pt.y + offy - origin.y) / scale;
+    var fs = number(style.fontSize, 12);
+    var lw = Math.max(24, String(label).length * fs * 0.65);
+    var lh = Math.max(fs * 1.4, String(label).split('\n').length * fs * 1.25);
+    var elBox = { x: cxw - lw / 2, y: cyw - lh / 2, w: lw, h: lh };
+    var bg = labelBoxNode(style, elBox);
+    if (bg) paint.push(bg);
+    paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, mode, resolved));
+    return true;
+  }
+
   function degradation(kind, detail, cellId) {
     return { kind: kind, detail: { detail: detail, cellId: String(cellId || '') } };
   }
@@ -5005,6 +5060,11 @@
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved, mode) {
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
+
+    // Edge child-label cell (multi-label edge): position along the parent edge.
+    if (emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, mode, resolved, label)) {
+      return;
+    }
 
     if (isImageCell(style)) {
       // PRIMARY (live path): transcribe drawio's literal rendered SVG so the
