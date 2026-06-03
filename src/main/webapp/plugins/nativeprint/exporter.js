@@ -5516,7 +5516,16 @@
     var raw = state.absolutePoints || [];
     var points = [];
     for (var i = 0; i < raw.length; i++) {
-      if (raw[i]) points.push({ x: (raw[i].x - origin.x) / scale, y: (raw[i].y - origin.y) / scale });
+      if (raw[i]) {
+        var px = (raw[i].x - origin.x) / scale, py = (raw[i].y - origin.y) / scale;
+        // Drop consecutive duplicate points. The headless parser can emit a
+        // doubled source/target endpoint (e.g. [src,src,tgt,tgt]); a zero-length
+        // final segment makes arrowPath() return null and the arrowhead is
+        // silently dropped (WYSIWYG: drawio draws the classic arrow). Deduping
+        // carries no geometry loss and restores correct arrow direction.
+        var prev = points[points.length - 1];
+        if (!prev || prev.x !== px || prev.y !== py) points.push({ x: px, y: py });
+      }
     }
     if (points.length < 2) return;
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });

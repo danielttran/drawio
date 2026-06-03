@@ -1047,6 +1047,28 @@ test('stencil: default-attr color family renders across packages (whole bug clas
     `stencils rendering WITHOUT any of their default colours (silent-invisible regression): ${misses.join(', ')}`);
 });
 
+test('edge: default connector renders its classic arrowhead (no silent drop on degenerate points)', async () => {
+  // REGRESSION (WYSIWYG): a default edge gets endArrow='classic'. The headless
+  // parser emits a doubled endpoint for vertex-connected edges (verified:
+  // connector.drawio's edge absolutePoints == [{80,75},{80,75},{220,75},{220,75}]);
+  // the final segment is then zero-length, arrowPath() returns null and the
+  // arrowhead was SILENTLY dropped — the print showed a plain line while drawio
+  // draws the arrow. emitEdge now dedupes consecutive points. Uses the real
+  // connector fixture, which is known to reproduce the degenerate-point case.
+  const xml = await readFile(join(fixtureDir, 'connector.drawio'), 'utf8');
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, `unexpected notice: ${notices.map((n) => n.kind).join('; ')}`);
+  const paint = contract.document.pages[0].paint;
+  // a classic arrowhead is a closed, filled 3-vertex triangle path
+  const arrows = paint.filter((n) => n.kind === 'path' && n.fill &&
+    /^M [\d.]+ [\d.]+ L [\d.]+ [\d.]+ L [\d.]+ [\d.]+ Z$/.test(n.d || ''));
+  assert.ok(arrows.length >= 1, 'default edge must emit a filled classic arrowhead path');
+  // and the connector line itself must have no zero-length duplicate segment
+  const edge = paint.find((n) => n.kind === 'path' && n.fill == null && /^M [\d.]+ [\d.]+ L/.test(n.d || ''));
+  assert.ok(edge, 'edge connector line present');
+  assert.ok(!/L ([\d.]+) ([\d.]+) L \1 \2/.test(edge.d), `edge path has a degenerate duplicate point: ${edge.d}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
