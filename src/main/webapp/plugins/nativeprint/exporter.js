@@ -5847,6 +5847,21 @@
       }
     }
     if (points.length < 2) return;
+    // perimeterSpacing (+ source/targetPerimeterSpacing) creates a gap between
+    // the shape edge and the connector endpoints (drawio grows the perimeter by
+    // the spacing). Pull each endpoint inward along the edge by that amount so
+    // the gap appears, instead of the line touching the shape. Was ignored.
+    var perimBase = number(style.perimeterSpacing, 0);
+    var srcSp = perimBase + number(style.sourcePerimeterSpacing, 0);
+    var tgtSp = perimBase + number(style.targetPerimeterSpacing, 0);
+    var nudge = function (from, toward, dist) {
+      var dx = toward.x - from.x, dy = toward.y - from.y;
+      var len = Math.sqrt(dx * dx + dy * dy);
+      if (len <= 0.001 || dist <= 0) return from;
+      return { x: from.x + dx / len * dist, y: from.y + dy / len * dist };
+    };
+    if (srcSp > 0) points[0] = nudge(points[0], points[1], srcSp);
+    if (tgtSp > 0) points[points.length - 1] = nudge(points[points.length - 1], points[points.length - 2], tgtSp);
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });
 
     // JS-registered edge shapes: exact headless transcription from source.

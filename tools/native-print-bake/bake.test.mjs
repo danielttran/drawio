@@ -1380,6 +1380,27 @@ test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async 
   assert.match(edge.d, /L 170 20 C 180 20/, `edge corner radius should be 10: ${edge.d.slice(0, 50)}`);
 });
 
+test('edge: perimeterSpacing creates a gap between shape and connector', async () => {
+  // REGRESSION (WYSIWYG): perimeterSpacing (+ source/targetPerimeterSpacing)
+  // was ignored, so the connector touched the shape instead of leaving the gap
+  // drawio draws.
+  const mk = (ps) => `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="80" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" parent="1"><mxGeometry x="300" y="80" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" style="perimeterSpacing=${ps};" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const ends = (contract) => {
+    const e = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null && n.stroke);
+    const m = e.d.match(/^M ([\d.]+) [\d.]+ L ([\d.]+) /);
+    return { x0: parseFloat(m[1]), x1: parseFloat(m[2]) };
+  };
+  const e0 = ends((await bake(mk('0'), { keepPx: true })).contract);
+  const e20 = ends((await bake(mk('20'), { keepPx: true })).contract);
+  assert.ok(Math.abs((e20.x0 - e0.x0) - 20) < 0.01, `source endpoint should pull in by 20: ${e0.x0}->${e20.x0}`);
+  assert.ok(Math.abs((e0.x1 - e20.x1) - 20) < 0.01, `target endpoint should pull in by 20: ${e0.x1}->${e20.x1}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
