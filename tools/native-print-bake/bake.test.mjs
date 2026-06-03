@@ -992,6 +992,61 @@ test('stencil: explicit <fillcolor color="#hex"> and unresolved-no-default keys 
     'concrete stencil fill color must pass through untouched');
 });
 
+test('stencil: default-attr color family renders across packages (whole bug class)', async () => {
+  // Broad regression for the silent-invisible bug class: EVERY stencil whose
+  // definition paints via `<fill|stroke|fontcolor … default="#hex">` (1100+
+  // shapes: cisco, eip, salesforce, gmdl, gcp2, veeam, mscae, floorplan, …)
+  // printed blank before resolveStencilColor(). The buggy code emitted
+  // fill="none" (no key leak), so the precise signature is "the stencil's OWN
+  // default colour is ABSENT from the bake". We sample across families and
+  // assert each baked shape contains at least one of its own default colours.
+  // String-level (no rasterizer) so it runs in the standard suite.
+  const registry = await loadStencils(resolve(here, '../../src/main/webapp/stencils'));
+  // Only collect defaults that WILL be used: a `default` is consulted only when
+  // the color references a style key absent from the cell. We bake with the
+  // standard fillColor/strokeColor set, so defaults keyed on those standard
+  // names are legitimately shadowed by the cell value (and fontcolor defaults
+  // never show with an empty label). Restrict to non-standard keys on
+  // fill/stroke nodes — exactly the paths whose visibility depends on the fix.
+  const STD_KEYS = new Set(['fillColor', 'strokeColor', 'fontColor', 'fill', 'stroke', 'font']);
+  const defaultsOf = (node, acc = new Set()) => {
+    if (!node) return acc;
+    if (['fillcolor', 'strokecolor'].includes(node.name) && node.attrs &&
+        /^#[0-9a-fA-F]{3,6}$/.test(node.attrs.default || '') &&
+        node.attrs.color && !STD_KEYS.has(node.attrs.color)) {
+      acc.add(node.attrs.default.toLowerCase());
+    }
+    for (const c of node.children || []) defaultsOf(c, acc);
+    return acc;
+  };
+  const affected = [];
+  for (const [key, node] of registry.entries()) {
+    const defs = defaultsOf(node);
+    if (defs.size) affected.push([key, [...defs]]);
+  }
+  assert.ok(affected.length >= 1000,
+    `expected the full default-attr stencil class, found ${affected.length}`);
+
+  // Sample evenly across the catalogue (caps bake count; keeps families mixed).
+  const step = Math.ceil(affected.length / 80);
+  const sample = affected.filter((_, i) => i % step === 0);
+  const misses = [];
+  for (const [key, defs] of sample) {
+    const { contract, notices } = await bake(makeStencilXml(`shape=${key};fillColor=#dae8fc;strokeColor=#6c8ebf;`, ''), { keepPx: true });
+    if (notices.length) continue; // a loud notice is not a silent blank — out of scope
+    const joined = contract.document.pages[0].paint
+      .filter((n) => n.kind === 'svg')
+      .map((n) => Buffer.from(n.source, 'base64').toString('utf8').toLowerCase())
+      .join('\n');
+    if (!defs.some((d) => joined.includes('fill="' + d + '"') ||
+                          joined.includes('stroke="' + d + '"'))) {
+      misses.push(key);
+    }
+  }
+  assert.deepEqual(misses, [],
+    `stencils rendering WITHOUT any of their default colours (silent-invisible regression): ${misses.join(', ')}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
