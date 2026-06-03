@@ -1851,6 +1851,7 @@
     if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
     var pads = labelPads(style);
     var pl = pads.l, pr = pads.r, pt = pads.t, pb = pads.b;
+    var letterSp = number(style.letterSpacing, 0); // drawio letterSpacing (CSS letter-spacing)
     var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
 
     // HTML label -> faithful per-run rich-text renderer (colour / family / size
@@ -1938,6 +1939,7 @@
         ' font-size="' + fmt(r.size) + '" font-weight="' + r.weight + '"' +
         ((fst & 2) ? ' font-style="italic"' : '') +
         (rowDec.length ? ' text-decoration="' + rowDec.join(' ') + '"' : '') +
+        (letterSp ? ' letter-spacing="' + fmt(letterSp) + '"' : '') +
         ' fill="' + color + '" text-anchor="' + anchor +
         '" dominant-baseline="text-before-edge" xml:space="preserve">' +
         escXml(r.text) + '</text>';

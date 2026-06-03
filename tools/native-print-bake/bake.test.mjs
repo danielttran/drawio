@@ -1271,6 +1271,24 @@ test('label: spacing / spacingLeft / spacingTop inset the label (drawio mxText)'
   assert.ok(st && Math.abs(st.y - 17) < 0.01, `spacingTop=15 -> y should be 17, got ${st && st.y}`);
 });
 
+test('label: plain label honors letterSpacing', async () => {
+  // REGRESSION: the rich path applied letterSpacing but the plain (non-HTML)
+  // text path dropped it, so a plain label with letterSpacing printed with
+  // default spacing.
+  const mk = (ls) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="SPACED" style="rounded=0;letterSpacing=${ls};" parent="1"><mxGeometry x="20" y="20" width="120" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const svgText = (contract) => {
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'svg') { const s = Buffer.from(n.source, 'base64').toString('utf8'); if (/SPACED/.test(s)) return s; }
+    }
+    return '';
+  };
+  assert.doesNotMatch(svgText((await bake(mk('0'), { keepPx: true })).contract), /letter-spacing/);
+  assert.match(svgText((await bake(mk('5'), { keepPx: true })).contract), /letter-spacing="5"/);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
