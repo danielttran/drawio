@@ -1306,6 +1306,22 @@ test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () =
   assert.match(shadow.d, /^M 2 3 /, `shadow offset should be (2,3): ${shadow.d.slice(0, 20)}`);
 });
 
+test('shape: glass=1 renders the glass highlight overlay (not silently dropped)', async () => {
+  // REGRESSION (WYSIWYG): drawio's glass effect (a white top highlight with a
+  // 0.9->0.1 alpha gradient) was dropped silently. Now emitted as an overlay.
+  const glass = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;glass=1;fillColor=#0000ff;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const plain = glass.replace('glass=1;', '');
+  const { contract: gc } = await bake(glass, { keepPx: true });
+  const { contract: pc } = await bake(plain, { keepPx: true });
+  const overlay = (c) => c.document.pages[0].paint.some(
+    (n) => n.kind === 'svg' && /glassg/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(overlay(gc), 'glass=1 must emit a glass highlight overlay');
+  assert.ok(!overlay(pc), 'a non-glass shape must not emit a glass overlay');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

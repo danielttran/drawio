@@ -2008,6 +2008,28 @@
     };
   }
 
+  // drawio glass effect (mxShape.paintGlassEffect): a white highlight over the
+  // top ~40% of the shape, filled with a south gradient fading 0.9 -> 0.1 alpha.
+  // Previously dropped silently. Returns the inner SVG content for a box-sized
+  // overlay node (no own stroke). Coordinates are box-relative (0..w, 0..h).
+  function glassOverlaySvg(style, w, h) {
+    var sw = Math.ceil(number(style.strokeWidth, 1) / 2);
+    var size = 0.4;
+    var rounded = boolish(style.rounded);
+    var arc = (rounded ? roundedRectRadius(style, w, h) : 0) + 2 * sw;
+    var d = rounded
+      ? 'M ' + p(-sw + arc, -sw) + ' Q ' + p(-sw, -sw) + ' ' + p(-sw, -sw + arc) +
+        ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' + p(w + sw, h * size) +
+        ' L ' + p(w + sw, -sw + arc) + ' Q ' + p(w + sw, -sw) + ' ' + p(w + sw - arc, -sw) + ' Z'
+      : 'M ' + p(-sw, -sw) + ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' +
+        p(w + sw, h * size) + ' L ' + p(w + sw, -sw) + ' Z';
+    return '<defs><linearGradient id="glassg" gradientUnits="userSpaceOnUse" ' +
+      'x1="0" y1="0" x2="0" y2="' + fmt(h * 0.6) + '">' +
+      '<stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>' +
+      '<stop offset="1" stop-color="#ffffff" stop-opacity="0.1"/></linearGradient></defs>' +
+      '<path d="' + d + '" fill="url(#glassg)" stroke="none"/>';
+  }
+
   function roundedRectPath(x, y, w, h, r) {
     r = Math.min(Math.max(0, r), w / 2, h / 2);
     if (r <= 0) return rectPath(x, y, w, h);
@@ -5576,6 +5598,11 @@
           fill: fillOf(style),
           stroke: strokeOf(style)
         });
+      }
+      // Glass highlight overlay (drawio glass=1), painted over the shape body.
+      if (boolish(style.glass)) {
+        paint.push(paddedSvgShapeNode(glassOverlaySvg(style, box.w, box.h),
+          { x: box.x, y: box.y, w: box.w, h: box.h }, { strokeColor: 'none' }));
       }
     }
 
