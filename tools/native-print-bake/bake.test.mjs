@@ -1322,6 +1322,30 @@ test('shape: glass=1 renders the glass highlight overlay (not silently dropped)'
   assert.ok(!overlay(pc), 'a non-glass shape must not emit a glass overlay');
 });
 
+test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', async () => {
+  // REGRESSION (WYSIWYG): flipH/flipV were honored for stencils but IGNORED for
+  // built-in shapePath shapes (triangle, parallelogram, ...), so a flipped
+  // triangle printed un-flipped. The geometry is now mirrored about the box
+  // centre (the label stays upright, matching drawio).
+  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const pathD = (contract) => {
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'path');
+    return n && n.d;
+  };
+  // triangle apex is top-centre (y=0); flipV must move the apex to the bottom (y=60).
+  const norm = pathD((await bake(mk('triangle;'), { keepPx: true })).contract);
+  const flv = pathD((await bake(mk('triangle;flipV=1;'), { keepPx: true })).contract);
+  assert.match(norm, /^M 50 0 /, 'normal triangle apex at top');
+  assert.match(flv, /^M 50 60 /, 'flipV triangle apex must move to bottom');
+  // parallelogram flipH must mirror horizontally (differs from unflipped).
+  const pn = pathD((await bake(mk('shape=parallelogram;'), { keepPx: true })).contract);
+  const pf = pathD((await bake(mk('shape=parallelogram;flipH=1;'), { keepPx: true })).contract);
+  assert.notEqual(pn, pf, 'parallelogram flipH must change the geometry');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

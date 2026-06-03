@@ -1981,6 +1981,38 @@
       p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
+  // Mirror an absolute SVG path about the box centre (cx,cy) for flipH/flipV.
+  // Built-in shapePath shapes ignored flip (only stencils flipped). Reflecting
+  // the geometry (label stays unflipped/upright, as drawio does) fixes that.
+  // Arc commands flip their x-axis-rotation sign and toggle the sweep flag when
+  // exactly one axis is mirrored (orientation reverses).
+  function flipPathD(d, cx, cy, fh, fv) {
+    if (!fh && !fv) return d;
+    var toks = String(d).match(/[a-zA-Z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+    var out = [], i = 0, cmd = '';
+    var FX = function (x) { return fh ? 2 * cx - x : x; };
+    var FY = function (y) { return fv ? 2 * cy - y : y; };
+    var num = function () { return parseFloat(toks[i++]); };
+    var swap = fh !== fv; // exactly one mirror -> orientation reversed
+    while (i < toks.length) {
+      if (/[a-zA-Z]/.test(toks[i])) { cmd = toks[i++]; out.push(cmd); }
+      var C = cmd.toUpperCase();
+      if (C === 'M' || C === 'L' || C === 'T' || C === 'S' || C === 'Q' || C === 'C') {
+        var pairs = C === 'C' ? 3 : (C === 'S' || C === 'Q') ? 2 : 1;
+        for (var k = 0; k < pairs; k++) { out.push(fmt(FX(num()))); out.push(fmt(FY(num()))); }
+      } else if (C === 'H') { out.push(fmt(FX(num())));
+      } else if (C === 'V') { out.push(fmt(FY(num())));
+      } else if (C === 'A') {
+        out.push(fmt(num())); out.push(fmt(num())); // rx ry
+        out.push(fmt(swap ? -num() : num()));        // x-axis-rotation
+        out.push(fmt(num()));                        // large-arc-flag (unchanged)
+        out.push(fmt(swap ? (num() ? 0 : 1) : num())); // sweep-flag toggled if one mirror
+        out.push(fmt(FX(num()))); out.push(fmt(FY(num()))); // x y
+      } else if (C === 'Z') { /* no args */ }
+    }
+    return out.join(' ');
+  }
+
   // Rounded-rectangle corner radius, matching drawio mxRectangleShape.
   // Relative (default): f = arcSize/100 (default RECTANGLE_ROUNDING_FACTOR*100
   // = 15), r = min(w,h)*f. Absolute (absoluteArcSize=1): r = min(w/2, h/2,
@@ -5509,6 +5541,15 @@
         notices.push(degradation('ExporterUnsupportedShape',
           'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
       }
+      // flipH/flipV mirror the shape geometry (label stays upright, per drawio).
+      // Stencils flip on their own path; built-in shapePath shapes did not.
+      // Applied to the non-rotated path here (and to the relative paths used by
+      // the sketch/gradient svg branches below).
+      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
+      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
+      if (!number(style.rotation, 0) && (flipH_ || flipV_)) {
+        d = flipPathD(d, box.x + box.w / 2, box.y + box.h / 2, flipH_, flipV_);
+      }
 
       // Rotated shape (headless): construct a kind:'svg' node so both the shape
       // outline AND the label rotate together around the cell centre. This is
@@ -5576,6 +5617,7 @@
         var skFs = style.fillStyle || 'hachure';
         if (skFs === 'hachure' || skFs === 'cross-hatch' || skFs === 'dots') {
           var skRelD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
+          if (!number(style.rotation, 0) && (flipH_ || flipV_)) skRelD = flipPathD(skRelD, box.w / 2, box.h / 2, flipH_, flipV_);
           paint.push(paddedSvgShapeNode(sketchFillSvg(style, skRelD, box.w, box.h),
             { x: box.x, y: box.y, w: box.w, h: box.h }, style));
         } else {
@@ -5589,6 +5631,7 @@
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
           hex(style.gradientColor), style.gradientDirection) + '</defs>';
         var relD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
+        if (!number(style.rotation, 0) && (flipH_ || flipV_)) relD = flipPathD(relD, box.w / 2, box.h / 2, flipH_, flipV_);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
       } else {
