@@ -1995,6 +1995,19 @@
     return Math.min(w * f, h * f);
   }
 
+  // drawio shadow: SHADOWCOLOR #808080 at SHADOW_OPACITY 1, offset
+  // (SHADOW_OFFSET_X=2, SHADOW_OFFSET_Y=3), with per-cell shadowColor /
+  // shadowOpacity / shadowOffsetX / shadowOffsetY overrides. The bake previously
+  // used black@0.18 at (4,4) — too light and too far offset.
+  function shadowParams(style) {
+    return {
+      color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#808080',
+      alpha: number(style && style.shadowOpacity, 1),
+      dx: number(style && style.shadowOffsetX, 2),
+      dy: number(style && style.shadowOffsetY, 3)
+    };
+  }
+
   function roundedRectPath(x, y, w, h, r) {
     r = Math.min(Math.max(0, r), w / 2, h / 2);
     if (r <= 0) return rectPath(x, y, w, h);
@@ -5457,8 +5470,9 @@
       // would flatten the dog-ear to a plain rectangle.
       if (style.shape === 'note') {
         if (boolish(style.shadow)) {
-          paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, '#000000', 0.18),
-            { x: box.x + 4, y: box.y + 4, w: box.w, h: box.h }, { strokeColor: 'none' }));
+          var nsp = shadowParams(style);
+          paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, nsp.color, nsp.alpha),
+            { x: box.x + nsp.dx, y: box.y + nsp.dy, w: box.w, h: box.h }, { strokeColor: 'none' }));
         }
         paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
@@ -5522,11 +5536,12 @@
       }
 
       if (boolish(style.shadow)) {
+        var gsp = shadowParams(style);
         paint.push({
           kind: 'path',
-          d: shapePath(style, box.x + 4, box.y + 4, box.w, box.h) ||
-             rectPath(box.x + 4, box.y + 4, box.w, box.h),
-          fill: solid('#000000', 0.18),
+          d: shapePath(style, box.x + gsp.dx, box.y + gsp.dy, box.w, box.h) ||
+             rectPath(box.x + gsp.dx, box.y + gsp.dy, box.w, box.h),
+          fill: solid(gsp.color, gsp.alpha),
           stroke: null
         });
       }

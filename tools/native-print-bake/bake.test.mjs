@@ -1289,6 +1289,23 @@ test('label: plain label honors letterSpacing', async () => {
   assert.match(svgText((await bake(mk('5'), { keepPx: true })).contract), /letter-spacing="5"/);
 });
 
+test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () => {
+  // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4).
+  // drawio uses SHADOWCOLOR #808080 at SHADOW_OPACITY 1, offset
+  // (SHADOW_OFFSET_X=2, SHADOW_OFFSET_Y=3), with per-cell overrides.
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="150"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ffffff;shadow=1;" parent="1"><mxGeometry x="40" y="40" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const shadow = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#808080');
+  assert.ok(shadow, 'shadow path should use drawio shadow colour #808080');
+  assert.equal(shadow.fill.alpha, 1, 'shadow opacity should be 1');
+  // shadow offset (2,3): the silhouette path starts at the offset, not (4,4).
+  assert.match(shadow.d, /^M 2 3 /, `shadow offset should be (2,3): ${shadow.d.slice(0, 20)}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
