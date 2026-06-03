@@ -1123,6 +1123,32 @@
       (style && style.whiteSpace === 'wrap');
   }
 
+  // Place a label box OUTSIDE the shape per drawio's labelPosition (left/right)
+  // and verticalLabelPosition (top/bottom). Returns the shape box unchanged for
+  // the default center/middle placement. The existing style.align/verticalAlign
+  // anchoring then lands the text against the correct shape edge (e.g.
+  // labelPosition=right is paired with align=left so text starts at the right
+  // edge). Width/height for the external band are generous so text isn't clipped.
+  function externalLabelBox(style, box) {
+    var lp = style && style.labelPosition;
+    var vlp = style && style.verticalLabelPosition;
+    var horiz = lp && lp !== 'center';
+    var vert = vlp && vlp !== 'middle';
+    if (!horiz && !vert) return box;
+    var bx = box.x, by = box.y, bw = box.w, bh = box.h;
+    if (vert) {
+      var bandH = Math.max(16, number(style.fontSize, 12) * 1.5);
+      if (vlp === 'bottom') { by = box.y + box.h; bh = bandH; }
+      else if (vlp === 'top') { by = box.y - bandH; bh = bandH; }
+    }
+    if (horiz) {
+      var sideW = Math.max(box.w, number(style.fontSize, 12) * 8);
+      if (lp === 'right') { bx = box.x + box.w; bw = sideW; }
+      else if (lp === 'left') { bx = box.x - sideW; bw = sideW; }
+    }
+    return { x: bx, y: by, w: bw, h: bh };
+  }
+
   function textDefaultAlign(style) {
     return alignH(style.align || (style.shape === 'text' ? 'left' : 'center'));
   }
@@ -5448,6 +5474,12 @@
     } else if (style.shape === 'table') {
       var tableHeader = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
       if (tableHeader > 0) swimLabelBx = { x: box.x, y: box.y, w: box.w, h: tableHeader };
+    } else {
+      // labelPosition / verticalLabelPosition place the label OUTSIDE the shape
+      // (drawio). The plain-shape path previously ignored them, painting the
+      // label over the shape — a silent positional divergence. (Stencils/icons
+      // handle this on their own paths.)
+      swimLabelBx = externalLabelBox(style, box);
     }
     if (label !== '') {
       var vlb = labelBoxNode(style, swimLabelBx);

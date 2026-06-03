@@ -1146,6 +1146,34 @@ test('label: non-HTML labels render literal angle brackets (drawio isHtmlLabel p
   }
 });
 
+test('label: plain shape honors labelPosition / verticalLabelPosition (label outside shape)', async () => {
+  // REGRESSION (WYSIWYG): the plain-shape label path placed the label on the
+  // shape box, ignoring labelPosition (left/right) and verticalLabelPosition
+  // (top/bottom) — so an external label silently painted over the shape.
+  // Stencils/icons already handled this; plain geometric shapes did not.
+  const mk = (style) => `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="LBL" style="${style}" parent="1"><mxGeometry x="250" y="180" width="80" height="50" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelBox = (contract) => {
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'svg' && /LBL/.test(Buffer.from(n.source, 'base64').toString('utf8'))) return n.box;
+    }
+    return null;
+  };
+  // Establish the shape box from the centered (default) case.
+  const center = labelBox((await bake(mk('rounded=0;'), { keepPx: true })).contract);
+  assert.ok(center, 'centered label present');
+  const right = labelBox((await bake(mk('rounded=0;labelPosition=right;align=left;'), { keepPx: true })).contract);
+  assert.ok(right && right.x >= center.x + center.w - 0.5, `labelPosition=right not outside shape (x=${right && right.x}, shapeRight=${center.x + center.w})`);
+  const left = labelBox((await bake(mk('rounded=0;labelPosition=left;align=right;'), { keepPx: true })).contract);
+  assert.ok(left && left.x + left.w <= center.x + 0.5, `labelPosition=left not outside shape (x=${left && left.x})`);
+  const bottom = labelBox((await bake(mk('rounded=0;verticalLabelPosition=bottom;verticalAlign=top;'), { keepPx: true })).contract);
+  assert.ok(bottom && bottom.y >= center.y + center.h - 0.5, `verticalLabelPosition=bottom not below shape (y=${bottom && bottom.y})`);
+  const top = labelBox((await bake(mk('rounded=0;verticalLabelPosition=top;verticalAlign=bottom;'), { keepPx: true })).contract);
+  assert.ok(top && top.y + top.h <= center.y + 0.5, `verticalLabelPosition=top not above shape (y=${top && top.y})`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
