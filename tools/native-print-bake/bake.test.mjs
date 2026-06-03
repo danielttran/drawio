@@ -1245,6 +1245,32 @@ test('shape: dash pattern scales with stroke width (drawio createDashPattern)', 
   assert.deepEqual(dashOf((await bake(mk('rounded=0;dashed=1;strokeWidth=4;fixDash=1;'), { keepPx: true })).contract), [3, 3]);
 });
 
+test('label: spacing / spacingLeft / spacingTop inset the label (drawio mxText)', async () => {
+  // REGRESSION (WYSIWYG): the label renderer used a flat pad=2 and ignored
+  // spacing / spacingLeft / spacingTop / etc. drawio insets the label by
+  // spacing (default 2) + the per-side spacing (default 0). A label with
+  // spacingLeft=52 printed flush-left instead of indented.
+  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="150"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="T" style="${style}" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const textPos = (contract) => {
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      const m = s.match(/<text\b[^>]*\bx="([0-9.]+)"[^>]*\by="([0-9.]+)"/);
+      if (m && />T</.test(s)) return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+    }
+    return null;
+  };
+  const base = textPos((await bake(mk('rounded=0;align=left;verticalAlign=top;'), { keepPx: true })).contract);
+  assert.ok(base && Math.abs(base.x - 2) < 0.01 && Math.abs(base.y - 2) < 0.01, `default inset should be 2/2, got ${JSON.stringify(base)}`);
+  const sl = textPos((await bake(mk('rounded=0;align=left;verticalAlign=top;spacingLeft=20;'), { keepPx: true })).contract);
+  assert.ok(sl && Math.abs(sl.x - 22) < 0.01, `spacingLeft=20 -> x should be 22, got ${sl && sl.x}`);
+  const st = textPos((await bake(mk('rounded=0;align=left;verticalAlign=top;spacingTop=15;'), { keepPx: true })).contract);
+  assert.ok(st && Math.abs(st.y - 17) < 0.01, `spacingTop=15 -> y should be 17, got ${st && st.y}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

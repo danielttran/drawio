@@ -1101,10 +1101,10 @@
       if (!rich || rich.body === '') return '';
       var v = textDefaultValign(style);
       if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
-      var off = v === 'middle' ? (h - rich.height) / 2 : v === 'bottom' ? h - rich.height : 0;
+      var rlpads = labelPads(style);
+      var off = v === 'middle' ? (h - rich.height) / 2 : v === 'bottom' ? h - rich.height - rlpads.b : rlpads.t;
       off = Math.max(0, off);
-      var pad = style.shape === 'text' ? 0 : 2;
-      return '<g transform="translate(' + fmt(ox + pad) + ' ' + fmt(oy + off) + ')">' +
+      return '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
         rich.body + '</g>';
     }
     return label !== '' ? textSvgStr(label, ox + w / 2, oy + h / 2, style) : '';
@@ -1131,6 +1131,21 @@
   function isHtmlLabelStyle(style) {
     return number(style && style.html, 0) === 1 ||
       (style && style.whiteSpace === 'wrap');
+  }
+
+  // Per-side label padding, matching drawio mxText: each side = global spacing
+  // (STYLE_SPACING default 2) + the per-side spacingLeft/Right/Top/Bottom
+  // (default 0). The `text` shape keeps the bake's historical zero base. The old
+  // code used a flat pad=2 and ignored per-side spacing, so a label with e.g.
+  // spacingLeft=52 printed flush-left instead of indented.
+  function labelPads(style) {
+    var base = (style && style.shape === 'text') ? 0 : number(style && style.spacing, 2);
+    return {
+      l: base + number(style && style.spacingLeft, 0),
+      r: base + number(style && style.spacingRight, 0),
+      t: base + number(style && style.spacingTop, 0),
+      b: base + number(style && style.spacingBottom, 0)
+    };
   }
 
   // Place a label box OUTSIDE the shape per drawio's labelPosition (left/right)
@@ -1813,11 +1828,11 @@
     var defAlign = textDefaultAlign(style);
     var entries = buildRichModel(host, baseSt, defAlign, resolved, notices, cellId);
     if (!entries.length) return { body: '', height: 0 };
-    var pad = style.shape === 'text' ? 0 : 2;
+    var rpads = labelPads(style);
     var wrap = style.whiteSpace === 'wrap';
-    var contentW = Math.max(1, box.w - pad * 2);
+    var contentW = Math.max(1, box.w - rpads.l - rpads.r);
     var laid = layoutBlocks(entries, contentW, wrap, defAlign);
-    return { body: laid.svg, height: laid.height, pad: pad, contentW: contentW };
+    return { body: laid.svg, height: laid.height, pad: rpads.l, contentW: contentW };
   }
 
   function textSvgNode(graph, cell, style, box, label, notices, resolved) {
@@ -1834,7 +1849,8 @@
     // not the style's verticalAlign. (UML Component has no verticalAlign yet
     // its title sits at the top in the editor.)
     if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
-    var pad = style.shape === 'text' ? 0 : 2;
+    var pads = labelPads(style);
+    var pl = pads.l, pr = pads.r, pt = pads.t, pb = pads.b;
     var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
 
     // HTML label -> faithful per-run rich-text renderer (colour / family / size
@@ -1852,9 +1868,9 @@
       var richEls = '';
       if (rich.body !== '') {
         var oy = v === 'middle' ? (lh - rich.height) / 2 :
-          v === 'bottom' ? lh - rich.height : 0;
+          v === 'bottom' ? lh - rich.height - pb : pt;
         oy = Math.max(0, oy);
-        var body = '<g transform="translate(' + fmt(pad) + ' ' + fmt(oy) + ')">' +
+        var body = '<g transform="translate(' + fmt(pl) + ' ' + fmt(oy) + ')">' +
           rich.body + '</g>';
         if (vertical) {
           var vcx = box.w / 2, vcy = box.h / 2;
@@ -1877,7 +1893,7 @@
     // Non-HTML labels are literal text: render verbatim (no tag stripping), so
     // e.g. "List<String>" keeps its angle brackets exactly as drawio shows them.
     var blocks = htmlTextBlocks(src, style, !labelIsHtml);
-    var usableW = Math.max(1, box.w - pad * 2);
+    var usableW = Math.max(1, box.w - pl - pr);
     var rows = [];
     blocks.forEach(function (b) {
       if (b.rule) {
@@ -1895,7 +1911,7 @@
       return sum + r.lineH + (i === 0 ? 0 : r.gap);
     }, 0);
     var y = v === 'middle' ? (box.h - totalH) / 2 :
-      v === 'bottom' ? box.h - totalH : 0;
+      v === 'bottom' ? box.h - totalH - pb : pt;
     y = Math.max(0, y);
     var decoration = [];
     if (fst & 4) decoration.push('underline');
@@ -1908,13 +1924,13 @@
         // <hr> divider: a horizontal line across the inner width, centered in
         // its row band (≈ baseSize tall → ~half above / half below the line).
         var ry = ty + r.lineH / 2;
-        return '<line x1="' + fmt(pad) + '" y1="' + fmt(ry) +
-          '" x2="' + fmt(box.w - pad) + '" y2="' + fmt(ry) +
+        return '<line x1="' + fmt(pl) + '" y1="' + fmt(ry) +
+          '" x2="' + fmt(box.w - pr) + '" y2="' + fmt(ry) +
           '" stroke="' + color + '" stroke-width="1"/>';
       }
       var rowH = alignH(r.align || h);
       var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
-      var x = rowH === 'right' ? box.w - pad : rowH === 'center' ? box.w / 2 : pad;
+      var x = rowH === 'right' ? box.w - pr : rowH === 'center' ? box.w / 2 : pl;
       var rowDec = decoration.slice();
       if (r.underline && rowDec.indexOf('underline') < 0) rowDec.push('underline');
       return '<text x="' + fmt(x) + '" y="' + fmt(ty) +
