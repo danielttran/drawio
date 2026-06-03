@@ -143,7 +143,7 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
   const paint = result.contract.document.pages[0].paint;
 
   assert.equal(paint[0].kind, 'path');
-  assert.match(paint[0].d, / C 50 0 50 0 50 8 /);
+  assert.match(paint[0].d, / C 50 0 50 0 50 10 /); // edge corner radius = arcSize/2 = 10 (drawio mxPolyline)
   assert.deepEqual(paint[0].stroke.paint, { type: 'solid', color: '#123456', alpha: 1 });
   assert.equal(paint[1].fill.color, '#123456');
   assert.match(paint[1].d, /^M 50 50 L /);

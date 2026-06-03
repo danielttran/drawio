@@ -2711,7 +2711,7 @@
     return null;
   }
 
-  function edgePath(points, rounded, curved) {
+  function edgePath(points, rounded, curved, radius) {
     if (curved && points.length === 4) {
       return 'M ' + p(points[0].x, points[0].y) + ' C ' +
         p(points[1].x, points[1].y) + ' ' +
@@ -2723,7 +2723,9 @@
       for (var i = 1; i < points.length; i++) d += ' L ' + p(points[i].x, points[i].y);
       return d;
     }
-    var radius = 8;
+    // drawio mxPolyline rounds corners with arcSize = (style arcSize ||
+    // LINE_ARCSIZE=20) / 2 = 10 by default. Was a hardcoded 8.
+    var radius = radius > 0 ? radius : 10;
     var out = 'M ' + p(points[0].x, points[0].y);
     for (var j = 1; j < points.length - 1; j++) {
       var prev = points[j - 1], cur = points[j], next = points[j + 1];
@@ -5883,7 +5885,7 @@
     }
     paint.push({
       kind: 'path',
-      d: edgePath(points, boolish(style.rounded), boolish(style.curved)),
+      d: edgePath(points, boolish(style.rounded), boolish(style.curved), number(style.arcSize, 20) / 2),
       fill: null,
       stroke: stroke
     });

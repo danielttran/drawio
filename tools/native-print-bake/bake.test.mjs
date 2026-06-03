@@ -1363,6 +1363,23 @@ test('image: cell opacity is applied (frozen contract has no image opacity field
   assert.match(Buffer.from(svg.source, 'base64').toString('utf8'), /opacity="0\.5"/, 'image opacity 0.5 applied');
 });
 
+test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async () => {
+  // REGRESSION: edge bend rounding used a hardcoded radius 8; drawio rounds with
+  // (style.arcSize || LINE_ARCSIZE=20)/2 = 10 by default (every rounded edge).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" parent="1"><mxGeometry x="300" y="220" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" style="rounded=1;" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="200" y="40"/><mxPoint x="200" y="240"/></Array></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null && /C/.test(n.d || ''));
+  assert.ok(edge, 'rounded edge present with curve');
+  // First bend at x=180: the straight segment ends 10px before it (L ...170...),
+  // not 8px (172). Assert the corner control sequence uses the 10px radius.
+  assert.match(edge.d, /L 170 20 C 180 20/, `edge corner radius should be 10: ${edge.d.slice(0, 50)}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
