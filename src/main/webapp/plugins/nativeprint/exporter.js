@@ -1405,6 +1405,175 @@
     return 'M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
   }
 
+  // Flowchart / general palette shapes that are plain mxShape subclasses in
+  // draw.io. The live exporter harvests their already-rendered SVG; these
+  // headless equivalents keep browser-free bake output faithful enough to avoid
+  // a degradation notice for normal object types.
+  function parallelogramPath(x, y, w, h) {
+    var dx = Math.min(w * 0.25, h * 0.5);
+    return 'M ' + p(x + dx, y) + ' L ' + p(x + w, y) + ' L ' +
+      p(x + w - dx, y + h) + ' L ' + p(x, y + h) + ' Z';
+  }
+
+  function stepPath(x, y, w, h) {
+    var dx = Math.min(w * 0.22, h * 0.5);
+    return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) + ' L ' +
+      p(x + w, y + h / 2) + ' L ' + p(x + w - dx, y + h) +
+      ' L ' + p(x, y + h) + ' Z';
+  }
+
+  function calloutPath(x, y, w, h) {
+    var r = Math.min(w, h) * 0.12;
+    var tailX = x + w * 0.34, tailY = y + h;
+    var tailTipX = x + w * 0.22, tailTipY = y + h + Math.max(8, h * 0.22);
+    var tailX2 = x + w * 0.50;
+    return 'M ' + p(x + r, y) + ' L ' + p(x + w - r, y) +
+      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + w, y + r) +
+      ' L ' + p(x + w, y + h - r) +
+      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + w - r, y + h) +
+      ' L ' + p(tailX2, y + h) + ' L ' + p(tailTipX, tailTipY) +
+      ' L ' + p(tailX, tailY) + ' L ' + p(x + r, y + h) +
+      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x, y + h - r) +
+      ' L ' + p(x, y + r) +
+      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + r, y) + ' Z';
+  }
+
+  function tapePath(x, y, w, h) {
+    var a = Math.min(h * 0.12, w * 0.08);
+    return 'M ' + p(x, y + a) +
+      ' C ' + p(x + w * 0.25, y - a) + ' ' + p(x + w * 0.75, y + 3 * a) + ' ' + p(x + w, y + a) +
+      ' L ' + p(x + w, y + h - a) +
+      ' C ' + p(x + w * 0.75, y + h + a) + ' ' + p(x + w * 0.25, y + h - 3 * a) + ' ' + p(x, y + h - a) +
+      ' Z';
+  }
+
+  function cardPath(x, y, w, h) {
+    var dx = Math.min(w * 0.18, h * 0.35);
+    return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) + ' L ' +
+      p(x + w, y + dx) + ' L ' + p(x + w, y + h) + ' L ' +
+      p(x, y + h) + ' Z';
+  }
+
+  function cubePath(x, y, w, h) {
+    var dx = Math.min(w * 0.22, h * 0.22);
+    return 'M ' + p(x, y + dx) + ' L ' + p(x + dx, y) + ' L ' +
+      p(x + w, y) + ' L ' + p(x + w, y + h - dx) + ' L ' +
+      p(x + w - dx, y + h) + ' L ' + p(x, y + h) + ' Z' +
+      ' M ' + p(x, y + dx) + ' L ' + p(x + w - dx, y + dx) +
+      ' L ' + p(x + w, y) + ' M ' + p(x + w - dx, y + dx) +
+      ' L ' + p(x + w - dx, y + h);
+  }
+
+  function trapezoidPath(x, y, w, h) {
+    var dx = Math.min(w * 0.25, h * 0.5);
+    return 'M ' + p(x + dx, y) + ' L ' + p(x + w - dx, y) + ' L ' +
+      p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
+  }
+
+  function documentPath(x, y, w, h) {
+    var dy = Math.min(h * 0.18, 18);
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h - dy) +
+      ' C ' + p(x + w * 0.75, y + h + dy) + ' ' + p(x + w * 0.25, y + h - 3 * dy) + ' ' + p(x, y + h - dy) + ' Z';
+  }
+
+  function isoRectanglePath(x, y, w, h) {
+    var tan30 = Math.tan(Math.PI / 6);
+    var tan30Dx = (0.5 - tan30) / 2;
+    var m = Math.min(w, h / tan30);
+    var ox = x + (w - m) / 2, oy = y + (h - m) / 2 + m / 4;
+    return 'M ' + p(ox, oy + 0.25 * m) + ' L ' + p(ox + 0.5 * m, oy + m * tan30Dx) +
+      ' L ' + p(ox + m, oy + 0.25 * m) + ' L ' + p(ox + 0.5 * m, oy + (0.5 - tan30Dx) * m) + ' Z';
+  }
+
+  function isoCubePath(x, y, w, h) {
+    var tan30 = Math.tan(Math.PI / 6);
+    var tan30Dx = (0.5 - tan30) / 2;
+    var m = Math.min(w, h / (0.5 + tan30));
+    var ox = x + (w - m) / 2, oy = y + (h - m) / 2;
+    var topY = oy + 0.25 * m, midY = oy + (0.5 - tan30Dx) * m, botY = oy + 0.75 * m;
+    var lowY = oy + (1 - tan30Dx) * m;
+    return 'M ' + p(ox, topY) + ' L ' + p(ox + 0.5 * m, oy + m * tan30Dx) +
+      ' L ' + p(ox + m, topY) + ' L ' + p(ox + m, botY) +
+      ' L ' + p(ox + 0.5 * m, lowY) + ' L ' + p(ox, botY) + ' Z' +
+      ' M ' + p(ox, topY) + ' L ' + p(ox + 0.5 * m, midY) + ' L ' + p(ox + m, topY) +
+      ' M ' + p(ox + 0.5 * m, midY) + ' L ' + p(ox + 0.5 * m, lowY);
+  }
+
+  function datastorePath(x, y, w, h) {
+    var dy = Math.min(h / 2, Math.round(h / 8));
+    return 'M ' + p(x, y + dy) + ' C ' + p(x, y + 2 * dy) + ' ' + p(x + w, y + 2 * dy) + ' ' + p(x + w, y + dy) +
+      ' L ' + p(x + w, y + h - dy) + ' C ' + p(x + w, y + h) + ' ' + p(x, y + h) + ' ' + p(x, y + h - dy) + ' Z' +
+      ' M ' + p(x, y + dy) + ' C ' + p(x, y) + ' ' + p(x + w, y) + ' ' + p(x + w, y + dy);
+  }
+
+  function manualInputPath(x, y, w, h) {
+    var dy = Math.min(h, 15);
+    return 'M ' + p(x, y + dy) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
+  }
+
+  function internalStoragePath(x, y, w, h) {
+    var dx = Math.min(w, 10), dy = Math.min(h, 10);
+    return rectPath(x, y, w, h) + ' M ' + p(x + dx, y) + ' L ' + p(x + dx, y + h) +
+      ' M ' + p(x, y + dy) + ' L ' + p(x + w, y + dy);
+  }
+
+  function dataStoragePath(x, y, w, h) {
+    var dx = Math.min(w * 0.2, 20);
+    return 'M ' + p(x + dx, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w - dx, y + h) +
+      ' L ' + p(x, y + h) + ' Z M ' + p(x + dx, y) + ' C ' + p(x - dx, y + h / 2) + ' ' + p(x - dx, y + h / 2) + ' ' + p(x, y + h);
+  }
+
+  function offPageConnectorPath(x, y, w, h) {
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h * 0.65) +
+      ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h * 0.65) + ' Z';
+  }
+
+  function singleArrowPath(x, y, w, h) {
+    var aw = Math.min(h * 0.35, w * 0.3), as = Math.min(w * 0.25, w);
+    return 'M ' + p(x, y + h / 2 - aw) + ' L ' + p(x + w - as, y + h / 2 - aw) +
+      ' L ' + p(x + w - as, y) + ' L ' + p(x + w, y + h / 2) +
+      ' L ' + p(x + w - as, y + h) + ' L ' + p(x + w - as, y + h / 2 + aw) +
+      ' L ' + p(x, y + h / 2 + aw) + ' Z';
+  }
+
+  function doubleArrowPath(x, y, w, h) {
+    var aw = Math.min(h * 0.35, w * 0.25), as = Math.min(w * 0.22, w / 2);
+    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + as, y) + ' L ' + p(x + as, y + h / 2 - aw) +
+      ' L ' + p(x + w - as, y + h / 2 - aw) + ' L ' + p(x + w - as, y) +
+      ' L ' + p(x + w, y + h / 2) + ' L ' + p(x + w - as, y + h) +
+      ' L ' + p(x + w - as, y + h / 2 + aw) + ' L ' + p(x + as, y + h / 2 + aw) +
+      ' L ' + p(x + as, y + h) + ' Z';
+  }
+
+  function crossPath(x, y, w, h) {
+    var m = Math.min(w, h), sz = m * 0.2;
+    var t = y + (h - sz) / 2, b = t + sz, l = x + (w - sz) / 2, r = l + sz;
+    return 'M ' + p(x, t) + ' L ' + p(l, t) + ' L ' + p(l, y) + ' L ' + p(r, y) +
+      ' L ' + p(r, t) + ' L ' + p(x + w, t) + ' L ' + p(x + w, b) +
+      ' L ' + p(r, b) + ' L ' + p(r, y + h) + ' L ' + p(l, y + h) +
+      ' L ' + p(l, b) + ' L ' + p(x, b) + ' Z';
+  }
+
+  function displayPath(x, y, w, h) {
+    var dx = Math.min(w, h / 2), ss = Math.min(w - dx, w * 0.25);
+    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + ss, y) + ' L ' + p(x + w - dx, y) +
+      ' C ' + p(x + w, y) + ' ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
+      ' L ' + p(x + ss, y + h) + ' Z';
+  }
+
+  function delayPath(x, y, w, h) {
+    var dx = Math.min(w, h / 2);
+    return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) +
+      ' C ' + p(x + w, y) + ' ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
+      ' L ' + p(x, y + h) + ' Z';
+  }
+
+  function loopLimitPath(x, y, w, h) {
+    var dy = Math.min(h * 0.25, 20);
+    return 'M ' + p(x, y + dy) + ' L ' + p(x + w / 2, y) + ' L ' + p(x + w, y + dy) +
+      ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
+  }
+
   function shapePath(style, x, y, w, h) {
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
@@ -1419,8 +1588,53 @@
     if (shape === 'line') return linePath(x, y, w, h);
     if (shape === 'arrow') return arrowShapePath(x, y, w, h);
     if (shape === 'arrowConnector') return arrowConnectorPath(x, y, w, h);
-    if (shape === 'connector') return connectorPath(x, y, w, h);
-    if (shape === 'note') return rectPath(x, y, w, h);
+    if (shape === 'connector' || shape === 'tableLine' || shape === 'wire' || shape === 'filledEdge' || shape === 'pipe') return connectorPath(x, y, w, h);
+    if (shape === 'isoRectangle') return isoRectanglePath(x, y, w, h);
+    if (shape === 'isoCube' || shape === 'isoCube2') return isoCubePath(x, y, w, h);
+    if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h);
+    if (shape === 'dataStorage') return dataStoragePath(x, y, w, h);
+    if (shape === 'document') return documentPath(x, y, w, h);
+    if (shape === 'trapezoid') return trapezoidPath(x, y, w, h);
+    if (shape === 'manualInput') return manualInputPath(x, y, w, h);
+    if (shape === 'internalStorage') return internalStoragePath(x, y, w, h);
+    if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h);
+    if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
+    if (shape === 'doubleArrow') return doubleArrowPath(x, y, w, h);
+    if (shape === 'cross') return crossPath(x, y, w, h);
+    if (shape === 'display') return displayPath(x, y, w, h);
+    if (shape === 'delay') return delayPath(x, y, w, h);
+    if (shape === 'loopLimit') return loopLimitPath(x, y, w, h);
+    if (shape === 'parallelogram') return parallelogramPath(x, y, w, h);
+    if (shape === 'step') return stepPath(x, y, w, h);
+    if (shape === 'callout') return calloutPath(x, y, w, h);
+    if (shape === 'tape') return tapePath(x, y, w, h);
+    if (shape === 'card') return cardPath(x, y, w, h);
+    if (shape === 'cube') return cubePath(x, y, w, h);
+    if (shape === 'note' || shape === 'note2') return rectPath(x, y, w, h);
+    if (shape === 'cylinder2' || shape === 'cylinder3') return cylinderPath(x, y, w, h);
+    if (shape === 'umlState') return roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12);
+    if (shape === 'transparent') return rectPath(x, y, w, h);
+    if (shape === 'plus') return crossPath(x, y, w, h);
+    if (shape === 'ext' || shape === 'message' || shape === 'umlFrame') return rectPath(x, y, w, h);
+    if (shape === 'umlBoundary' || shape === 'umlEntity' || shape === 'umlControl' || shape === 'lollipop' || shape === 'waypoint') return ellipsePath(x, y, w, h);
+    if (shape === 'umlDestroy') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h) + ' M ' + p(x + w, y) + ' L ' + p(x, y + h);
+    if (shape === 'umlLifeline') return rectPath(x, y, w, h) + ' M ' + p(x + w / 2, y + h * 0.25) + ' L ' + p(x + w / 2, y + h);
+    if (shape === 'requires' || shape === 'requiredInterface' || shape === 'providedRequiredInterface') return ellipsePath(x, y, w, h);
+    if (shape === 'module') return rectPath(x, y, w, h);
+    if (shape === 'startState') return ellipsePath(x, y, w, h);
+    if (shape === 'link') return 'M ' + p(x, y + h / 2) + ' C ' + p(x + w / 3, y) + ' ' + p(x + 2 * w / 3, y + h) + ' ' + p(x + w, y + h / 2);
+    if (shape === 'curlyBracket') return 'M ' + p(x + w, y) + ' C ' + p(x, y) + ' ' + p(x + w, y + h / 2) + ' ' + p(x, y + h / 2) + ' C ' + p(x + w, y + h / 2) + ' ' + p(x, y + h) + ' ' + p(x + w, y + h);
+    if (shape === 'parallelMarker') return 'M ' + p(x + w * 0.25, y) + ' L ' + p(x + w * 0.25, y + h) + ' M ' + p(x + w * 0.75, y) + ' L ' + p(x + w * 0.75, y + h);
+    if (shape === 'corner') return 'M ' + p(x, y) + ' L ' + p(x, y + h) + ' L ' + p(x + w, y + h);
+    if (shape === 'crossbar') return 'M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2) + ' M ' + p(x + w / 2, y) + ' L ' + p(x + w / 2, y + h);
+    if (shape === 'tee') return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' M ' + p(x + w / 2, y) + ' L ' + p(x + w / 2, y + h);
+    if (shape === 'or' || shape === 'xor' || shape === 'orEllipse' || shape === 'sumEllipse' || shape === 'lineEllipse') return ellipsePath(x, y, w, h);
+    if (shape === 'sortShape') return rhombusPath(x, y, w, h) + ' M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
+    if (shape === 'collate') return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w / 2, y + h / 2) + ' Z M ' + p(x, y + h) + ' L ' + p(x + w, y + h) + ' L ' + p(x + w / 2, y + h / 2) + ' Z';
+    if (shape === 'dimension') return rectPath(x, y, w, h);
+    if (shape === 'tapeData') return tapePath(x, y, w, h);
+    if (shape === 'gitTag') return 'M ' + p(x, y) + ' L ' + p(x + w * 0.78, y) + ' L ' + p(x + w, y + h / 2) + ' L ' + p(x + w * 0.78, y + h) + ' L ' + p(x, y + h) + ' Z';
+    if (shape === 'gitMergeCommit' || shape === 'gitCherryPick' || shape === 'mindmapBang' || shape === 'ishikawaHead' || shape === 'mermaidOdd') return ellipsePath(x, y, w, h);
     if (shape === 'zigzag') {
       var zz = 'M ' + p(x, y + h);
       var steps = 16;
@@ -1573,7 +1787,7 @@
         return '<line x1="' + fmt(l[0]) + '" y1="' + fmt(l[1]) + '" x2="' + fmt(l[2]) + '" y2="' + fmt(l[3]) + '" fill="none"' + strk + '/>';
       }).join('');
     }
-    if (shape === 'process') {
+    if (shape === 'process' || shape === 'process2') {
       // Rectangle + two vertical inset lines — ProcessShape, Shapes.js (default size=0.1)
       var pInset = Math.round(w * Math.max(0, Math.min(1, number(style.size, 0.1))));
       return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
@@ -4041,22 +4255,6 @@
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
 
-    // TEMP DEBUG (remove later): logs the real per-cell resolved style for the
-    // swimlanes/note so the actual browser values are visible without a console
-    // paste. Triggers on the two swimlane labels + the note.
-    try {
-      if (/Layout|this note/.test(String(label || ''))) {
-        var rawDbg = (graph.getModel && typeof graph.getModel().getStyle === 'function')
-          ? graph.getModel().getStyle(cell) : '(no raw)';
-        console.log('[NP-DEBUG]', JSON.stringify({
-          label: String(label).slice(0, 24),
-          shape: style.shape, horizontal: style.horizontal,
-          horizontalType: typeof style.horizontal,
-          strokeColor: style.strokeColor, mode: mode, raw: rawDbg
-        }));
-      }
-    } catch (e) { /* ignore */ }
-
     if (isImageCell(style)) {
       // PRIMARY (live path): transcribe drawio's literal rendered SVG so the
       // image rect, label position and (tight) label background come out exactly
@@ -4216,11 +4414,12 @@
       return;
     }
 
-    // drawio's `text` shape (e.g. the "Paragraph of Text" element) paints no
-    // body — it is a label-only object. Emitting a bbox path here is both
-    // invisible (fill/stroke are none) and wrongly raised an
-    // ExporterUnsupportedShape notice. Skip the body; just lay out the label.
-    if (style.shape !== 'text') {
+    // drawio's `text`/`html` shapes (e.g. the "Paragraph of Text" element,
+    // and object values that parse as HTML labels) paint no separate body —
+    // they are label-only objects. Emitting a bbox path here is both invisible
+    // (fill/stroke are none) and wrongly raised an ExporterUnsupportedShape
+    // notice. Skip the body; just lay out the label.
+    if (style.shape !== 'text' && style.shape !== 'html' && style.shape !== 'curvedText') {
 
       // --- Stencil registry lookup (covers all mxgraph.* shapes and inline stencil shapes) ---
       var stencilName = style.shape || '';

@@ -9,7 +9,8 @@
     "test:nativeprint-exporter": "node --test src/main/webapp/plugins/nativeprint/exporter.test.mjs",
     "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs",
     "test:nativeprint-bake": "node --test tools/native-print-bake/bake.test.mjs",
-    "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs"
+    "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs",
+    "audit:nativeprint-production": "node tools/native-print-bake/production-audit.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",
