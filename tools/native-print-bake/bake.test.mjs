@@ -1436,6 +1436,27 @@ test('shape: size proportion matches drawio (parallelogram/step/card + size/fixe
   assert.match(await d('shape=card;'), /^M 0 0 L 70 0 L 100 30 /); // corner min(100,60,30)=30 -> 70
 });
 
+test('shape: flowchart document/dataStorage/manualInput/loopLimit match drawio geometry', async () => {
+  // REGRESSION (WYSIWYG): these flowchart shapes had wrong size proportions and,
+  // for dataStorage (was a parallelogram, should be a curved D) and loopLimit
+  // (was a pentagon peak, should be a cut-corner hexagon), the WRONG geometry.
+  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const d = async (sh) => (await bake(mk(sh), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // document: bottom wave uses quadratics, dy = 0.3*80 = 24.
+  assert.match(await d('document'), /Q .* Q /, 'document should have two bottom-wave quads');
+  // dataStorage: D-shape -> both right and left edges are quadratics (curved).
+  const ds = await d('dataStorage');
+  assert.ok((ds.match(/ Q /g) || []).length === 2, `dataStorage must be a curved D-shape: ${ds}`);
+  // manualInput: top slopes from (0,s) to (w,0); s = min(80,30)=30.
+  assert.match(await d('manualInput'), /^M 0 80 L 0 30 L 120 0 L 120 80 Z/);
+  // loopLimit: cut-corner hexagon, s = min(60,80,20)=20; 6 vertices.
+  const ll = await d('loopLimit');
+  assert.match(ll, /^M 20 0 L 100 0 L 120 16 /, `loopLimit must be a cut-corner hexagon: ${ll}`);
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

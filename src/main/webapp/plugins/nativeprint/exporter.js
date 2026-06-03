@@ -2268,10 +2268,12 @@
       p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
-  function documentPath(x, y, w, h) {
-    var dy = Math.min(h * 0.18, 18);
-    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h - dy) +
-      ' C ' + p(x + w * 0.75, y + h + dy) + ' ' + p(x + w * 0.25, y + h - 3 * dy) + ' ' + p(x, y + h - dy) + ' Z';
+  function documentPath(x, y, w, h, dy) {
+    if (dy == null) dy = h * 0.3; // drawio DocumentShape size default 0.3
+    // drawio uses two quadratic waves at the bottom (fy = 1.4).
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h - dy / 2) +
+      ' Q ' + p(x + w * 0.75, y + h - dy * 1.4) + ' ' + p(x + w * 0.5, y + h - dy / 2) +
+      ' Q ' + p(x + w * 0.25, y + h + dy * 0.4) + ' ' + p(x, y + h - dy / 2) + ' Z';
   }
 
   function isoRectanglePath(x, y, w, h) {
@@ -2304,9 +2306,10 @@
       ' M ' + p(x, y + dy) + ' C ' + p(x, y) + ' ' + p(x + w, y) + ' ' + p(x + w, y + dy);
   }
 
-  function manualInputPath(x, y, w, h) {
-    var dy = Math.min(h, 15);
-    return 'M ' + p(x, y + dy) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
+  function manualInputPath(x, y, w, h, sIn) {
+    var s = (sIn == null) ? Math.min(h, 30) : sIn; // drawio ManualInputShape size default 30
+    // top edge slopes from (0,s) up to (w,0).
+    return 'M ' + p(x, y + h) + ' L ' + p(x, y + s) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h) + ' Z';
   }
 
   function internalStoragePath(x, y, w, h) {
@@ -2315,10 +2318,13 @@
       ' M ' + p(x, y + dy) + ' L ' + p(x + w, y + dy);
   }
 
-  function dataStoragePath(x, y, w, h) {
-    var dx = Math.min(w * 0.2, 20);
-    return 'M ' + p(x + dx, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w - dx, y + h) +
-      ' L ' + p(x, y + h) + ' Z M ' + p(x + dx, y) + ' C ' + p(x - dx, y + h / 2) + ' ' + p(x - dx, y + h / 2) + ' ' + p(x, y + h);
+  function dataStoragePath(x, y, w, h, sIn) {
+    var s = (sIn == null) ? w * 0.1 : sIn; // drawio DataStorageShape size default 0.1
+    // D-shape: bulging right edge, concave left edge (drawio redrawPath).
+    return 'M ' + p(x + s, y) + ' L ' + p(x + w, y) +
+      ' Q ' + p(x + w - s * 2, y + h / 2) + ' ' + p(x + w, y + h) +
+      ' L ' + p(x + s, y + h) +
+      ' Q ' + p(x - s, y + h / 2) + ' ' + p(x + s, y) + ' Z';
   }
 
   function offPageConnectorPath(x, y, w, h) {
@@ -2366,10 +2372,11 @@
       ' L ' + p(x, y + h) + ' Z';
   }
 
-  function loopLimitPath(x, y, w, h) {
-    var dy = Math.min(h * 0.25, 20);
-    return 'M ' + p(x, y + dy) + ' L ' + p(x + w / 2, y) + ' L ' + p(x + w, y + dy) +
-      ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
+  function loopLimitPath(x, y, w, h, sIn) {
+    var s = (sIn == null) ? Math.min(w / 2, Math.min(h, 20)) : sIn; // drawio LoopLimitShape size default 20
+    // cut top corners: (s,0)(w-s,0)(w,s*0.8)(w,h)(0,h)(0,s*0.8).
+    return 'M ' + p(x + s, y) + ' L ' + p(x + w - s, y) + ' L ' + p(x + w, y + s * 0.8) +
+      ' L ' + p(x + w, y + h) + ' L ' + p(x, y + h) + ' L ' + p(x, y + s * 0.8) + ' Z';
   }
 
   // drawio shape "size" resolution (parallelogram/step/trapezoid/hexagon etc.):
@@ -2400,10 +2407,10 @@
     if (shape === 'isoRectangle') return isoRectanglePath(x, y, w, h);
     if (shape === 'isoCube' || shape === 'isoCube2') return isoCubePath(x, y, w, h);
     if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h);
-    if (shape === 'dataStorage') return dataStoragePath(x, y, w, h);
-    if (shape === 'document') return documentPath(x, y, w, h);
+    if (shape === 'dataStorage') return dataStoragePath(x, y, w, h, shapeSize(style, w, 0.1, 1, 20, w));
+    if (shape === 'document') return documentPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.3))));
     if (shape === 'trapezoid') return trapezoidPath(x, y, w, h, shapeSize(style, w, 0.2, 0.5, 20, w * 0.5));
-    if (shape === 'manualInput') return manualInputPath(x, y, w, h);
+    if (shape === 'manualInput') return manualInputPath(x, y, w, h, Math.min(h, number(style.size, 30)));
     if (shape === 'internalStorage') return internalStoragePath(x, y, w, h);
     if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h);
     if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
@@ -2411,7 +2418,7 @@
     if (shape === 'cross') return crossPath(x, y, w, h);
     if (shape === 'display') return displayPath(x, y, w, h);
     if (shape === 'delay') return delayPath(x, y, w, h);
-    if (shape === 'loopLimit') return loopLimitPath(x, y, w, h);
+    if (shape === 'loopLimit') return loopLimitPath(x, y, w, h, Math.min(w / 2, Math.min(h, number(style.size, 20))));
     if (shape === 'parallelogram') return parallelogramPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
     if (shape === 'step') return stepPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
     if (shape === 'callout') return calloutPath(x, y, w, h);
