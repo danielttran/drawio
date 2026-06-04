@@ -389,6 +389,25 @@ function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height
     undefined, { mode: 'B' });
 }
 
+test('mxLabel (shape=label;image=) renders bg + small icon + text, not a full-cell image', () => {
+  // REGRESSION (C1): shape=label;image= filled the whole cell with the stretched
+  // image and dropped the background; mxLabel draws a small icon (imageWidth/
+  // Height at imageAlign/imageVerticalAlign) over a background rect with text.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
+  const style = { shape: 'label', image: 'data:image/png;base64,' + png,
+    imageWidth: '24', imageHeight: '24', imageAlign: 'left', imageVerticalAlign: 'middle',
+    fillColor: '#ffffff', strokeColor: '#000000' };
+  const p = oneVertexB(style, 'Server').contract.document.pages[0].paint;
+  const bg = p.find((n) => n.kind === 'path' && n.fill);
+  assert.ok(bg, 'background rect is drawn');
+  const img = p.find((n) => n.kind === 'image');
+  assert.ok(img, 'icon image is present');
+  assert.ok(img.box.w <= 24.01 && img.box.h <= 24.01,
+    `icon is the small image size (24x24), not the full cell — got ${img.box.w}x${img.box.h}`);
+  // left/middle: icon x at spacing(=7), y centered.
+  assert.ok(Math.abs(img.box.x - 7) < 0.01, `left icon at spacing=7, got ${img.box.x}`);
+});
+
 test('swimlane fills only the header; body uses swimlaneFillColor (default transparent)', () => {
   // REGRESSION (C1): the body was filled with fillColor across the whole shape;
   // drawio fills only the header (fillColor) and the body with swimlaneFillColor

@@ -5406,6 +5406,46 @@
       return;
     }
 
+    // mxLabel with an image: a background rect + a SMALL icon (imageWidth/
+    // imageHeight, positioned by imageAlign/imageVerticalAlign per
+    // mxLabel.getImageBounds) + the text label. The headless path treated
+    // shape=label;image= as a plain image cell, filling the whole cell with the
+    // stretched image and dropping the background/text layout — a silent
+    // divergence. Mode A transcribes the real SVG (more faithful), so this only
+    // applies headless.
+    if (mode === 'B' && style.shape === 'label' &&
+        typeof style.image === 'string' && style.image !== '') {
+      var lblR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
+        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
+                    : rectPath(box.x, box.y, box.w, box.h) });
+      var liw = number(style.imageWidth, 24), lih = number(style.imageHeight, 24);
+      var lsp = number(style.spacing, 2) + 5;            // mxLabel: spacing + 5
+      var lia = style.imageAlign || 'left', liv = style.imageVerticalAlign || 'middle';
+      var liBox = {
+        x: box.x + (lia === 'center' ? (box.w - liw) / 2 : lia === 'right' ? box.w - liw - lsp : lsp),
+        y: box.y + (liv === 'top' ? lsp : liv === 'bottom' ? box.h - lih - lsp : (box.h - lih) / 2),
+        w: liw, h: lih
+      };
+      var lImgSrc = (resolved && resolved[style.image]) || style.image;
+      var lImg = parseImage(lImgSrc);
+      var lMime = embeddableImageMime(lImg);
+      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg));
+      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style));
+      else {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'label image could not be embedded — placeholder box printed.', cell.id));
+        paint.push({ kind: 'path', d: rectPath(liBox.x, liBox.y, liBox.w, liBox.h),
+          fill: null, stroke: strokeOf(style) });
+      }
+      if (label !== '') {
+        var lblBxN = labelBoxNode(style, box);
+        if (lblBxN) paint.push(lblBxN);
+        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved));
+      }
+      return;
+    }
+
     if (isImageCell(style)) {
       // PRIMARY (live path): transcribe drawio's literal rendered SVG so the
       // image rect, label position and (tight) label background come out exactly
