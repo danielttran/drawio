@@ -5530,7 +5530,7 @@
           fill: solid(style.imageBackground, opacity(style, 'fillOpacity')),
           stroke: isPaintable(style.imageBorder)
             ? { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
-                width: number(style.strokeWidth, 1), cap: 'butt', join: 'miter',
+                width: Math.max(0.1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
                 miterLimit: 10, dash: null }
             : null });
       }

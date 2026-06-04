@@ -1595,17 +1595,23 @@ test('engine-compat: every stroke/fill is a well-formed contract descriptor', as
   const isPaint = (p) => p && typeof p === 'object' &&
     (p.type === 'solid' || p.type === 'linear' || p.type === 'radial') &&
     (p.type !== 'solid' || (typeof p.color === 'string' && typeof p.alpha === 'number'));
+  // Mirror the C++ engine loader's requirements exactly: stroke.paint present,
+  // width > 0 (require_positive), miterLimit > 0, cap/join from the enum, dash
+  // null-or-array. (The engine rejects width<=0, so 'number' is not enough.)
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
   const isStroke = (s) => s === null || (s && typeof s === 'object' &&
-    isPaint(s.paint) && typeof s.width === 'number' &&
-    typeof s.cap === 'string' && typeof s.join === 'string' &&
-    typeof s.miterLimit === 'number' && (s.dash === null || Array.isArray(s.dash)));
+    isPaint(s.paint) && typeof s.width === 'number' && s.width > 0 &&
+    ['butt', 'round', 'square'].includes(s.cap) && ['miter', 'round', 'bevel'].includes(s.join) &&
+    typeof s.miterLimit === 'number' && s.miterLimit > 0 && (s.dash === null || Array.isArray(s.dash)));
   const isFill = (f) => f === null || isPaint(f);
   const diagrams = [
     'swimlane;fillColor=#dae8fc;strokeColor=#6c8ebf;separatorColor=#ff0000;',
     'swimlane;fillColor=#dae8fc;swimlaneFillColor=#ffffcc;swimlaneLine=0;horizontal=0;',
     'swimlane;fillColor=#fff;gradientColor=#f00;strokeColor=#000;',
-    'shape=image;image=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==;imageBackground=#ffffcc;imageBorder=#ff0000;',
-    'rounded=1;fillColor=#fff;strokeColor=#000;direction=north;',
+    'swimlane;fillColor=#dae8fc;strokeColor=#000;separatorColor=#f00;strokeWidth=0;',
+    'shape=image;image=data:image/png;base64,' + PNG + ';imageBackground=#ffffcc;imageBorder=#ff0000;',
+    'shape=image;image=data:image/png;base64,' + PNG + ';imageBackground=#ffffcc;imageBorder=#ff0000;strokeWidth=0;',
+    'rounded=1;fillColor=#fff;strokeColor=#000;direction=north;strokeWidth=0;',
     'shape=parallelogram;fillColor=#fff;gradientColor=#f00;direction=south;'
   ];
   const offenders = [];
