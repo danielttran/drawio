@@ -192,8 +192,9 @@
           ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
           : [3, 3];
         if (!dp.length) dp = [3, 3];
-        // Match drawio: dash values scale with stroke width (createDashPattern).
-        var dsc = state.strokeWidth || 1;
+        // Match drawio: dash values scale with stroke width (createDashPattern),
+        // unless fixDash=1 (then the pattern is in absolute px).
+        var dsc = boolish(style.fixDash) ? 1 : (state.strokeWidth || 1);
         if (dsc > 0 && dsc !== 1) dp = dp.map(function (v) { return Math.round(v * dsc * 100) / 100; });
         s += ' stroke-dasharray="' + dp.map(fmt).join(' ') + '"';
       }
