@@ -389,6 +389,29 @@ function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height
     undefined, { mode: 'B' });
 }
 
+test('labelPadding insets the label on every side', () => {
+  const pads = (lp) => {
+    const svg = oneVertexB({ shape: 'rectangle', fontColor: '#000', align: 'left', labelPadding: lp }, 'Hi')
+      .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    return Buffer.from(svg.source, 'base64').toString('utf8');
+  };
+  // a left-anchored line's x grows by labelPadding (base spacing 2 + lp).
+  const m0 = pads('0').match(/<text x="([\d.]+)"/);
+  const m10 = pads('10').match(/<text x="([\d.]+)"/);
+  assert.ok(parseFloat(m10[1]) - parseFloat(m0[1]) >= 9.99, 'labelPadding=10 shifts the label inward by 10');
+});
+
+test('rare unimplemented visuals raise a loud notice (textShadow/indicator/rtl)', () => {
+  assert.ok(oneVertexB({ shape: 'rectangle', textShadow: '1' }, 'T').notices
+    .some((n) => /textShadow/.test(n.detail && n.detail.detail || '')), 'textShadow noticed');
+  assert.ok(oneVertexB({ shape: 'rectangle', indicatorShape: 'triangle' }, 'T').notices
+    .some((n) => /indicator/.test(n.detail && n.detail.detail || '')), 'indicator noticed');
+  assert.ok(oneVertexB({ shape: 'rectangle', textDirection: 'rtl' }, 'T').notices
+    .some((n) => /right-to-left/.test(n.detail && n.detail.detail || '')), 'rtl noticed');
+  // a plain shape with none of these stays notice-free.
+  assert.equal(oneVertexB({ shape: 'rectangle' }, 'T').notices.length, 0, 'plain shape: no notice');
+});
+
 test('gradient axis rotates with shape direction (no silent divergence)', () => {
   // REGRESSION (C1): direction is baked into the path coords for shapePath
   // shapes, so the objectBoundingBox gradient must be rotated too — otherwise a

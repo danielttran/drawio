@@ -1159,11 +1159,14 @@
   // spacingLeft=52 printed flush-left instead of indented.
   function labelPads(style) {
     var base = (style && style.shape === 'text') ? 0 : number(style && style.spacing, 2);
+    // labelPadding (STYLE_LABEL_PADDING) is a uniform inset added to every side
+    // of the label bounds; previously ignored, so a padded label printed flush.
+    var lp = number(style && style.labelPadding, 0);
     return {
-      l: base + number(style && style.spacingLeft, 0),
-      r: base + number(style && style.spacingRight, 0),
-      t: base + number(style && style.spacingTop, 0),
-      b: base + number(style && style.spacingBottom, 0)
+      l: base + lp + number(style && style.spacingLeft, 0),
+      r: base + lp + number(style && style.spacingRight, 0),
+      t: base + lp + number(style && style.spacingTop, 0),
+      b: base + lp + number(style && style.spacingBottom, 0)
     };
   }
 
@@ -5412,6 +5415,24 @@
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved, mode) {
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
+
+    // C1: a handful of genuinely-rare visual style properties are not yet
+    // rendered (text drop-shadow, indicator sub-shapes/icons, RTL text). Emit a
+    // LOUD notice when one is actually set so it is never a SILENT divergence.
+    if (boolish(style.textShadow)) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'textShadow is not rendered (text drawn without its drop shadow).', cell.id));
+    }
+    if (isPaintable(style.indicatorShape) || style.indicatorShape ||
+        (typeof style.indicatorImage === 'string' && style.indicatorImage !== '')) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'indicator shape/image "' + (style.indicatorShape || style.indicatorImage) +
+        '" is not rendered.', cell.id));
+    }
+    if (String(style.textDirection || '').toLowerCase() === 'rtl') {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'right-to-left textDirection is not applied to the label.', cell.id));
+    }
 
     // Edge child-label cell (multi-label edge): position along the parent edge.
     if (emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, mode, resolved, label)) {
