@@ -6157,15 +6157,22 @@
     // drawio endFill/startFill default to filled (1); '0' => hollow outline.
     var endFilled = String(style.endFill) !== '0';
     var startFilled = String(style.startFill) !== '0';
+    // drawio fills each marker with end/startFillColor (default = the edge
+    // stroke). Previously the arrowhead always used the stroke colour, so a
+    // differently-coloured arrowhead printed in the wrong colour.
+    var endArrowFill = isPaintable(style.endFillColor)
+      ? solid(style.endFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
+    var startArrowFill = isPaintable(style.startFillColor)
+      ? solid(style.startFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
     if (style.endArrow && style.endArrow !== 'none') {
       var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
-        points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices, endFilled);
+        points[points.length - 1], arrowSize, stroke, endArrowFill, cell.id, notices, endFilled);
       if (Array.isArray(endNode)) endNode.forEach(function(n) { if (n) paint.push(n); });
       else if (endNode) paint.push(endNode);
     }
     if (style.startArrow && style.startArrow !== 'none') {
       var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
-        arrowSize, stroke, arrowFill, cell.id, notices, startFilled);
+        arrowSize, stroke, startArrowFill, cell.id, notices, startFilled);
       if (Array.isArray(startNode)) startNode.forEach(function(n) { if (n) paint.push(n); });
       else if (startNode) paint.push(startNode);
     }

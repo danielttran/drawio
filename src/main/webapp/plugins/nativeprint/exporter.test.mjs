@@ -618,6 +618,21 @@ test('endFill=0 renders a hollow arrowhead (no silent solid fill)', () => {
   assert.ok(!hollowHead.fill && hollowHead.stroke, 'endFill=0 arrowhead must be a stroked outline (hollow)');
 });
 
+test('endFillColor colors the arrowhead independently of the edge stroke', () => {
+  // REGRESSION (C1): drawio fills each marker with end/startFillColor (default
+  // = edge stroke); the exporter always used the stroke colour, so a
+  // differently-coloured arrowhead printed in the wrong colour.
+  const cells = { e: { id: 'e', edge: true, style: 'endArrow=classic;strokeColor=#000000;endFillColor=#ff0000;', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+  const styles = { e: { endArrow: 'classic', strokeColor: '#000000', endFillColor: '#ff0000' } };
+  const paths = exporter.buildResult(graphFixture(cells, states, {}, styles))
+    .contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const head = paths[paths.length - 1];
+  assert.ok(head.fill, 'arrowhead is filled');
+  assert.equal(head.fill.color.toLowerCase(), '#ff0000', 'arrowhead uses endFillColor, not the stroke color');
+});
+
 test('genuinely unsupported markers still raise a loud notice', () => {
   const result = oneEdgeMarker('halfCircle');
   assert.ok(result.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
