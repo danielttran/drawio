@@ -381,6 +381,36 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
   });
 }
 
+// mode B = the headless bake path that actually feeds the printer.
+function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }) {
+  const cells = { v: { id: 'v', vertex: true } };
+  return exporter.buildResult(
+    graphFixture(cells, { v: state }, { v: label }, { v: style }, FIXED_BOUNDS, 1),
+    undefined, { mode: 'B' });
+}
+
+test('textOpacity is applied to labels (no silent divergence)', () => {
+  // REGRESSION (C1): drawio STYLE_TEXT_OPACITY made the label translucent; the
+  // exporter had ZERO references to textOpacity, so it printed fully opaque.
+  const decode = (r) => {
+    const n = r.contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+    return n ? Buffer.from(n.source, 'base64').toString('utf8') : '';
+  };
+  const opaque = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000' }, 'Hi'));
+  assert.ok(!/opacity="0\.4"/.test(opaque), 'no spurious opacity when textOpacity unset');
+  const faded = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000', textOpacity: '40' }, 'Hi'));
+  assert.match(faded, /opacity="0\.4"/, 'textOpacity=40 must fade the label to 0.4');
+});
+
+test('rotated plain label keeps underline / strikethrough (textSvgStr fidelity)', () => {
+  // textSvgStr (used for rotated plain labels) dropped fontStyle underline(4)/
+  // strike(8) — a rotated underlined label silently lost its underline.
+  const n = oneVertexB({ shape: 'rectangle', rotation: '30', fontStyle: '4', fontColor: '#000' }, 'Underlined')
+    .contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+  const svg = Buffer.from(n.source, 'base64').toString('utf8');
+  assert.match(svg, /text-decoration="underline"/, 'rotated plain label must keep underline');
+});
+
 test('direction (N/S/E/W) rotates asymmetric named shapes (no silent divergence)', () => {
   // REGRESSION (C1): named shapes via shapePath honored rotation/flip but
   // SILENTLY ignored direction= — a process/step/parallelogram with

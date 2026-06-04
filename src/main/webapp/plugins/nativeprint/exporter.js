@@ -1070,11 +1070,17 @@
     var fsVal = number(style.fontStyle, 0);
     var isBold = !!(fsVal & 1);
     var isItalic = !!(fsVal & 2);
+    var deco = [];
+    if (fsVal & 4) deco.push('underline');
+    if (fsVal & 8) deco.push('line-through');
+    var topac = number(style.textOpacity, 100) / 100;
     var attrs = ' text-anchor="middle" dominant-baseline="central"' +
       ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
       ' fill="' + fc + '"' +
+      (topac < 1 ? ' fill-opacity="' + fmt(topac) + '"' : '') +
       (isBold ? ' font-weight="bold"' : '') +
-      (isItalic ? ' font-style="italic"' : '');
+      (isItalic ? ' font-style="italic"' : '') +
+      (deco.length ? ' text-decoration="' + deco.join(' ') + '"' : '');
     var lines = label.split('\n');
     if (lines.length === 1) {
       return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' +
@@ -1853,6 +1859,10 @@
     var pads = labelPads(style);
     var pl = pads.l, pr = pads.r, pt = pads.t, pb = pads.b;
     var letterSp = number(style.letterSpacing, 0); // drawio letterSpacing (CSS letter-spacing)
+    // drawio STYLE_TEXT_OPACITY: the whole label is drawn at this opacity.
+    // Applied as a group opacity so every run/decoration fades uniformly.
+    var topac = number(style.textOpacity, 100) / 100;
+    var gOpacityAttr = topac < 1 ? ' opacity="' + fmt(topac) + '"' : '';
     var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
 
     // HTML label -> faithful per-run rich-text renderer (colour / family / size
@@ -1887,7 +1897,7 @@
         ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
         '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
         '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + richEls +
+        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + richEls +
         '</g></svg>';
       return { kind: 'svg', box: box, source: base64(richSvg), aspect: 'preserve' };
     }
@@ -1954,6 +1964,7 @@
         ' font-size="' + fmt(Math.max(1, number(style.fontSize, 12))) +
         '" font-weight="' + (((fst & 1) ? 700 : 400)) + '"' +
         ((fst & 2) ? ' font-style="italic"' : '') +
+        (decoration.length ? ' text-decoration="' + decoration.join(' ') + '"' : '') +
         ' fill="' + color +
         '" text-anchor="middle" dominant-baseline="central" xml:space="preserve">' +
         escXml(String(label || stripHtml(raw))) + '</text></g>';
@@ -1962,15 +1973,19 @@
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
       '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
       '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + textEls +
+      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + textEls +
       '</g></svg>';
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
   function labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved) {
-    return mode === 'B'
-      ? textSvgNode(graph, cell, style, box, label, notices, resolved)
-      : textNode(graph, cell, state, style, box, label, notices);
+    // The frozen kind:'text' node carries no text-opacity field, so a label with
+    // drawio's textOpacity<100 is routed through the svg label builder (which
+    // fades via group opacity) even on the live-DOM path — faithful in both
+    // modes with no contract-schema change.
+    if (mode === 'B' || number(style.textOpacity, 100) < 100)
+      return textSvgNode(graph, cell, style, box, label, notices, resolved);
+    return textNode(graph, cell, state, style, box, label, notices);
   }
 
   function p(x, y) {
