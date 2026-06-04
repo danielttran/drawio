@@ -376,6 +376,33 @@ function terminalPoint(edge, cells, terminalId, isSource, toward) {
   return { x: cx, y: dy >= 0 ? box.y + box.height : box.y };
 }
 
+// Port of mxEdgeStyle.EntityRelation: the ER edge exits/enters horizontally
+// from the side centres (offset by `segment`, default 30). Without this the bake
+// routed entity-relation edges as a straight diagonal — a silent divergence.
+function entityRelationRoute(s, t, style) {
+  const sp = parseFloat(style && style.segment);
+  const seg = Number.isFinite(sp) ? sp : 30;
+  const isSourceLeft = (t.x + t.width) < s.x;
+  const isTargetLeft = (s.x + s.width) < t.x;
+  const x0 = isSourceLeft ? s.x : s.x + s.width;
+  const y0 = s.y + s.height / 2;
+  const xe = isTargetLeft ? t.x : t.x + t.width;
+  const ye = t.y + t.height / 2;
+  const dep = { x: x0 + (isSourceLeft ? -seg : seg), y: y0 };
+  const arr = { x: xe + (isTargetLeft ? -seg : seg), y: ye };
+  const mid = [];
+  if (isSourceLeft === isTargetLeft) {
+    const x = isSourceLeft ? Math.min(x0, xe) - seg : Math.max(x0, xe) + seg;
+    mid.push({ x, y: y0 }, { x, y: ye });
+  } else if ((dep.x < arr.x) === isSourceLeft) {
+    const midY = y0 + (ye - y0) / 2;
+    mid.push(dep, { x: dep.x, y: midY }, { x: arr.x, y: midY }, arr);
+  } else {
+    mid.push(dep, arr);
+  }
+  return [{ x: x0, y: y0 }, ...mid, { x: xe, y: ye }];
+}
+
 function edgePoints(cell, cells) {
   const g = cell.geometry;
   const { ax, ay } = absolutePos(cell, cells);
@@ -397,6 +424,10 @@ function edgePoints(cell, cells) {
   const lastToward = out[out.length - 1] || sourceCenter;
   const src = terminalPoint(cell, cells, cell.source, true, firstToward);
   const tgt = terminalPoint(cell, cells, cell.target, false, lastToward);
+  if (waypoints.length === 0 && !hasLiteralTerminals && sourceBox && targetBox &&
+      cell.style?.edgeStyle === 'entityRelationEdgeStyle' && cell.style?.noEdgeStyle !== '1') {
+    return entityRelationRoute(sourceBox, targetBox, cell.style);
+  }
   if (waypoints.length === 0 && !hasLiteralTerminals && src && tgt &&
       (cell.style?.edgeStyle === 'elbowEdgeStyle' ||
        cell.style?.edgeStyle === 'orthogonalEdgeStyle') &&
