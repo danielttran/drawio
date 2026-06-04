@@ -5199,9 +5199,11 @@
     // (mxCell.visible). Hidden layers / cells must not appear in the print.
     var cellsById = (model && model.cells) || {};
     function cellVisible(c) {
-      var hops = 0;
+      var self = c, hops = 0;
       while (c && hops++ < 1000) {
         if (c.visible === false) return false;
+        // A collapsed cell renders itself but hides its DESCENDANTS.
+        if (c.collapsed === true && c !== self) return false;
         var pid = c.parent && c.parent.id != null ? c.parent.id : c.parent;
         c = (pid != null) ? cellsById[pid] : null;
       }

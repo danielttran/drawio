@@ -1658,6 +1658,23 @@ test('edge: self-loop (source==target) renders a loop (not silently dropped)', a
   assert.ok(all.some((n) => n.kind === 'path' && n.fill && /Z$/.test(n.d || '')), 'arrowhead present');
 });
 
+test('visibility: a collapsed container hides its descendants (renders itself)', async () => {
+  // REGRESSION (WYSIWYG): children of a collapsed="1" container still printed.
+  // drawio renders the collapsed shape but hides its descendants.
+  const mk = (collapsed) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="g" value="Folded" vertex="1" ${collapsed}style="swimlane;" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="c" value="Child" vertex="1" style="rounded=0;" parent="g"><mxGeometry x="20" y="40" width="60" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labels = (contract) => contract.document.pages[0].paint
+    .filter((n) => n.kind === 'svg').map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join('');
+  const collapsed = labels((await bake(mk('collapsed="1" '), { keepPx: true })).contract);
+  assert.match(collapsed, /Folded/, 'collapsed container itself renders');
+  assert.doesNotMatch(collapsed, /Child/, 'descendant of a collapsed container must NOT render');
+  const expanded = labels((await bake(mk(''), { keepPx: true })).contract);
+  assert.match(expanded, /Child/, 'expanded container shows its child');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

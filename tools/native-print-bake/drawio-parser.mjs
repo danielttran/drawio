@@ -245,6 +245,9 @@ function parseCells(xml) {
       // mxCell.visible defaults true; visible="0" hides the cell (and, for a
       // layer, all its descendants) — such content must NOT print.
       visible:  attrs.visible !== '0',
+      // collapsed="1": the cell renders at its (collapsed) geometry, but its
+      // descendants are NOT shown.
+      collapsed: attrs.collapsed === '1',
       parent:   attrs.parent || null,
       source:   attrs.source || null,
       target:   attrs.target || null,
