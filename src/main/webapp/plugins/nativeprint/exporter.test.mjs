@@ -398,17 +398,10 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
   });
 }
 
-// mode B = the headless bake path that actually feeds the printer.
-function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }) {
-  const cells = { v: { id: 'v', vertex: true } };
-  return exporter.buildResult(
-    graphFixture(cells, { v: state }, { v: label }, { v: style }, FIXED_BOUNDS, 1),
-    undefined, { mode: 'B' });
-}
 
 test('labelPadding insets the label on every side', () => {
   const pads = (lp) => {
-    const svg = oneVertexB({ shape: 'rectangle', fontColor: '#000', align: 'left', labelPadding: lp }, 'Hi')
+    const svg = oneVertex({ shape: 'rectangle', fontColor: '#000', align: 'left', labelPadding: lp }, 'Hi')
       .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
     return Buffer.from(svg.source, 'base64').toString('utf8');
   };
@@ -419,14 +412,14 @@ test('labelPadding insets the label on every side', () => {
 });
 
 test('rare unimplemented visuals raise a loud notice (textShadow/indicator/rtl)', () => {
-  assert.ok(oneVertexB({ shape: 'rectangle', textShadow: '1' }, 'T').notices
+  assert.ok(oneVertex({ shape: 'rectangle', textShadow: '1' }, 'T').notices
     .some((n) => /textShadow/.test(n.detail && n.detail.detail || '')), 'textShadow noticed');
-  assert.ok(oneVertexB({ shape: 'rectangle', indicatorShape: 'triangle' }, 'T').notices
+  assert.ok(oneVertex({ shape: 'rectangle', indicatorShape: 'triangle' }, 'T').notices
     .some((n) => /indicator/.test(n.detail && n.detail.detail || '')), 'indicator noticed');
-  assert.ok(oneVertexB({ shape: 'rectangle', textDirection: 'rtl' }, 'T').notices
+  assert.ok(oneVertex({ shape: 'rectangle', textDirection: 'rtl' }, 'T').notices
     .some((n) => /right-to-left/.test(n.detail && n.detail.detail || '')), 'rtl noticed');
   // a plain shape with none of these stays notice-free.
-  assert.equal(oneVertexB({ shape: 'rectangle' }, 'T').notices.length, 0, 'plain shape: no notice');
+  assert.equal(oneVertex({ shape: 'rectangle' }, 'T').notices.length, 0, 'plain shape: no notice');
 });
 
 test('gradient axis rotates with shape direction (no silent divergence)', () => {
@@ -434,7 +427,7 @@ test('gradient axis rotates with shape direction (no silent divergence)', () => 
   // shapes, so the objectBoundingBox gradient must be rotated too — otherwise a
   // direction-rotated gradient kept its original (top->bottom) axis.
   const axis = (dir) => {
-    const svg = oneVertexB({ shape: 'parallelogram', fillColor: '#fff',
+    const svg = oneVertex({ shape: 'parallelogram', fillColor: '#fff',
       gradientColor: '#f00', gradientDirection: 'south', direction: dir })
       .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
     const s = Buffer.from(svg.source, 'base64').toString('utf8');
@@ -452,7 +445,7 @@ test('image cell honors imageBackground / imageBorder (no silent drop)', () => {
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
   const style = { shape: 'image', image: 'data:image/png;base64,' + png,
     imageBackground: '#ffffcc', imageBorder: '#ff0000' };
-  const p = oneVertexB(style).contract.document.pages[0].paint;
+  const p = oneVertex(style).contract.document.pages[0].paint;
   const bg = p.find((n) => n.kind === 'path' && n.fill && n.fill.color === '#ffffcc');
   assert.ok(bg, 'imageBackground rect is drawn');
   assert.ok(bg.stroke && bg.stroke.paint.color === '#ff0000', 'imageBorder strokes the background');
@@ -469,7 +462,7 @@ test('mxLabel (shape=label;image=) renders bg + small icon + text, not a full-ce
   const style = { shape: 'label', image: 'data:image/png;base64,' + png,
     imageWidth: '24', imageHeight: '24', imageAlign: 'left', imageVerticalAlign: 'middle',
     fillColor: '#ffffff', strokeColor: '#000000' };
-  const p = oneVertexB(style, 'Server').contract.document.pages[0].paint;
+  const p = oneVertex(style, 'Server').contract.document.pages[0].paint;
   const bg = p.find((n) => n.kind === 'path' && n.fill);
   assert.ok(bg, 'background rect is drawn');
   const img = p.find((n) => n.kind === 'image');
@@ -484,7 +477,7 @@ test('swimlane fills only the header; body uses swimlaneFillColor (default trans
   // REGRESSION (C1): the body was filled with fillColor across the whole shape;
   // drawio fills only the header (fillColor) and the body with swimlaneFillColor
   // (default none). swimlaneLine=0 must omit the separator.
-  const fills = (style) => oneVertexB(style, 'Lane')
+  const fills = (style) => oneVertex(style, 'Lane')
     .contract.document.pages[0].paint.filter((n) => n.kind === 'path');
   const def = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', startSize: '30' });
   const filledNodes = def.filter((n) => n.fill && n.fill.color === '#dae8fc');
@@ -506,7 +499,7 @@ test('swimlane separatorColor emits a valid dashed stroke (not a bare paint)', (
   // to a node's stroke field, producing an engine-invalid contract that baked
   // with zero notices and hard-failed at the engine. The separator is now a
   // SEPARATE dashed line (drawio mxSwimlane.paintSeparator) with a proper stroke.
-  const p = oneVertexB({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#6c8ebf',
+  const p = oneVertex({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#6c8ebf',
     separatorColor: '#ff0000' }, 'Pool').contract.document.pages[0].paint;
   const sep = p.find((n) => n.kind === 'path' && n.stroke && n.stroke.paint &&
     n.stroke.paint.color === '#ff0000');
@@ -521,7 +514,7 @@ test('swimlane separatorColor emits a valid dashed stroke (not a bare paint)', (
 });
 
 test('swimlaneHead=0 / swimlaneBody=0 suppress the header/body border', () => {
-  const border = (style) => oneVertexB({ shape: 'swimlane', fillColor: '#fff', strokeColor: '#000', ...style }, 'L')
+  const border = (style) => oneVertex({ shape: 'swimlane', fillColor: '#fff', strokeColor: '#000', ...style }, 'L')
     .contract.document.pages[0].paint.filter((n) => n.kind === 'path' && n.fill === null && n.stroke && n.stroke.dash === null);
   const full = border({});
   const noHead = border({ swimlaneHead: '0' });
@@ -537,16 +530,16 @@ test('textOpacity is applied to labels (no silent divergence)', () => {
     const n = r.contract.document.pages[0].paint.find((x) => x.kind === 'svg');
     return n ? Buffer.from(n.source, 'base64').toString('utf8') : '';
   };
-  const opaque = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000' }, 'Hi'));
+  const opaque = decode(oneVertex({ shape: 'rectangle', fontColor: '#000' }, 'Hi'));
   assert.ok(!/opacity="0\.4"/.test(opaque), 'no spurious opacity when textOpacity unset');
-  const faded = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000', textOpacity: '40' }, 'Hi'));
+  const faded = decode(oneVertex({ shape: 'rectangle', fontColor: '#000', textOpacity: '40' }, 'Hi'));
   assert.match(faded, /opacity="0\.4"/, 'textOpacity=40 must fade the label to 0.4');
 });
 
 test('rotated plain label keeps underline / strikethrough (textSvgStr fidelity)', () => {
   // textSvgStr (used for rotated plain labels) dropped fontStyle underline(4)/
   // strike(8) — a rotated underlined label silently lost its underline.
-  const n = oneVertexB({ shape: 'rectangle', rotation: '30', fontStyle: '4', fontColor: '#000' }, 'Underlined')
+  const n = oneVertex({ shape: 'rectangle', rotation: '30', fontStyle: '4', fontColor: '#000' }, 'Underlined')
     .contract.document.pages[0].paint.find((x) => x.kind === 'svg');
   const svg = Buffer.from(n.source, 'base64').toString('utf8');
   assert.match(svg, /text-decoration="underline"/, 'rotated plain label must keep underline');
@@ -2460,7 +2453,7 @@ test('autosizeText: auto-scales fontSize to fit bounds headlessly', () => {
     note: 'The size of the font in this note will change so that it fits within the note shape'
   };
 
-  const result = exporter.buildResult(graphFixture(cells, states, labels, styles), null, { mode: 'B' });
+  const result = exporter.buildResult(graphFixture(cells, states, labels, styles));
   const paint = result.contract.document.pages[0].paint;
 
   const svgNode = paint.find((n) => n.kind === 'svg' && n.source && Buffer.from(n.source, 'base64').toString('utf8').includes('<text'));
