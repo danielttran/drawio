@@ -600,6 +600,24 @@ test('cross / ERmandOne / ERoneToMany emit two stroke segments', () => {
   }
 });
 
+test('endFill=0 renders a hollow arrowhead (no silent solid fill)', () => {
+  // REGRESSION (C1): drawio endFill/startFill=0 draws a hollow (outline-only)
+  // arrowhead; the exporter always filled it -> a hollow arrow printed solid.
+  const mk = (extra) => {
+    const cells = { e: { id: 'e', edge: true, style: 'endArrow=classic;' + extra, value: '' } };
+    const states = { e: { x: 0, y: 0, width: 0, height: 0,
+      absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+    const styles = { e: { endArrow: 'classic', ...Object.fromEntries(new URLSearchParams(extra.replace(/;/g, '&'))) } };
+    return exporter.buildResult(graphFixture(cells, states, {}, styles));
+  };
+  const solid = mk('').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const solidHead = solid[solid.length - 1];
+  assert.ok(solidHead.fill && !solidHead.stroke, 'default arrowhead is filled');
+  const hollow = mk('endFill=0;').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const hollowHead = hollow[hollow.length - 1];
+  assert.ok(!hollowHead.fill && hollowHead.stroke, 'endFill=0 arrowhead must be a stroked outline (hollow)');
+});
+
 test('genuinely unsupported markers still raise a loud notice', () => {
   const result = oneEdgeMarker('halfCircle');
   assert.ok(result.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),

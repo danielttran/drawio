@@ -2905,13 +2905,19 @@
   // faithfully and emits a LOUD notice for the genuinely-unsupported ones
   // (drawing the closest approximation so the operator still sees a marker).
   // Returns a paint node ({kind:'path', d, fill, stroke}) or null.
-  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices) {
+  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices, filled) {
     var dx = to.x - from.x, dy = to.y - from.y;
     var len = Math.sqrt(dx * dx + dy * dy);
     if (len <= 0.001) return null;
     var ux = dx / len, uy = dy / len, px = -uy, py = ux;
     var base = { x: to.x - ux * size, y: to.y - uy * size };
     var t = String(type).replace(/Thin$/, '');
+    // drawio endFill/startFill: a filled marker (classic/block/diamond/oval/box)
+    // is fillAndStroke when filled, but a plain stroked OUTLINE (transparent
+    // inside) when endFill/startFill=0. Previously always filled -> a hollow
+    // arrowhead silently printed solid. `filled` defaults true (endFill!='0').
+    var fillIf = (filled === false) ? null : arrowFill;
+    var strokeIf = (filled === false) ? stroke : null;
     // Open V (stroked, not filled).
     if (t === 'open' || t === 'openAsync') {
       return { kind: 'path', d: openArrowPath(from, to, size), fill: null, stroke: stroke };
@@ -2919,7 +2925,7 @@
     // Filled triangle: classic (notched back) and block (flat back). We render
     // both as a flat-back triangle — visually equivalent at print marker sizes.
     if (t === 'classic' || t === 'block' || t === '') {
-      return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
+      return { kind: 'path', d: arrowPath(from, to, size), fill: fillIf, stroke: strokeIf };
     }
     // Filled rhombus.
     if (t === 'diamond') {
@@ -2928,7 +2934,7 @@
         ' L ' + p(dm.x + px * size * 0.5, dm.y + py * size * 0.5) +
         ' L ' + p(base.x, base.y) +
         ' L ' + p(dm.x - px * size * 0.5, dm.y - py * size * 0.5) + ' Z';
-      return { kind: 'path', d: dd, fill: arrowFill, stroke: null };
+      return { kind: 'path', d: dd, fill: fillIf, stroke: strokeIf };
     }
     // Circle/ellipse, centered half a marker back from the tip. circle = hollow.
     if (t === 'oval' || t === 'circle' || t === 'circlePlus') {
@@ -2936,7 +2942,7 @@
       var cd = 'M ' + p(c.x - r, c.y) +
         ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x + r) + ' ' + fmt(c.y) +
         ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x - r) + ' ' + fmt(c.y) + ' Z';
-      var hollow = (t === 'circle' || t === 'circlePlus');
+      var hollow = (t === 'circle' || t === 'circlePlus' || filled === false);
       var node = { kind: 'path', d: cd, fill: hollow ? null : arrowFill,
         stroke: hollow ? stroke : null };
       if (t === 'circlePlus') {
@@ -2952,7 +2958,7 @@
         ' L ' + p(to.x - px * size * 0.45, to.y - py * size * 0.45) +
         ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45) +
         ' L ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' Z';
-      return { kind: 'path', d: bd, fill: arrowFill, stroke: null };
+      return { kind: 'path', d: bd, fill: fillIf, stroke: strokeIf };
     }
     // Stroked-line markers (dash, cross) and the ER crow's-foot family are
     // rendered faithfully here, matching drawio's mxMarker formulas exactly
@@ -6148,15 +6154,18 @@
 
     var arrowFill = stroke.paint || solid('#000000', 1);
     var arrowSize = Math.max(7, stroke.width * 5);
+    // drawio endFill/startFill default to filled (1); '0' => hollow outline.
+    var endFilled = String(style.endFill) !== '0';
+    var startFilled = String(style.startFill) !== '0';
     if (style.endArrow && style.endArrow !== 'none') {
       var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
-        points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices);
+        points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices, endFilled);
       if (Array.isArray(endNode)) endNode.forEach(function(n) { if (n) paint.push(n); });
       else if (endNode) paint.push(endNode);
     }
     if (style.startArrow && style.startArrow !== 'none') {
       var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
-        arrowSize, stroke, arrowFill, cell.id, notices);
+        arrowSize, stroke, arrowFill, cell.id, notices, startFilled);
       if (Array.isArray(startNode)) startNode.forEach(function(n) { if (n) paint.push(n); });
       else if (startNode) paint.push(startNode);
     }
