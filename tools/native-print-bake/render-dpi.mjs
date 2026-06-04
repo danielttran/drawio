@@ -92,7 +92,7 @@ const graph = buildGraph(pageData.cells, pageData.paper);
 let resolvedImages = {};
 if (typeof exporter.embedExternalImages === 'function')
   resolvedImages = await exporter.embedExternalImages(graph, localFileFetch, null, null).catch(() => ({}));
-const { contract } = exporter.buildResult(graph, pageData.paper, { mode: 'B', resolvedImages });
+const { contract } = exporter.buildResult(graph, pageData.paper, { resolvedImages });
 
 const client = new EngineClient();
 const { msg: h } = await client.request({ op: 'Hello', proto: { major: 1, minor: 0 } });

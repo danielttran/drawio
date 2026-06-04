@@ -71,11 +71,13 @@ Always prioritize using `jcodemunch-mcp` tools over native shell commands (`grep
    > is unit-tested via an injected stub).
 
 3. **Therefore the guarantee holds by construction, not by comparison.**
-   The bake must losslessly transcribe drawio's *actual rendered* SVG
-   (the existing `harvestShape` approach), eliminating re-derived/heuristic
-   geometry. It is enforced by **structural invariants that run in the
-   existing Node/C++ test harness with zero browser** (e.g. every contract
-   node maps to a harvested element; no heuristic geometry remains; every
+   The bake is **headless-only**: it renders every object faithfully from
+   its stencil/style geometry (or emits a loud notice when it cannot), with
+   **zero browser/live-DOM dependency**. There is no live-DOM transcription
+   path — the old browser-only `harvestShape`/`svgCellNode` strategy has been
+   removed; the headless re-derivation *is* the WYSIWYG guarantee. It is
+   enforced by **structural invariants that run in the existing Node/C++ test
+   harness with zero browser** (e.g. no silent heuristic geometry; every
    labelled object carries its own non-empty text verbatim).
 
 4. **The engine + JSON contract are a frozen, isolated boundary.**
@@ -85,11 +87,12 @@ Always prioritize using `jcodemunch-mcp` tools over native shell commands (`grep
    do not infer) per `docs/PRINT_ENGINE_SPEC_v1.1.md`.
 
 5. **No silent heuristic fallbacks.** Named-shape geometry, `plainLabel`
-   blob flattening, `edgeLabelBox`, etc. are headless-only last resorts
-   and must remain loudly noticed where they would diverge. Do not
-   reintroduce them on the live path.
+   blob flattening, `edgeLabelBox`, etc. are last-resort approximations and
+   must remain loudly noticed wherever they would diverge from drawio.
 
 Rationale is in the git history of `src/main/webapp/plugins/nativeprint/`
-(harvest-everything, paragraph fix, the reverted browser self-check). If a
-task seems to need a browser to "prove" WYSIWYG, the answer is to remove
-re-derivation so there is nothing to prove — not to add a browser.
+(the reverted browser self-check; the removal of the live-DOM
+`harvestShape`/`svgCellNode` path in favour of headless-only). If a task
+seems to need a browser to "prove" WYSIWYG, the answer is to strengthen the
+faithful headless render and its structural invariants — not to add a
+browser.

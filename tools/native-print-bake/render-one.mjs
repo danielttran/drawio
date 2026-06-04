@@ -142,7 +142,7 @@ async function renderFile(drawioPath, outPng) {
     resolvedImages = await exporter.embedExternalImages(graph, localFileFetch, null, null).catch(() => ({}));
   }
 
-  const result = exporter.buildResult(graph, pageData.paper, { mode: 'B', resolvedImages });
+  const result = exporter.buildResult(graph, pageData.paper, { resolvedImages });
   const notices = result.notices;
   const contract = result.contract;
 

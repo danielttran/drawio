@@ -20,17 +20,22 @@ and do not ask to revisit them. Full text + rationale:
      (`embedExternalImages` / `imgElementToPngDataUri`) — NOT to build a
      verification/pixel oracle. See `docs/CLAUDE.md` §2.
 
-3. **Guarantee by construction, verified browser-free.** Transcribe
-   drawio's actual rendered SVG (`harvestShape`); remove re-derived /
-   heuristic geometry; enforce with structural invariants in the existing
-   `node --test` (exporter) and `ctest` (engine) harnesses.
+3. **Guarantee by construction, verified browser-free.** The bake is
+   **headless-only**: render every object faithfully from its stencil/style
+   geometry (or emit a loud notice), with zero browser/live-DOM dependency.
+   There is no live-DOM transcription path — the old browser-only
+   `harvestShape`/`svgCellNode` strategy was removed; the headless
+   re-derivation *is* the WYSIWYG guarantee. Enforce with structural
+   invariants in the existing `node --test` (exporter) and `ctest` (engine)
+   harnesses.
 
 4. **Frozen engine/contract boundary.** Don't bypass the engine; contract
    schema changes need an explicit owner decision (escalate, don't infer).
 
-5. **No silent heuristic fallbacks** on the live path (`shapePath`,
-   `plainLabel` flattening, `edgeLabelBox`) — headless last-resort only,
-   loudly noticed when they would diverge.
+5. **No silent heuristic fallbacks** (`shapePath`, `plainLabel` flattening,
+   `edgeLabelBox`) — last-resort approximations only, loudly noticed
+   wherever they would diverge from drawio.
 
-If a task seems to need a browser to "prove" WYSIWYG: remove the
-re-derivation so there is nothing to prove — do not add a browser.
+If a task seems to need a browser to "prove" WYSIWYG: strengthen the
+faithful headless render and its structural invariants — do not add a
+browser.

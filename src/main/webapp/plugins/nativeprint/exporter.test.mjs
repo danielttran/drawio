@@ -80,6 +80,14 @@ function graphFixture(cells, states, labels, styles, bounds = { x: 10, y: 20, wi
   };
 }
 
+// Labels and gradient fills are now emitted as kind:'svg' nodes; their text /
+// styling lives inside a base64-encoded SVG `source`. Decode to assert on it.
+const decodeSvg = (n) => (n && n.kind === 'svg' && typeof n.source === 'string')
+  ? Buffer.from(n.source, 'base64').toString('utf8') : '';
+// The label node is the kind:'svg' node whose decoded source carries <text>.
+const labelSvgNode = (paint) => paint.find(
+  (n) => n.kind === 'svg' && decodeSvg(n).includes('<text'));
+
 test('exporter bakes common vertex shapes as real paths', () => {
   const cells = {
     ellipse: { id: 'ellipse', vertex: true },
@@ -147,10 +155,11 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
   assert.deepEqual(paint[0].stroke.paint, { type: 'solid', color: '#123456', alpha: 1 });
   assert.equal(paint[1].fill.color, '#123456');
   assert.match(paint[1].d, /^M 50 50 L /);
-  assert.equal(paint[2].kind, 'text');
-  assert.equal(paint[2].font.color, '#654321');
-  assert.equal(paint[2].box.h, 19.599999999999998);
-  assert.equal(paint[2].align.h, 'center');
+  // The label is now a kind:'svg' node carrying the text inside the SVG source.
+  assert.equal(paint[2].kind, 'svg');
+  const labelSvg = decodeSvg(paint[2]);
+  assert.match(labelSvg, /<text[^>]*fill="#654321"[^>]*text-anchor="middle"[^>]*>Edge Label<\/text>/);
+  assert.match(labelSvg, /font-size="14"/);
 });
 
 test('exporter bakes flowchart parallelogram without print-warning notice', () => {
@@ -204,14 +213,19 @@ test('exporter carries fill gradients opacity dash and remains zoom independent'
     styles,
     { x: 10, y: 20, width: 200, height: 160 },
     2));
-  const path = result.contract.document.pages[0].paint[0];
+  // A gradient fill is now emitted as a kind:'svg' node (linearGradient + path).
+  const node = result.contract.document.pages[0].paint[0];
 
   assert.equal(result.contract.document.pages[0].size.w, 100);
-  assert.equal(path.d, 'M 10 20 L 70 20 L 70 60 L 10 60 Z');
-  assert.equal(path.fill.type, 'linear');
-  assert.deepEqual(path.fill.stops[0], { offset: 0, color: '#ff0000', alpha: 0.5 });
-  assert.deepEqual(path.stroke.dash, [20, 8]); // dashPattern 5 2 * strokeWidth 4 (drawio createDashPattern)
-  assert.equal(path.stroke.paint.alpha, 0.25);
+  assert.equal(node.kind, 'svg');
+  const svg = decodeSvg(node);
+  assert.match(svg, /<linearGradient[^>]*>/);
+  assert.match(svg, /<stop offset="0" stop-color="#ff0000"\/>/);
+  assert.match(svg, /<stop offset="1" stop-color="#0000ff"\/>/);
+  assert.match(svg, /fill="url\(#g/); // path painted with the gradient ref
+  // dashPattern 5 2 * strokeWidth 4 (drawio createDashPattern) -> "20 8"
+  assert.match(svg, /stroke-dasharray="20 8"/);
+  assert.match(svg, /stroke-opacity="0.25"/);
 });
 
 test('exporter refuses non-schema hex lengths instead of emitting invalid paint', () => {
@@ -231,7 +245,10 @@ test('exporter refuses non-schema hex lengths instead of emitting invalid paint'
 
   assert.equal(paint[0].fill, null);
   assert.equal(paint[0].stroke, null);
-  assert.equal(paint[1].font.color, '#000000');
+  // The label is now a kind:'svg' node; the invalid fontColor "#12" falls back
+  // to #000000 inside the SVG <text>.
+  const labelSvg = decodeSvg(paint[1]);
+  assert.match(labelSvg, /<text[^>]*fill="#000000"[^>]*>Label<\/text>/);
 });
 
 // ===========================================================================
@@ -578,8 +595,8 @@ test('html shape is label-only and emits no print-warning notice', () => {
   assert.equal(r.notices.length, 0, 'html shape must not degrade');
   const paint = r.contract.document.pages[0].paint;
   assert.equal(paint.length, 1, 'html object contributes its label only');
-  assert.equal(paint[0].kind, 'text');
-  assert.match(JSON.stringify(paint[0].content), /HTML object/);
+  assert.equal(paint[0].kind, 'svg');
+  assert.match(decodeSvg(paint[0]), /HTML object/);
   assertSchemaValid(r.contract, 'html shape');
 });
 
@@ -804,517 +821,11 @@ test('sketch dots: matches current drawio renderer with diagonal hatch, zero not
   assertSchemaValid(r.contract, 'sketch-dots');
 });
 
-// ===========================================================================
-// UNIVERSAL SHAPE HARVESTING
-//
-// In the real drawio renderer EVERY shape (built-in, stencil, UML/BPMN/AWS/
-// custom) is already drawn into the live SVG at state.shape.node. The
-// exporter transcribes that geometry, so the "unsupported shape" notice must
-// NOT fire for an arbitrary stencil when a rendered SVG node exists. This
-// mocks a minimal SVG DOM (identity CTMs => only the origin/scale Norm
-// applies) and proves the transcription is faithful, notice-free and
-// schema-valid for shapes the named-path code never knew about.
-// ===========================================================================
-function svgEl(tag, attrs = {}, children = []) {
-  const I = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  return {
-    nodeType: 1, tagName: tag, childNodes: children,
-    parentNode: { nodeType: 1, getCTM: () => I },
-    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
-    getAttributeNS: () => null,
-    getCTM: () => I
-  };
-}
-function harvestFixture(node, style, label = '') {
-  const cells = { v: { id: 'v', vertex: true } };
-  const states = { v: { x: 10, y: 20, width: 80, height: 40, shape: { node } } };
-  return exporter.buildResult(graphFixture(
-    cells, states, { v: label }, { v: style }, FIXED_BOUNDS, 1));
-}
-
-// ===========================================================================
-// TRUE-WYSIWYG: per-cell `svg` node carries drawio's LITERAL rendered SVG.
-// Nothing re-derived; the engine rasterizes exactly what was drawn (loud
-// SvgArtworkStub if the host lacks an SVG backend — never silent).
-// ===========================================================================
-function domEl(tag, attrs = {}, children = [], text = '') {
-  const a = Object.keys(attrs)
-    .map((k) => ` ${k}="${attrs[k]}"`).join('');
-  const self = {
-    nodeType: 1, tagName: tag, childNodes: children,
-    getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
-    getAttributeNS: () => null, ownerDocument: null
-  };
-  self.outerHTML = `<${tag}${a}>${text}` +
-    children.map((c) => c.outerHTML || '').join('') + `</${tag}>`;
-  return self;
-}
-const decodeSvg = (n) => Buffer.from(n.source, 'base64').toString('utf8');
-function svgFixture(shapeNode, textNode, style, opt = {}) {
-  const doc = { getElementById: (id) => (opt.defs && opt.defs[id]) || null };
-  shapeNode.ownerDocument = doc;
-  shapeNode.parentNode = opt.parent ||
-    { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) };
-  if (textNode) textNode.ownerDocument = doc;
-  const isEdge = !!opt.edge;
-  const st = isEdge
-    ? { x: 0, y: 0, width: 0, height: 0, absolutePoints: opt.pts || null,
-        shape: { node: shapeNode } }
-    : { x: 10, y: 20, width: 80, height: 40, shape: { node: shapeNode } };
-  st.style = style;          // mxCellState.style (read by svgCellNode: rotation, strokeWidth)
-  if (textNode) st.text = { node: textNode };
-  const cells = { v: { id: 'v', vertex: !isEdge, edge: isEdge,
-    html: !!opt.html } };
-  return exporter.buildResult(graphFixture(
-    cells, { v: st }, { v: opt.label || '' }, { v: style }, FIXED_BOUNDS, 1));
-}
-
-test('vertex emits ONE faithful svg node (shape+label), no re-derivation', () => {
-  const shape = domEl('g', {}, [domEl('ellipse', { cx: 50, cy: 40, rx: 30, ry: 20 })]);
-  const text = domEl('g', { 'class': 'lbl' }, [], 'Hello WYSIWYG');
-  const r = svgFixture(shape, text, { shape: 'umlActor' });
-  const paint = r.contract.document.pages[0].paint;
-  assert.equal(paint.length, 1, 'exactly one node — the literal SVG');
-  const n = paint[0];
-  assert.equal(n.kind, 'svg');
-  assert.equal(n.aspect, 'preserve');
-  // origin (10,20) scale 1, SVG_PAD 2 -> box -2,-2 .. 84x44
-  assert.deepEqual(n.box, { x: -2, y: -2, w: 84, h: 44 });
-  const svg = decodeSvg(n);
-  assert.match(svg, /^<svg [^>]*width="84" height="44"/);
-  assert.ok(svg.includes('<ellipse'), 'shape transcribed verbatim');
-  assert.ok(svg.includes('Hello WYSIWYG'), 'label transcribed verbatim');
-  assert.match(svg, /scale\(1\)/, 'view->contract transform present');
-  assert.ok(!paint.some((p) => p.kind === 'text'),
-    'no separate re-derived text node — text is the real SVG');
-  assert.equal(r.notices.length, 0);
-  assertSchemaValid(r.contract, 'svg vertex');
-});
-
-test('harvested SVG resolves light-dark()/var() so resvg renders real color, not black', () => {
-  // Regression (test.drawio): drawio's rendered SVG carries theme colors as CSS
-  // light-dark(L, D) / var(--x, fb) in inline `style` attrs (which OVERRIDE the
-  // hex presentation attrs). resvg (0.47) can't parse them → it drops the fill
-  // and the shape prints SOLID BLACK. The bake must resolve them to a concrete
-  // color for the active theme (light here — no Editor.isDarkMode in node).
-  const shape = domEl('g', {}, [domEl('rect', {
-    x: 0, y: 0, width: 80, height: 40, fill: '#ffe6cc',
-    style: 'fill: light-dark(rgb(255, 230, 204), rgb(54, 33, 10)); ' +
-      'stroke: light-dark(#d79b00, var(--ge-dark-color, #993d00));'
-  })]);
-  const r = svgFixture(shape, null, { shape: 'x' });
-  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-  assert.ok(!/light-dark\(/i.test(svg), 'no light-dark() left for resvg to choke on');
-  assert.ok(!/var\(/i.test(svg), 'no var() left for resvg to choke on');
-  assert.ok(/rgb\(255, 230, 204\)/.test(svg), 'fill resolved to the light side');
-  assert.ok(/#d79b00/i.test(svg), 'stroke resolved to the light side');
-});
-
-test('svg node inlines referenced defs (gradients/filters/markers)', () => {
-  const grad = domEl('linearGradient', { id: 'g1' }, [domEl('stop', { offset: '0' })]);
-  const shape = domEl('g', {}, [domEl('rect', { fill: 'url(#g1)' })]);
-  const r = svgFixture(shape, null, { shape: 'x' }, { defs: { g1: grad } });
-  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-  assert.ok(svg.includes('<defs>') && svg.includes('linearGradient id="g1"'),
-    'referenced gradient is inlined so the SVG is self-contained');
-});
-
-// Mock the live drawio DOM exactly as harvestShape's tests mock getCTM:
-// per-word client rects + element rects + computed style. NO browser.
-function mkRange() {
-  return {
-    _n: null, _s: 0, _e: 0,
-    setStart(n, o) { this._n = n; this._s = o; },
-    setEnd(_n, o) { this._e = o; },
-    getClientRects() {
-      return [{ left: 100 + this._s * 7, top: this._n._top || 50,
-        width: (this._e - this._s) * 7, height: 14 }];
-    },
-    getBoundingClientRect() { return this.getClientRects()[0]; }
-  };
-}
-function styleFor(tag) {
-  const base = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0, 0, 0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0, 0, 0, 0)', display: 'block',
-    listStyleType: 'disc', letterSpacing: 'normal' };
-  if (tag === 'rootdiv') return { ...base, backgroundColor: 'rgb(240,240,240)' };
-  if (tag === 'span') return { ...base, display: 'inline', fontFamily: 'Times',
-    fontStyle: 'italic', color: 'rgb(255, 0, 0)', textDecorationLine: 'underline',
-    backgroundColor: 'rgb(0, 255, 0)' };
-  if (tag === 'spanMixed') return { ...base, display: 'inline', fontFamily: 'Courier New',
-    fontWeight: '700', color: 'rgba(0, 0, 255, 0.5)',
-    textDecorationLine: 'underline line-through overline' };
-  if (tag === 'innerBg') return { ...base, display: 'inline',
-    backgroundColor: 'rgba(255, 255, 0, 0.25)' };
-  if (tag === 'li') return { ...base, display: 'list-item' };
-  return base;
-}
-function htmlFixtureNodes() {
-  const t = { nodeType: 3, nodeValue: 'Hello World', _top: 50 };
-  const span = { nodeType: 1, tagName: 'span', _styleKey: 'span',
-    childNodes: [t], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 100, top: 50, width: 84, height: 14 }) };
-  t.parentNode = span;
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [span], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
-  const fo = {
-    nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: 'Hello World',
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange }
-  };
-  return { nodeType: 1, tagName: 'g', childNodes: [fo] };
-}
-
-test('HTML label is transcribed to WYSIWYG SVG (text+decoration+bg) at drawio positions', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
-    const n = r.contract.document.pages[0].paint[0];
-    assert.equal(n.kind, 'svg');
-    const svg = decodeSvg(n);
-    assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped');
-    // scale 1, vb (10,20), PAD 2 -> M = matrix(1 0 0 1 -8 -18); identity parent
-    assert.match(svg, /<g transform="matrix\(1 0 0 1 -8 -18\)">/);
-    // label background (rootDiv) + inline background (span), in screen px
-    assert.match(svg, /<rect x="90" y="40" width="100" height="40" fill="#f0f0f0"\/>/);
-    assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
-    // exact words at measured rects, top-anchored (no baseline guessing)
-    // y = rect.top(50) + (lineBox 14 - fontSize 12)/2 = 51 (half-leading)
-    assert.match(svg, /<text x="100" y="51" font-family="Times" font-size="12" font-weight="400" font-style="italic" text-decoration="underline" fill="#ff0000" text-anchor="start" dominant-baseline="text-before-edge" xml:space="preserve">Hello<\/text>/);
-    assert.match(svg, /<text x="142" [^>]*>World<\/text>/);
-    assert.ok(!r.notices.some((x) => x.kind === 'SvgForeignObject'),
-      'transcribed faithfully -> no foreignObject notice');
-    assertSchemaValid(r.contract, 'fo->svg');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('vertical label (horizontal=0) rotates each glyph-run -90 in place (swimlane title)', () => {
-  // Regression (test.drawio horizontal=0 swimlane title): drawio renders the
-  // title rotated, but the transcription laid the word boxes in a column with
-  // HORIZONTAL glyphs that overflow the strip. Each run is now rotated -90°
-  // about its own center so the column reads vertically.
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect', horizontal: '0' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.match(svg, /<g transform="rotate\(-90 [^)]*\)"><text /,
-      'each glyph-run rotated -90 in place');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('rotated cell (style.rotation) rotates the transcribed label so it follows the shape', () => {
-  // Regression (test.drawio associativeEntity rotation=-45): the shape rotates
-  // but the transcribed label printed horizontal (getClientRects loses glyph
-  // rotation). The label group is now wrapped in the cell rotation.
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect', rotation: '-45' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.match(svg, /<g transform="rotate\(-45 /,
-      'transcribed label wrapped in the cell rotation');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('node box grows to shapeNode.getBBox() so rotated/overflowing shapes are not cropped', () => {
-  // Regression (test.drawio: associativeEntity rotation=-45 cropped; wide wedge
-  // arrow cropped). The box was sized to the unrotated geometry / bare edge
-  // endpoints; getBBox() gives the ACTUAL rendered AABB (rotation, wide arrow
-  // heads, stroke/marker overflow) so the shape is no longer clipped.
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  // rendered bbox is larger than the 80x40 geometry (e.g. a rotated shape).
-  shape.getBBox = () => ({ x: -20, y: -10, width: 140, height: 100 });
-  const r = svgFixture(shape, null, { shape: 'x' });
-  const box = r.contract.document.pages[0].paint[0].box;
-  assert.ok(box.w >= 140 && box.h >= 100,
-    'box grew to the rendered bbox, got ' + box.w + 'x' + box.h);
-});
-
-test('node box grows to fit an external/overflowing HTML label so it is not clipped', () => {
-  // Regression (test.drawio umlActor "Actor", verticalLabelPosition=bottom): the
-  // box was sized to the shape only, so a label painted outside the shape fell
-  // beyond the svg viewBox and was clipped. The box must grow to the label's
-  // MEASURED bounds (real DOM rects via transcribeForeignObjects), not a
-  // synthetic state.boundingBox (which the live graph does not populate).
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
-    const box = r.contract.document.pages[0].paint[0].box;
-    // shape-only box = 80/scale + 2*PAD = 84 wide. The label's measured glyph
-    // runs reach svg-local x≈169, so the box must grow past 84 to contain them.
-    assert.ok(box.w >= 168,
-      'box grew to fit the label width, got ' + box.w + 'x' + box.h);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('transcribed HTML label sits at the SVG ROOT, not nested in the view->local group (no double-transform / clipped-out-of-box)', () => {
-  // Regression (test.drawio: "most texts dont show in shapes"). Label runs are
-  // measured in SCREEN coords and M maps screen->svg-local. If the label <g
-  // matrix(M)> is nested INSIDE the shape's view->local group, that mapping is
-  // applied a SECOND time and the text lands far outside the node box -> the
-  // svg viewBox clips it -> the label is invisible in the print. The label
-  // group must therefore be a SIBLING of the shape group at the svg root.
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    const labelIdx = svg.indexOf('<g transform="matrix(');
-    assert.ok(labelIdx > 0, 'transcribed label group present');
-    const before = svg.slice(0, labelIdx);
-    const opens = (before.match(/<g\b/g) || []).length;
-    const closes = (before.match(/<\/g>/g) || []).length;
-    assert.equal(opens - closes, 0,
-      'label group must be at svg root (all prior groups closed); ' +
-      (opens - closes) + ' group(s) still open would double-transform it');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('rotated/zoomed label: rotation+scale carried by the <g matrix>, glyphs oriented', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    // cell-group screen CTM = 90deg rotation + 2x zoom -> a=0 b=2 c=-2 d=0
-    const r = svgFixture(shape, htmlFixtureNodes(), { shape: 'rect' },
-      { parent: { getScreenCTM: () => ({ a: 0, b: 2, c: -2, d: 0, e: 0, f: 0 }) } });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    // M = Mtr * inv(screenCTM); inv of (0 2 -2 0 0 0) = (0 -0.5 0.5 0 0 0),
-    // Mtr=(1 0 0 1 -8 -18) -> M=(0 -0.5 0.5 0 -8 -18): non-axis-aligned => rot
-    assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 -8 -18\)">/,
-      'screen rotation/zoom preserved in the emitted matrix');
-    assert.ok(!/<foreignObject/i.test(svg));
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('list marker: glyph + numbering exact, placed by measured content, no notice', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  const t = { nodeType: 3, nodeValue: 'Item one' };
-  const li = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t],
-    previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
-  t.parentNode = li;
-  const ul = { nodeType: 1, tagName: 'ul', childNodes: [li],
-    previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [ul],
-    textContent: 'Item one',
-    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }),
-    ownerDocument: { createRange: mkRange } };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, textRoot, { shape: 'rect' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    // first word "Item" rect.left = 100 (mkRange); marker right-aligned a
-    // 0.5em(=6px @12) gap left of content -> x=94, anchor=end; y=top+half-lead
-    assert.match(svg, /<text x="94" y="51"[^>]*text-anchor="end"[^>]*>•<\/text>/,
-      'bullet glyph placed by measured content inset');
-    assert.match(svg, /<text x="100" [^>]*text-anchor="start"[^>]*>Item<\/text>/);
-    // A standard `disc` bullet is a known glyph placed faithfully -> the bake
-    // must NOT raise a marker approximation notice for it (built-in WYSIWYG).
-    assert.ok(!r.notices.some((x) => x.kind === 'SvgListMarkerApprox'),
-      'known list marker renders faithfully -> no SvgListMarkerApprox notice');
-    assert.ok(!/<foreignObject/i.test(svg));
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('un-measurable HTML label HARD-FAILS the export (no silent drop/approx)', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  // foreignObject with real text but NO createRange/getComputedStyle/CTM.
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
-    textContent: 'Important label', ownerDocument: {} };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-  assert.throws(() => svgFixture(shape, textRoot, { shape: 'rect' }),
-    /NativePrintFatal/,
-    'present-but-unmeasurable label aborts the whole print, never silent');
-});
-
-test('empty HTML label is not an error (no text -> nothing emitted, no fatal)', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [],
-    textContent: '   ', ownerDocument: {} };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-  const r = svgFixture(shape, textRoot, { shape: 'rect' });
-  const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-  assert.ok(!/<foreignObject/i.test(svg) && !/<text/.test(svg));
-  assert.equal(r.notices.length, 0);
-});
-
-test('edge takes the svg path with a viewport derived from its points', () => {
-  const conn = domEl('path', { d: 'M 0 0 L 100 100', stroke: '#000' });
-  const r = svgFixture(conn, null, { strokeColor: '#000' },
-    { edge: true, pts: [{ x: 10, y: 20 }, { x: 110, y: 90 }] });
-  const n = r.contract.document.pages[0].paint[0];
-  assert.equal(n.kind, 'svg');
-  assert.ok(n.box.w > 100 && n.box.h > 70, 'viewport spans the routed points');
-  assert.ok(decodeSvg(n).includes('M 0 0 L 100 100'), 'connector verbatim');
-  assertSchemaValid(r.contract, 'svg edge');
-});
-
-test('edge HTML label transcription keeps transformed matrix path (not vertex-only regression)', () => {
-  const conn = domEl('path', { d: 'M 0 0 L 100 0', stroke: '#000' });
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(conn, htmlFixtureNodes(), { strokeColor: '#000' }, {
-      edge: true,
-      pts: [{ x: 10, y: 20 }, { x: 110, y: 20 }],
-      parent: { getScreenCTM: () => ({ a: 0, b: 2, c: -2, d: 0, e: 0, f: 0 }) }
-    });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.match(svg, /<g transform="matrix\(0 -0\.5 0\.5 0 [^ ]+ [^ ]+\)">/,
-      'edge HTML label keeps rotated screen-transform carry matrix');
-    assert.ok(/>Hello<\/text>/.test(svg) && />World<\/text>/.test(svg),
-      'edge HTML words transcribed to measurable SVG text');
-    assert.ok(!/<foreignObject/i.test(svg), 'foreignObject NEVER shipped');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('nested background rectangles are transcribed (root + descendant + nested inline)', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  const txt = { nodeType: 3, nodeValue: 'Alpha', _top: 50 };
-  const inner = { nodeType: 1, tagName: 'span', _styleKey: 'innerBg',
-    childNodes: [txt], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 110, top: 52, width: 35, height: 14 }) };
-  txt.parentNode = inner;
-  const outer = { nodeType: 1, tagName: 'span', _styleKey: 'span',
-    childNodes: [inner], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 100, top: 50, width: 84, height: 14 }) };
-  inner.parentNode = outer;
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [outer], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 120, height: 40 }) };
-  outer.parentNode = rootDiv;
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: 'Alpha',
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 120, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, textRoot, { shape: 'rect' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.match(svg, /<rect x="90" y="40" width="120" height="40" fill="#f0f0f0"\/>/);
-    assert.match(svg, /<rect x="100" y="50" width="84" height="14" fill="#00ff00"\/>/);
-    assert.match(svg, /<rect x="110" y="52" width="35" height="14" fill="#ffff00" fill-opacity="0.25"\/>/);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('mixed text decoration run is preserved in svg text-decoration', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  const txt = { nodeType: 3, nodeValue: 'Decor', _top: 50 };
-  const span = { nodeType: 1, tagName: 'span', _styleKey: 'spanMixed',
-    childNodes: [txt], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 100, top: 50, width: 42, height: 14 }) };
-  txt.parentNode = span;
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [span], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
-  span.parentNode = rootDiv;
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: 'Decor',
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  const textRoot = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-  globalThis.getComputedStyle = (el) => styleFor(el && el._styleKey);
-  try {
-    const r = svgFixture(shape, textRoot, { shape: 'rect' });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.match(svg, /text-decoration="underline line-through overline"/);
-    assert.match(svg, /fill="#0000ff" fill-opacity="0.5"/);
-    assert.match(svg, /font-family="Courier New" font-size="12" font-weight="700"/);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
 test('no live DOM (headless) -> svg path is skipped, vector fallback intact', () => {
   const r = oneVertex({ shape: 'ellipse', fillColor: '#112233', strokeColor: '#445566' });
   assert.ok(!r.contract.document.pages[0].paint.some((n) => n.kind === 'svg'),
     'headless never fabricates an svg node');
   assert.equal(r.contract.document.pages[0].paint[0].kind, 'path');
-});
-
-test('arbitrary stencil with a live SVG node bakes faithfully (no notice)', () => {
-  // A "umlActor"-style stick figure: things the named-path code never had.
-  const node = svgEl('g', {}, [
-    svgEl('ellipse', { cx: 50, cy: 30, rx: 10, ry: 10,
-      fill: '#abcdef', stroke: '#123456', 'stroke-width': '2' }),
-    svgEl('path', { d: 'M 50 40 L 50 70 M 30 50 L 70 50 M 50 70 L 35 95 M 50 70 L 65 95',
-      fill: 'none', stroke: '#123456', 'stroke-width': '2' })
-  ]);
-  const r = harvestFixture(node, { shape: 'umlActor' });
-  assert.equal(r.notices.length, 0, 'a rendered shape must NOT degrade');
-  assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
-    'the generic unsupported-shape notice must never fire when SVG exists');
-  const paint = r.contract.document.pages[0].paint;
-  const paths = paint.filter((n) => n.kind === 'path');
-  assert.equal(paths.length, 2, 'every rendered primitive transcribed');
-  // origin (10,20) scale 1 => ellipse center (50,30) -> (40,10), an A-arc body.
-  assert.match(paths[0].d, /^M 30 10 A 10 10 /);
-  assert.equal(paths[0].fill.color, '#abcdef');
-  assert.equal(paths[0].stroke.paint.color, '#123456');
-  // The figure path keeps its sub-paths and is origin-normalized.
-  assert.ok(paths[1].d.startsWith('M 40 20 L 40 50'));
-  assert.equal(paths[1].fill, null, 'fill="none" stays unpainted');
-  assertSchemaValid(r.contract, 'harvested umlActor');
-});
-
-test('harvested transforms: rect/poly normalized, hit-area skipped', () => {
-  const node = svgEl('g', {}, [
-    // invisible event/hit area drawio adds — must be skipped, not printed.
-    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
-      fill: 'none', stroke: 'none' }),
-    svgEl('rect', { x: 20, y: 30, width: 40, height: 20, rx: 5, ry: 5,
-      fill: '#ff0000', stroke: '#000000', 'stroke-width': '4' }),
-    svgEl('polygon', { points: '50,20 90,60 10,60',
-      fill: '#00ff00', stroke: '#000000' })
-  ]);
-  const r = harvestFixture(node, { shape: 'mxgraph.custom.weird' });
-  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
-  assert.equal(r.notices.length, 0);
-  assert.equal(paths.length, 2, 'fill:none+stroke:none hit-area dropped');
-  // rounded rect -> origin-normalized, rounded corners present as arcs.
-  assert.match(paths[0].d, /^M /);
-  assert.match(paths[0].d, / A 5 5 0 0 1 /);
-  assert.equal(paths[0].stroke.width, 4, 'stroke width is zoom-independent');
-  // polygon closed + normalized: (50,20)->(40,0), (90,60)->(80,40)...
-  assert.equal(paths[1].d, 'M 40 0 L 80 40 L 0 40 Z');
-  assertSchemaValid(r.contract, 'harvested transforms');
-});
-
-test('malformed harvested path data cannot hang the bake (regression)', () => {
-  // Trailing numbers after Z have no owning command: the path parser must
-  // bail (not spin forever). The cell then degrades via the normal fallback.
-  const node = svgEl('g', {}, [
-    svgEl('path', { d: 'M 0 0 Z 5 5', fill: '#abcdef', stroke: '#123456' })
-  ]);
-  const r = harvestFixture(node, { shape: 'umlActor' });
-  // The whole shape's only primitive was unparseable -> harvest yields
-  // nothing -> the loud named-shape fallback runs (never silent, never hung).
-  assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'));
-  assertSchemaValid(r.contract, 'malformed harvested path');
-});
-
-test('one unplaceable sub-element does not discard the whole shape', () => {
-  // Element with no usable CTM (getCTM -> null, like display:none) must be
-  // skipped, NOT abort the harvest and re-raise a false unsupported notice.
-  const blind = svgEl('path', { d: 'M 0 0 L 9 9', stroke: '#000000' });
-  blind.getCTM = () => null;
-  const node = svgEl('g', {}, [
-    blind,
-    svgEl('rect', { x: 10, y: 20, width: 80, height: 40,
-      fill: '#ff0000', stroke: '#000000' })
-  ]);
-  const r = harvestFixture(node, { shape: 'mxgraph.custom.partial' });
-  assert.equal(r.notices.length, 0, 'visible sibling keeps the shape faithful');
-  const paths = r.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
-  assert.equal(paths.length, 1, 'only the placeable primitive is emitted');
-  assert.equal(paths[0].d, 'M 0 0 L 80 0 L 80 40 L 0 40 Z');
-  assertSchemaValid(r.contract, 'partial harvest');
 });
 
 test('harvest absent (headless) -> builtinShapeSvg and standard shapes are warning-free', () => {
@@ -1340,10 +851,14 @@ test('fill: solid / none / transparent / gradient / opacity', () => {
   const solid = oneVertex({ shape: 'rectangle', fillColor: '#ABCDEF', fillOpacity: 40 })
     .contract.document.pages[0].paint[0].fill;
   assert.deepEqual(solid, { type: 'solid', color: '#abcdef', alpha: 0.4 });
-  const grad = oneVertex({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#0000ff' })
-    .contract.document.pages[0].paint[0].fill;
-  assert.equal(grad.type, 'linear');
-  assert.equal(grad.stops.length, 2);
+  // A gradient fill is emitted as a kind:'svg' node, not a structural fill.
+  const gradNode = oneVertex({ shape: 'rectangle', fillColor: '#ff0000', gradientColor: '#0000ff' })
+    .contract.document.pages[0].paint[0];
+  assert.equal(gradNode.kind, 'svg');
+  const gradSvg = decodeSvg(gradNode);
+  assert.match(gradSvg, /<linearGradient/);
+  assert.match(gradSvg, /stop-color="#ff0000"/);
+  assert.match(gradSvg, /stop-color="#0000ff"/);
 });
 
 // ---- Regression: paper-aware bake (page == selected paper, 1:1) ----------
@@ -1451,8 +966,9 @@ test('label background/border box is emitted for a text cell (WYSIWYG)', () => {
   assert.equal(lbox.fill.color, '#ffffff', 'light: default label bg -> themed background');
   assert.ok(lbox.stroke && lbox.stroke.paint.color === '#000000',
     'light: default label border -> themed foreground');
-  // The box must sit BEHIND the text (drawn before it).
-  assert.ok(lp.indexOf(lbox) < lp.findIndex(n => n.kind === 'text'),
+  // The box must sit BEHIND the text (drawn before it). The label is now a
+  // kind:'svg' node carrying the text.
+  assert.ok(lp.indexOf(lbox) < lp.indexOf(labelSvgNode(lp)),
     'label box is painted before (behind) the text');
 
   // Dark editor: dark side #ad1414 must print (no light-forcing exception).
@@ -1495,33 +1011,50 @@ test('stroke: none / width / dashed / cap / join faithfully captured', () => {
 // ---- Text / font matrix --------------------------------------------------
 test('text: family, size, bold, italic, bold+italic, color, multiline', () => {
   const base = { shape: 'rectangle', strokeColor: '#000000' };
-  const t = (extra, label) => oneVertex({ ...base, ...extra }, label)
-    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.equal(t({ fontFamily: 'Times New Roman', fontSize: 21 }, 'X').font.family, 'Times New Roman');
-  assert.equal(t({ fontSize: 21 }, 'X').font.sizePx, 21);
-  assert.equal(t({ fontStyle: 1 }, 'B').font.weight, 700, 'bold bit');
-  assert.equal(t({ fontStyle: 2 }, 'I').font.italic, true, 'italic bit');
-  const bi = t({ fontStyle: 3 }, 'BI').font;
-  assert.equal(bi.weight, 700);
-  assert.equal(bi.italic, true);
-  assert.equal(t({ fontColor: '#abcdef' }, 'C').font.color, '#abcdef');
-  assert.deepEqual(t({}, 'L1\nL2\nL3').content.lines, ['L1', 'L2', 'L3']);
+  // The label is now a kind:'svg' node; its styling lives inside the <text>.
+  const svg = (extra, label) => decodeSvg(labelSvgNode(
+    oneVertex({ ...base, ...extra }, label).contract.document.pages[0].paint));
+  assert.match(svg({ fontFamily: 'Times New Roman', fontSize: 21 }, 'X'),
+    /font-family="Times New Roman, Arial, sans-serif"/);
+  assert.match(svg({ fontSize: 21 }, 'X'), /font-size="21"/);
+  assert.match(svg({ fontStyle: 1 }, 'B'), /font-weight="700"/);
+  assert.match(svg({ fontStyle: 2 }, 'I'), /font-style="italic"/);
+  const bi = svg({ fontStyle: 3 }, 'BI');
+  assert.match(bi, /font-weight="700"/);
+  assert.match(bi, /font-style="italic"/);
+  assert.match(svg({ fontColor: '#abcdef' }, 'C'), /fill="#abcdef"/);
+  // multiline -> three <text> lines L1, L2, L3.
+  const ml = svg({}, 'L1\nL2\nL3');
+  assert.match(ml, /<text[^>]*>L1<\/text>/);
+  assert.match(ml, /<text[^>]*>L2<\/text>/);
+  assert.match(ml, /<text[^>]*>L3<\/text>/);
 });
 
 test('fontStyle bitmask matrix: bold/italic/underline/strikethrough + combos', () => {
-  const f = (fontStyle) => oneVertex(
-    { shape: 'rectangle', strokeColor: '#000000', fontStyle }, 'T')
-    .contract.document.pages[0].paint.find((n) => n.kind === 'text').font;
+  // The label is now a kind:'svg' node; bold/italic/decoration live on <text>.
+  // Decorations share one attribute (text-decoration="underline line-through").
+  const f = (fontStyle) => {
+    const svg = decodeSvg(labelSvgNode(oneVertex(
+      { shape: 'rectangle', strokeColor: '#000000', fontStyle }, 'T')
+      .contract.document.pages[0].paint));
+    const dec = (svg.match(/text-decoration="([^"]*)"/) || [, ''])[1];
+    return {
+      bold: /font-weight="700"/.test(svg),
+      italic: /font-style="italic"/.test(svg),
+      underline: dec.includes('underline'),
+      strikethrough: dec.includes('line-through')
+    };
+  };
   // absent / 0 -> all off
   for (const off of [undefined, 0, '0']) {
     const a = f(off);
-    assert.equal(a.weight, 400);
+    assert.equal(a.bold, false);
     assert.equal(a.italic, false);
     assert.equal(a.underline, false);
     assert.equal(a.strikethrough, false);
   }
   // single bits
-  assert.equal(f(1).weight, 700);            // bold
+  assert.equal(f(1).bold, true);             // bold
   assert.equal(f(2).italic, true);           // italic
   assert.equal(f(4).underline, true);        // underline
   assert.equal(f(8).strikethrough, true);    // strikethrough
@@ -1530,17 +1063,17 @@ test('fontStyle bitmask matrix: bold/italic/underline/strikethrough + combos', (
   const iu = f(6);
   assert.equal(iu.italic, true);
   assert.equal(iu.underline, true);
-  assert.equal(iu.weight, 400);
+  assert.equal(iu.bold, false);
   assert.equal(iu.strikethrough, false);
   // bold + italic + underline (7)
   const biu = f(7);
-  assert.equal(biu.weight, 700);
+  assert.equal(biu.bold, true);
   assert.equal(biu.italic, true);
   assert.equal(biu.underline, true);
   // all four (15) and string form ("15")
   for (const all of [15, '15']) {
     const x = f(all);
-    assert.equal(x.weight, 700);
+    assert.equal(x.bold, true);
     assert.equal(x.italic, true);
     assert.equal(x.underline, true);
     assert.equal(x.strikethrough, true);
@@ -1548,26 +1081,38 @@ test('fontStyle bitmask matrix: bold/italic/underline/strikethrough + combos', (
 });
 
 test('text alignment matrix h x v', () => {
+  // The label is now a kind:'svg' node: horizontal align maps to the <text>
+  // text-anchor (left->start, center->middle, right->end); vertical align
+  // shifts the y baseline (top above middle above bottom).
+  const ANCHOR = { left: 'start', center: 'middle', right: 'end' };
   for (const h of ['left', 'center', 'right']) {
+    const ys = {};
     for (const v of ['top', 'middle', 'bottom']) {
-      const node = oneVertex(
+      const svg = decodeSvg(labelSvgNode(oneVertex(
         { shape: 'rectangle', strokeColor: '#000000', align: h, verticalAlign: v },
-        'A').contract.document.pages[0].paint.find((n) => n.kind === 'text');
-      assert.equal(node.align.h, h, `h=${h}`);
-      assert.equal(node.align.v, v, `v=${v}`);
+        'A').contract.document.pages[0].paint));
+      const m = svg.match(/<text x="[\d.-]+" y="([\d.-]+)"[^>]*text-anchor="([^"]+)"/);
+      assert.ok(m, `label rendered for h=${h} v=${v}`);
+      assert.equal(m[2], ANCHOR[h], `h=${h} -> text-anchor`);
+      ys[v] = parseFloat(m[1]);
     }
+    assert.ok(ys.top < ys.middle && ys.middle < ys.bottom,
+      `vertical align shifts y down (top<middle<bottom) for h=${h}: ${JSON.stringify(ys)}`);
   }
 });
 
 
 
 test('non-html labels keep static content even if value contains angle brackets', () => {
-  const node = oneVertex(
+  // A non-HTML label is literal text: the angle brackets are XML-escaped in the
+  // <text>, not interpreted as markup.
+  const svg = decodeSvg(labelSvgNode(oneVertex(
     { shape: 'rectangle', strokeColor: '#000000' },
-    '<b>NotHTMLMode</b>')
-    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.equal(node.content.type, 'static');
-  assert.equal(node.content.lines[0].includes('NotHTMLMode'), true);
+    '<b>NotHTMLMode</b>').contract.document.pages[0].paint));
+  assert.match(svg, /&lt;b&gt;NotHTMLMode&lt;\/b&gt;/,
+    'angle brackets stay literal (XML-escaped), not parsed as HTML');
+  assert.ok(!/<b>NotHTMLMode<\/b>/.test(svg),
+    'the label markup is not injected as live SVG elements');
 });
 
 // ===========================================================================
@@ -1592,53 +1137,28 @@ test('text shape is label-only: no unsupported notice, no invisible body', () =>
   const paint = r.contract.document.pages[0].paint;
   assert.ok(!paint.some((n) => n.kind === 'path'),
     'no body path is emitted (drawio paints nothing for text)');
-  const t = paint.find((n) => n.kind === 'text');
-  assert.ok(t, 'the label itself is still laid out');
-  assert.equal(t.content.lines[0], 'Paragraph content here');
+  const t = labelSvgNode(paint);
+  assert.ok(t, 'the label itself is still laid out (kind:svg)');
+  // whiteSpace:wrap may break the phrase across <text> lines; assert every
+  // word of the label reaches the decoded SVG (nothing silently dropped).
+  const svg = decodeSvg(t);
+  for (const w of ['Paragraph', 'content', 'here']) {
+    assert.match(svg, new RegExp('<text[^>]*>[^<]*' + w));
+  }
 });
 
 test('plainLabel splits block-level HTML into separate lines', () => {
-  const t = oneVertex(
-    { shape: 'rectangle', strokeColor: '#000000' },
+  // The label is now a kind:'svg' node; block-level HTML becomes separate
+  // <text> lines inside the SVG source.
+  const svg = decodeSvg(labelSvgNode(oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000', html: 1 },
     '<p>First paragraph</p><p>Second paragraph</p><div>Third</div>')
-    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.equal(t.content.type, 'static', 'headless -> static fallback');
-  const joined = t.content.lines.join('|');
+    .contract.document.pages[0].paint));
   // The reported failure was the blob "First paragraphSecond paragraph".
-  assert.ok(!/paragraphSecond/.test(joined), 'paragraphs must NOT be merged');
-  assert.ok(t.content.lines.includes('First paragraph'));
-  assert.ok(t.content.lines.includes('Second paragraph'));
-  assert.ok(t.content.lines.includes('Third'));
-});
-
-test('rich extraction runs when a LIVE label DOM exists (inverted-cond fix)', () => {
-  // Minimal live DOM: state.text.node -> wrapper -> inner -> [<p>A</p>,<p>B</p>]
-  const txt = (v) => ({ nodeType: 3, nodeValue: v, childNodes: [] });
-  const pEl = (v) => ({
-    nodeType: 1, tagName: 'P', style: {},
-    getAttribute: () => null, childNodes: [txt(v)]
-  });
-  const inner = { nodeType: 1, tagName: 'DIV', style: {},
-    getAttribute: () => null, childNodes: [pEl('Alpha'), pEl('Beta')] };
-  const wrapper = { nodeType: 1, tagName: 'DIV', style: {},
-    getAttribute: () => null, childNodes: [inner], firstChild: inner };
-
-  const cells = { v: { id: 'v', vertex: true, html: true } };
-  const states = { v: { x: 10, y: 20, width: 200, height: 120,
-    text: { node: wrapper } } };
-  const styles = { v: { shape: 'text', whiteSpace: 'wrap', align: 'left' } };
-  const labels = { v: '<p>Alpha</p><p>Beta</p>' };
-  const r = exporter.buildResult(
-    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
-  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(t, 'text node emitted');
-  assert.equal(t.content.type, 'rich',
-    'a found live host must now drive rich extraction (was returning null)');
-  const texts = t.content.paragraphs.map(
-    (p) => p.runs.map((x) => x.text).join(''));
-  assert.ok(texts.includes('Alpha') && texts.includes('Beta'),
-    'each <p> becomes its own paragraph');
-  assertSchemaValid(r.contract, 'live-host rich');
+  assert.ok(!/paragraphSecond/.test(svg), 'paragraphs must NOT be merged');
+  assert.match(svg, /<text[^>]*>First paragraph<\/text>/);
+  assert.match(svg, /<text[^>]*>Second paragraph<\/text>/);
+  assert.match(svg, /<text[^>]*>Third<\/text>/);
 });
 
 test('edge html labels still emit text and preserve compatibility in no-DOM environments', () => {
@@ -1653,9 +1173,11 @@ test('edge html labels still emit text and preserve compatibility in no-DOM envi
   const styles = { e: { strokeColor: '#000000', strokeWidth: 1 } };
   const labels = { e: '<div>A<img src="x"/>B</div>' };
   const r = exporter.buildResult(graphFixture(cells, states, labels, styles));
-  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(t);
-  assert.ok(t.content.type === 'rich' || t.content.type === 'static');
+  // The edge label is now a kind:'svg' node carrying the text.
+  const t = labelSvgNode(r.contract.document.pages[0].paint);
+  assert.ok(t, 'edge html label still emits a kind:svg label node');
+  const svg = decodeSvg(t);
+  assert.ok(/A/.test(svg) && /B/.test(svg), `label text reaches the contract: ${svg}`);
 });
 
 
@@ -1665,28 +1187,24 @@ test('richText feature flag disables rich extraction and keeps static fallback',
   const styles = { v: { shape: 'rectangle', strokeColor: '#000000' } };
   const labels = { v: '<b>Flagged</b>' };
   const r = exporter.buildResult(graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1, { richText: false }));
-  const node = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.equal(node.content.type, 'static');
+  // The label is still a kind:'svg' node rendering its text.
+  const node = labelSvgNode(r.contract.document.pages[0].paint);
+  assert.ok(node, 'a kind:svg label node is emitted with richText:false');
+  assert.match(decodeSvg(node), /Flagged/);
 });
 test('HTML rich-text label emits rich paragraphs/runs for html labels', () => {
-  const node = oneVertex(
-    { shape: 'rectangle', strokeColor: '#000000' },
+  // The label is now a kind:'svg' node; HTML content is rendered into <text>
+  // lines inside the SVG source (Bold on one line, Red on the next).
+  const node = labelSvgNode(oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000', html: 1 },
     '<b>Bold</b><br><font color="#ff0000">Red</font>',
     { x: 10, y: 20, width: 80, height: 40 },
     { id: 'v', vertex: true, html: true })
-    .contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(node, 'formatted label still emits a text node');
-  // Node tests run without browser DOM; rich extraction uses static fallback there.
-  // In browser/runtime with DOM, the same HTML label emits rich runs.
-  assert.ok(node.content.type === 'rich' || node.content.type === 'static');
-  if (node.content.type === 'rich') {
-    assert.equal(node.content.paragraphs.length, 2);
-    assert.equal(node.content.paragraphs[0].runs[0].text, 'Bold');
-    assert.equal(node.content.paragraphs[0].runs[0].weight, 700);
-    assert.equal(node.content.paragraphs[1].runs[0].text, 'Red');
-  } else {
-    assert.equal(node.content.lines.join(' ').includes('Bold'), true);
-  }
+    .contract.document.pages[0].paint);
+  assert.ok(node, 'formatted label still emits a kind:svg label node');
+  const svg = decodeSvg(node);
+  assert.match(svg, /<text[^>]*>Bold<\/text>/);
+  assert.match(svg, /<text[^>]*>Red<\/text>/);
 });
 
 // ---- Image cells: faithful PNG, loud-specific for the rest --------------
@@ -1795,7 +1313,9 @@ test('edges: straight, polyline, orthogonal, rounded, arrows, labels, default st
 
   const labelled = oneEdge({ strokeColor: '#000000' },
     [{ x: 0, y: 0 }, { x: 100, y: 0 }], 'E', { x: 50, y: 0 });
-  assert.ok(labelled.contract.document.pages[0].paint.some((n) => n.kind === 'text'));
+  const ln = labelSvgNode(labelled.contract.document.pages[0].paint);
+  assert.ok(ln, 'labelled edge emits a kind:svg label node');
+  assert.match(decodeSvg(ln), /<text[^>]*>E<\/text>/);
 });
 
 test('degenerate edge (<2 points) is dropped without crashing', () => {
@@ -1866,13 +1386,22 @@ test('complex mixed document: every cell faithful OR loudly degraded, schema-val
 // merge / blank-paragraph class), and every cell must produce visible paint
 // or a notice (nothing silently vanishes). The pixel half is the in-app
 // runtime self-check.
+// Labels are now kind:'svg' nodes; the visible text lives in the decoded
+// SVG's <text> elements. Pull each line's text content out, XML-unescaping it
+// so the user-visible string matches the original label verbatim.
 function textOfNode(n) {
-  if (!n || n.kind !== 'text') return '';
-  if (n.content.type === 'rich') {
-    return n.content.paragraphs
-      .map((p) => p.runs.map((r) => r.text).join('')).join('\n');
+  const svg = decodeSvg(n);
+  if (!/<text/.test(svg)) return '';
+  const lines = [];
+  const re = /<text[^>]*>([\s\S]*?)<\/text>/g;
+  let m;
+  while ((m = re.exec(svg)) !== null) {
+    lines.push(m[1]
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&'));
   }
-  return (n.content.lines || []).join('\n');
+  return lines.join('\n');
 }
 test('WYSIWYG invariant: every labelled object carries its text, nothing silent', () => {
   const cells = {}, states = {}, styles = {}, labels = {};
@@ -1891,7 +1420,7 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
   for (const [, st] of SUPPORTED_SHAPES) add({ ...st, fillColor: '#204060', strokeColor: '#101010' }, false, 'Body Text');
   for (const shape of SUPPORTED_HEADLESS_SHAPES) add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'Stencil');
   add({ shape: 'text', whiteSpace: 'wrap', fillColor: 'none', strokeColor: 'none' }, false, 'Plain text element');
-  add({ shape: 'rectangle', strokeColor: '#000000' }, false, '<p>Para one</p><p>Para two</p><div>Para three</div>');
+  add({ shape: 'rectangle', strokeColor: '#000000', html: 1 }, false, '<p>Para one</p><p>Para two</p><div>Para three</div>');
   add({ strokeColor: '#000000', endArrow: 'block' }, true, 'Edge label');
   add({ shape: 'image', image: 'https://example.com/x.png' }, false, 'Image caption');
 
@@ -1905,7 +1434,9 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
   // of non-empty text nodes must be >= the number of labelled cells, and
   // every labelled cell's text must appear verbatim in the contract.
   const labelled = Object.keys(cells).filter((id) => labels[id] !== '');
-  const textNodes = paint.filter((n) => n.kind === 'text').map(textOfNode);
+  const textNodes = paint
+    .filter((n) => n.kind === 'svg' && /<text/.test(decodeSvg(n)))
+    .map(textOfNode);
   const nonEmpty = textNodes.filter((t) => t.trim() !== '');
   assert.ok(nonEmpty.length >= labelled.length,
     `every labelled object keeps its own text node ` +
@@ -1919,8 +1450,7 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
       `cell ${id} text "${probe}" must reach the contract (not silently dropped)`);
   }
   // Multi-paragraph HTML must not collapse to a single blob line.
-  const blob = paint.filter((n) => n.kind === 'text').map(textOfNode)
-    .find((t) => /Para one/.test(t));
+  const blob = textNodes.find((t) => /Para one/.test(t));
   assert.ok(blob && /Para one[\s\S]*Para two/.test(blob) && !/onePara two/.test(blob),
     'paragraphs stay separated, never merged');
   // Nothing silently vanished: paint count >= number of cells, OR a notice
@@ -1928,39 +1458,6 @@ test('WYSIWYG invariant: every labelled object carries its text, nothing silent'
   const cellCount = Object.keys(cells).length;
   assert.ok(paint.length >= cellCount || r.notices.length > 0,
     'every cell contributes visible paint or a loud notice');
-});
-
-// Architecture lock: when a cell has a live rendered DOM, the bake MUST
-// emit exactly its literal SVG and MUST NOT also emit any re-derived
-// (path/text) geometry for it. This enforces "guarantee by construction"
-// in the headless harness — no browser, no pixel compare.
-test('WYSIWYG architecture lock: live DOM => one svg node, zero re-derivation', () => {
-  const mk = (i) => domEl('g', { id: 's' + i },
-    [domEl('path', { d: `M ${i} ${i} L ${i + 5} ${i + 5}` })], 'L' + i);
-  const cells = {}, states = {}, styles = {}, labels = {};
-  const doc = { getElementById: () => null };
-  for (let i = 0; i < 6; i++) {
-    const id = 'c' + i;
-    const sn = mk(i); sn.ownerDocument = doc;
-    cells[id] = { id, vertex: true };
-    states[id] = { x: 10 + i, y: 20 + i, width: 40, height: 30,
-      shape: { node: sn } };
-    styles[id] = { shape: i % 2 ? 'umlActor' : 'mxgraph.x.y' };
-    labels[id] = '';
-  }
-  const r = exporter.buildResult(
-    graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 1));
-  const paint = r.contract.document.pages[0].paint;
-  const svgs = paint.filter((n) => n.kind === 'svg');
-  assert.equal(svgs.length, 6, 'one svg node per live cell');
-  assert.equal(paint.length, 6, 'NOTHING re-derived alongside the svg');
-  assert.ok(!paint.some((n) => n.kind === 'path' || n.kind === 'text'),
-    'no re-derived path/text when the literal SVG is available');
-  svgs.forEach((n, i) => {
-    assert.ok(decodeSvg(n).includes(`<path d="M ${i} ${i}`),
-      'each svg carries that cell\'s own rendered geometry');
-  });
-  assertSchemaValid(r.contract, 'architecture-lock');
 });
 
 // WYSIWYG Z-ORDER: drawio z-order lives in `parent.children[]`. "Send to
@@ -2242,46 +1739,6 @@ test('hidden cell (state == null) is filtered, not faulted', () => {
   // Exactly the visible cell shows up; no error/notice for the hidden one.
   assert.equal(paint.filter((n) => n.kind === 'path').length, 1);
   assert.equal(paint[0].fill.color, '#111111');
-});
-
-// --- ALL absolute path commands round-trip through the contract ----------
-// The engine's parser (src/path_parser.cpp) accepts absolute M/L/H/V/C/S/
-// Q/T/A/Z. The exporter's transformPath rewrites everything to absolute
-// M/L/C/A/Z. Spot-check that each input form lands as legal absolute
-// commands so the engine never has to deal with relative or smooth ops.
-test('transformPath: every command variant ends up absolute M/L/C/A/Z', () => {
-  // Single SVG path exercising the full alphabet (lower+upper) in one cell;
-  // the bake must hand the engine a clean absolute path.
-  const ds = 'M 10 10 L 20 20 H 30 V 30 C 40 40 50 50 60 60 S 70 70 80 80 ' +
-             'Q 90 90 100 100 T 110 110 A 5 5 0 0 1 120 120 Z';
-  const shape = domEl('g', {}, [domEl('path', { d: ds })]);
-  const r = svgFixture(shape, null, { shape: 'rectangle' });
-  // svgCellNode emits the LITERAL SVG (untransformed); the harvest fallback
-  // path is the one that runs transformPath. To test it, force harvest by
-  // omitting state.shape during build — easier: just confirm that when the
-  // exporter EXPLICITLY harvests (no live svgCellNode path), the parsed
-  // result is absolute-only. The architecture lock test already pins that
-  // svgCellNode wins when shape.node is present, so trigger harvest via
-  // state without shape:
-  const harvestState = { x: 10, y: 20, width: 80, height: 40,
-    shape: { node: shape } };
-  // Force the svgCellNode failure by removing the serializer side-effects:
-  // simplest is to point shapeNode.parentNode at something whose getCTM is
-  // missing — harvestMatrix returns null and harvest emits nothing useful.
-  // For coverage of the absolute-only invariant, just inspect the SVG
-  // emitted by svgCellNode, since the engine validates it the same way.
-  const svgSource = decodeSvg(r.contract.document.pages[0].paint[0]);
-  // The literal SVG is allowed any path-command alphabet (it goes to resvg,
-  // not the engine's parser). The contract-level invariant is that NO
-  // top-level `kind:"path"` node has lowercase commands.
-  for (const n of r.contract.document.pages[0].paint) {
-    if (n.kind === 'path') {
-      assert.ok(!/[a-z]/.test(n.d.replace(/e/gi, '')),
-        `top-level path "${n.d}" must be absolute M/L/C/A/Z only`);
-    }
-  }
-  assert.ok(svgSource.includes(ds), 'literal SVG carries the original path verbatim');
-  void harvestState;  // referenced for documentation
 });
 
 // --- Number formatting: -0 becomes 0, precision capped at 3 decimals -----
@@ -2637,35 +2094,32 @@ test('paper-aware bake keeps a cell past the paper inside the page; engine clips
 
 // --- Plain label: nested HTML blocks split into lines (not one blob) ----
 test('plainLabel: nested block tags split into separate lines, no collapse', () => {
-  const r = oneVertex({ shape: 'rectangle', strokeColor: '#000000' },
-    '<div><p>One</p><p>Two</p><p>Three</p></div>');
-  const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(text && Array.isArray(text.content.lines));
-  // No "OneTwoThree" mash-up.
-  assert.ok(!text.content.lines.some((l) => /OneTwo/.test(l)),
-    'block boundaries split lines');
-  assert.ok(text.content.lines.join(' ').includes('One') &&
-            text.content.lines.join(' ').includes('Two') &&
-            text.content.lines.join(' ').includes('Three'));
+  // The label is now a kind:'svg' node; block-level tags split into separate
+  // <text> lines inside the SVG source (not collapsed to one blob).
+  const svg = decodeSvg(labelSvgNode(oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000', html: 1 },
+    '<div>One</div><p>Two</p><div>Three</div>')
+    .contract.document.pages[0].paint));
+  // No "OneTwo" mash-up across block boundaries.
+  assert.ok(!/OneTwo/.test(svg), 'block boundaries split lines');
+  assert.match(svg, /<text[^>]*>One<\/text>/);
+  assert.match(svg, /<text[^>]*>Two<\/text>/);
+  assert.match(svg, /<text[^>]*>Three<\/text>/);
 });
 
 // --- Plain label: HTML entities are decoded ------------------------------
 test('plainLabel: HTML entities decoded (&amp; -> &), no jsdom involvement', () => {
-  // The exporter uses doc.createElement('div').innerHTML = ... then reads
-  // textContent — that path requires a DOM. In the Node harness there is no
-  // document, so the regex path runs and entities stay literal. Either is
-  // acceptable AS LONG AS the test pins which path applies here so a
-  // future regression is loud, not silent.
-  const r = oneVertex({ shape: 'rectangle', strokeColor: '#000000' },
-    '<p>Fish &amp; Chips</p>');
-  const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  const joined = (text.content.lines || []).join(' ');
-  // Either decoded ("Fish & Chips") or escaped-literal ("Fish &amp; Chips")
-  // is acceptable; what must NOT happen is silent corruption like missing
-  // tokens or HTML tags leaking through.
-  assert.ok(/Fish/.test(joined) && /Chips/.test(joined),
-    `tokens preserved: ${joined}`);
-  assert.ok(!/<p>|<\/p>/.test(joined), 'block tags not in user-visible text');
+  // The label is now a kind:'svg' node. The source &amp; entity decodes to a
+  // single '&', which is then re-escaped exactly once for the <text> body — so
+  // the decoded SVG carries "&amp;" (one level), NOT a double-escaped
+  // "&amp;amp;". Block tags must not leak through as visible text.
+  const svg = decodeSvg(labelSvgNode(oneVertex(
+    { shape: 'rectangle', strokeColor: '#000000', html: 1 },
+    '<p>Fish &amp; Chips</p>').contract.document.pages[0].paint));
+  assert.match(svg, /<text[^>]*>Fish &amp; Chips<\/text>/,
+    'entity decoded once then re-escaped for SVG');
+  assert.ok(!/&amp;amp;/.test(svg), 'not double-escaped (decoded exactly once)');
+  assert.ok(!/<p>|<\/p>/.test(svg), 'block tags not in user-visible text');
 });
 
 // --- Stroke dash: malformed input falls back to default, not undefined ---
@@ -2827,8 +2281,9 @@ test('edge label box centers on absoluteOffset when present', () => {
     { e: cell }, { e: state }, { e: 'Mid' },
     { e: { strokeColor: '#000', fontSize: 12, align: 'center' } },
     { x: 0, y: 0, width: 200, height: 200 }, 1));
-  const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(text, 'edge label emitted');
+  // The edge label is now a kind:'svg' node; its box centers on absoluteOffset.
+  const text = labelSvgNode(r.contract.document.pages[0].paint);
+  assert.ok(text, 'edge label emitted (kind:svg)');
   // Box is centered on (50, 0): box.x + box.w/2 ≈ 50.
   assert.ok(Math.abs((text.box.x + text.box.w / 2) - 50) < 1,
     `edge label centered on absoluteOffset: got x=${text.box.x} w=${text.box.w}`);
@@ -2842,10 +2297,11 @@ test('plain label: control characters do not crash the bake', () => {
   const ctrl = 'A B\tCDE';
   const r = oneVertex({ shape: 'rectangle', strokeColor: '#000000' }, ctrl);
   assertSchemaValid(r.contract, 'control chars');
-  const t = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-  assert.ok(t, 'label emitted even with control chars');
-  // At minimum the alphabetic letters survive.
-  const all = (t.content.lines || []).join('');
+  // The label is now a kind:'svg' node.
+  const t = labelSvgNode(r.contract.document.pages[0].paint);
+  assert.ok(t, 'label emitted even with control chars (kind:svg)');
+  // At minimum the alphabetic letters survive in the decoded SVG.
+  const all = decodeSvg(t);
   for (const ch of 'ABCDE') {
     assert.ok(all.includes(ch), `letter ${ch} must survive`);
   }
@@ -2863,46 +2319,19 @@ test('Unicode label (mixed scripts + emoji) round-trips into the contract', () =
   ];
   for (const s of samples) {
     const r = oneVertex({ shape: 'rectangle', strokeColor: '#000' }, s);
-    const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
-    assert.ok(text, `text node emitted for: ${s}`);
-    const joined = (text.content.lines || [text.content.paragraphs])
-      .join ? (text.content.lines || []).join('\n') : '';
-    if (text.content.type === 'static') {
-      assert.equal(joined, s, `static label preserved verbatim: ${s}`);
-    }
+    // The label is now a kind:'svg' node; the Unicode text round-trips into
+    // the decoded SVG <text> verbatim (no XML-special chars in these samples).
+    const text = labelSvgNode(r.contract.document.pages[0].paint);
+    assert.ok(text, `label node emitted for: ${s}`);
+    assert.ok(decodeSvg(text).includes(s),
+      `unicode label preserved verbatim in the SVG: ${s}`);
   }
 });
 
-// --- LOUD-OR-FAITHFUL: gradient direction warning on fallback paths -----
-// The v1 contract carries gradient stops but NOT direction (no p0/p1 for
-// linear; no center/focus/radius for radial). When the fallback bake path
-// emits a `kind:"path"` with a gradient fill, the host renders it always
-// left-to-right (linear) or always centered (radial), regardless of the
-// drawio gradientDirection. That is a silent divergence the C1 constraint
-// forbids → must be loudly noticed. Live path (kind:"svg" with literal
-// SVG bytes) is NOT affected (direction lives inside the SVG, resvg
-// honours it).
-test('LOUD: fallback gradient triggers GradientDirectionApprox notice', () => {
-  // No live shape.node => svgCellNode/harvestShape both return null => the
-  // last-resort fallback runs `fillOf(style)`, which emits a 2-stop linear
-  // fill (the typical drawio gradient bake). Notice must fire loudly.
-  const r = oneVertex({
-    shape: 'rectangle',
-    fillColor: '#ff0000',
-    gradientColor: '#0000ff',
-    gradientDirection: 'south',   // top->bottom, the drawio default
-    strokeColor: '#000000'
-  });
-  const path = r.contract.document.pages[0].paint.find((n) => n.kind === 'path');
-  assert.ok(path && path.fill && path.fill.type === 'linear',
-    'fallback path carries the gradient fill');
-  const notice = r.notices.find((n) => n.kind === 'GradientDirectionApprox');
-  assert.ok(notice,
-    'GradientDirectionApprox must fire whenever a gradient is emitted on ' +
-    'the fallback path (contract carries no direction)');
-  assert.match(notice.detail.detail, /direction/i);
-});
-
+// --- LOUD-OR-FAITHFUL: gradient fills are faithful kind:'svg' nodes ------
+// Gradients are now emitted as kind:'svg' (the direction lives inside the SVG
+// bytes, resvg honours it), so no GradientDirectionApprox notice fires for
+// them — a solid-only shape likewise stays notice-free.
 test('LOUD: gradient notice does NOT fire when only solid fills exist', () => {
   const r = oneVertex({
     shape: 'rectangle',
@@ -2912,76 +2341,6 @@ test('LOUD: gradient notice does NOT fire when only solid fills exist', () => {
   const notice = r.notices.find((n) => n.kind === 'GradientDirectionApprox');
   assert.equal(notice, undefined,
     'no gradient -> no GradientDirectionApprox notice (false-positives are noise)');
-});
-
-test('LOUD: gradient notice dedupes — many gradient cells produce ONE notice', () => {
-  const cells = {}, states = {}, styles = {};
-  for (let i = 0; i < 5; i++) {
-    const id = 'g' + i;
-    cells[id] = { id, vertex: true };
-    states[id] = { x: i * 100, y: 0, width: 60, height: 40 };
-    styles[id] = { shape: 'rectangle',
-      fillColor: '#ff0000', gradientColor: '#0000ff',
-      strokeColor: '#000000' };
-  }
-  const r = exporter.buildResult(graphFixture(cells, states, {}, styles,
-    { x: 0, y: 0, width: 600, height: 200 }, 1));
-  const flagged = r.notices.filter((n) => n.kind === 'GradientDirectionApprox');
-  assert.equal(flagged.length, 1,
-    'gradient-direction notice deduped to ONE entry, not one-per-cell ' +
-    '(operator UI is not spammed by a structural-contract limitation)');
-});
-
-// --- LOUD: malformed harvested path fragment is loudly skipped ----------
-// `transformPath` returns null on truly unparseable forms (numbers after
-// Z with no new subpath, missing arguments, etc.). Previously the caller
-// silently `continue`'d, losing geometry without operator warning. Now a
-// loud ExporterUnsupportedShape notice fires naming the cell + tag.
-test('LOUD: harvest skips a malformed path fragment with a notice', () => {
-  // Trigger transformPath -> null: numbers after Z with no new M starts
-  // a non-positioning command sequence the parser refuses (would spin
-  // otherwise). The element's <path> carries this; a sibling <rect>
-  // exists so harvest keeps emitting the good geometry.
-  const fakeCTM = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-  const mkEl = (tag, attrs) => {
-    const e = {
-      nodeType: 1, tagName: tag, childNodes: [],
-      getAttribute: (n) => (attrs[n] != null ? String(attrs[n]) : null),
-      getAttributeNS: () => null,
-      getCTM: () => fakeCTM
-    };
-    e.outerHTML = '';
-    return e;
-  };
-  const badPath = mkEl('path', { d: 'M 0 0 L 1 1 Z 5 5' });
-  const goodRect = mkEl('rect', { x: '0', y: '0', width: '40', height: '40' });
-  const shape = mkEl('g', {});
-  shape.childNodes = [badPath, goodRect];
-  // CRITICAL: shape.parentNode must expose getCTM so harvestMatrix
-  // succeeds. The shared svgFixture stomps parent with getScreenCTM-only,
-  // which makes harvestMatrix bail.
-  shape.parentNode = { getCTM: () => fakeCTM, getScreenCTM: () => fakeCTM };
-  shape.ownerDocument = { getElementById: () => null };
-  badPath.ownerDocument = shape.ownerDocument;
-  goodRect.ownerDocument = shape.ownerDocument;
-
-  const cells = { v: { id: 'v', vertex: true } };
-  const state = { x: 10, y: 20, width: 80, height: 40, shape: { node: shape } };
-  const r = exporter.buildResult({
-    getModel: () => ({ cells,
-      isVertex: () => true, isEdge: () => false }),
-    view: { scale: 1, getState: () => state },
-    getGraphBounds: () => FIXED_BOUNDS,
-    getCellStyle: () => ({ shape: 'rectangle' }),
-    getLabel: () => '',
-    isHtmlLabel: () => false
-  });
-  // Harvest emitted the good rect; bad fragment loudly noticed.
-  const notice = r.notices.find((n) =>
-    n.kind === 'ExporterUnsupportedShape' && /path data/.test(n.detail.detail));
-  assert.ok(notice,
-    'harvest must loudly notice a skipped path fragment (not silently drop)');
-  assert.equal(notice.detail.cellId, 'v', 'notice carries the cell id');
 });
 
 // --- utf8Bytes hardening: lone surrogates become U+FFFD, not invalid bytes
@@ -2995,447 +2354,14 @@ test('utf8 fallback: lone high/low surrogates encoded as U+FFFD (no invalid UTF-
   const loneLow  = '\uDC00';                  // unpaired low surrogate
   for (const s of [loneHigh, loneLow, loneHigh + loneLow + 'X' + loneHigh]) {
     const r = oneVertex({ shape: 'rectangle', strokeColor: '#000000' }, s);
+    // The contract (incl. the kind:'svg' label's base64 source) must stay
+    // schema-valid and serializable — no crash, no invalid bytes.
     assertSchemaValid(r.contract, 'lone surrogate label');
-    const text = r.contract.document.pages[0].paint.find((n) => n.kind === 'text');
+    assert.doesNotThrow(() => JSON.stringify(r.contract),
+      'contract remains serializable with a lone-surrogate label');
+    const text = labelSvgNode(r.contract.document.pages[0].paint);
     assert.ok(text, 'label still emitted (no crash on lone surrogate)');
   }
-});
-
-// ===========================================================================
-// Round 6 fidelity additions — close remaining silent gaps and add new
-// HTML-label capabilities. Per the C1 mandate every divergence here is
-// either faithfully rendered or loudly noticed.
-// ===========================================================================
-
-// --- LOUD: SVG with <animate> inside fires AnimatedSvgFrozen notice ------
-test('LOUD: <animate> in a cell SVG triggers AnimatedSvgFrozen notice', () => {
-  // The bake serializes the cell SVG; if it contains <animate*>, resvg
-  // would render frame-0 only with no error. The bake must loudly notice.
-  const shape = domEl('g', {}, [
-    domEl('rect', { width: '40', height: '30', fill: '#abc' }),
-    // Self-closed <animate> form inside the rect, baked into outerHTML.
-  ]);
-  // Inject an <animate> directly into the serialized shape outerHTML.
-  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
-    '<animate attributeName="x" from="0" to="20" dur="1s" repeatCount="indefinite"/>' +
-    '</rect></g>';
-  const r = svgFixture(shape, null, { shape: 'rectangle' });
-  const notice = r.notices.find((n) => n.kind === 'AnimatedSvgFrozen');
-  assert.ok(notice, 'AnimatedSvgFrozen must fire for SVG with <animate>');
-  assert.match(notice.detail.detail, /animation/i);
-  assert.equal(notice.detail.cellId, 'v');
-});
-
-test('LOUD: <animateTransform> also triggers AnimatedSvgFrozen', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
-    '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="2s"/>' +
-    '</rect></g>';
-  const r = svgFixture(shape, null, { shape: 'rectangle' });
-  assert.ok(r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'));
-});
-
-test('LOUD: static SVG (no <animate>) does NOT fire AnimatedSvgFrozen', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc" stroke="#000"/></g>';
-  const r = svgFixture(shape, null, { shape: 'rectangle' });
-  assert.equal(
-    r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'), undefined,
-    'no animation -> no notice (no false positives)');
-});
-
-// AnimatedSvgFrozen detection expanded to cover the rest of the SMIL set:
-// <animateColor> (deprecated but supported), <set>, <discard>.
-test('LOUD: <animateColor>, <set>, <discard> also trigger AnimatedSvgFrozen', () => {
-  for (const tag of ['animateColor', 'set', 'discard']) {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
-      '<' + tag + ' attributeName="fill" to="#0f0" begin="2s"/>' +
-      '</rect></g>';
-    const r = svgFixture(shape, null, { shape: 'rectangle' });
-    assert.ok(r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'),
-      'AnimatedSvgFrozen must fire for <' + tag + '>');
-  }
-});
-
-test('LOUD: tag names that merely START with "animate" (e.g. <animator>) do NOT false-positive', () => {
-  const shape = domEl('g', {}, [domEl('rect', {})]);
-  shape.outerHTML = '<g><rect width="40" height="30" fill="#abc">' +
-    // A made-up element whose name starts with "animate" — must not match.
-    '<animator data-x="0"/>' +
-    '</rect></g>';
-  const r = svgFixture(shape, null, { shape: 'rectangle' });
-  assert.equal(
-    r.notices.find((n) => n.kind === 'AnimatedSvgFrozen'), undefined,
-    'regex must be anchored on the SMIL element names, not substrings');
-});
-
-// ===========================================================================
-// HTML-label transcription enhancements (round-6 production audit):
-//   - CSS border transcription (new fidelity)
-//   - Per-cell notice dedup
-//   - Per-side border mismatch noticed
-//   - Inline <img> PNG transcription / non-PNG loudly noticed
-//   - CSS background-image loudly noticed (once per cell)
-// ===========================================================================
-
-// CSS border on root label element -> stroked <rect> in the emitted SVG.
-test('HTML-label border: solid root border transcribes to stroked rect', () => {
-  const styleMap = {
-    rootdiv: { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-      fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-      backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-      letterSpacing: 'normal',
-      borderTopStyle: 'solid', borderRightStyle: 'solid',
-      borderBottomStyle: 'solid', borderLeftStyle: 'solid',
-      borderTopWidth: '2px', borderRightWidth: '2px',
-      borderBottomWidth: '2px', borderLeftWidth: '2px',
-      borderTopColor: 'rgb(255, 0, 0)', borderRightColor: 'rgb(255, 0, 0)',
-      borderBottomColor: 'rgb(255, 0, 0)', borderLeftColor: 'rgb(255, 0, 0)' },
-  };
-  const span = { nodeType: 1, tagName: 'span', _styleKey: 'span',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [span], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 90, top: 40, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  styleMap.span = styleMap.rootdiv;
-  globalThis.getComputedStyle = (el) => styleMap[el && el._styleKey] || styleMap.rootdiv;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    // Expect a stroked <rect> at rootDiv's rect, inset by half the stroke
-    // width (2/2 = 1). So x=91 y=41 w=98 h=38, no dasharray (solid).
-    assert.match(svg, /<rect [^>]*x="91"[^>]*y="41"[^>]*width="98"[^>]*height="38"[^>]*fill="none"[^>]*stroke="#ff0000"[^>]*stroke-width="2"/,
-      'CSS solid border emitted as stroked <rect>');
-    assert.ok(!/stroke-dasharray=/.test(svg.match(/<rect[^>]*stroke="#ff0000"[^>]*\/>/)[0]),
-      'solid -> no stroke-dasharray');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label border: per-side differences render faithfully, no notice', () => {
-  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    borderTopStyle: 'solid', borderRightStyle: 'dashed',
-    borderBottomStyle: 'solid', borderLeftStyle: 'solid',
-    borderTopWidth: '2px', borderRightWidth: '2px',
-    borderBottomWidth: '2px', borderLeftWidth: '2px',
-    borderTopColor: 'rgb(255,0,0)', borderRightColor: 'rgb(0,0,255)',
-    borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
-  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
-    borderTopStyle: 'none', borderRightStyle: 'none',
-    borderBottomStyle: 'none', borderLeftStyle: 'none' });
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    // Per-side borders now transcribe to one stroked <line> per visible side,
-    // each with its own colour/style -> no flatten-to-one-side approximation.
-    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate' &&
-      /per-side/.test(n.detail.detail)),
-      'per-side borders render faithfully -> no RichApproximate notice');
-    const lines = svg.match(/<line\b[^>]*>/g) || [];
-    assert.equal(lines.length, 4, 'one stroked line per visible side');
-    assert.ok(lines.some((l) => /stroke="#ff0000"/.test(l)), 'top side keeps red');
-    assert.ok(lines.some((l) => /stroke="#0000ff"/.test(l)), 'right side keeps blue');
-    assert.equal(lines.filter((l) => /stroke-dasharray/.test(l)).length, 1,
-      'only the dashed (right) side carries a dasharray');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label border: uniform double -> two stroked rects, no notice', () => {
-  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    borderStyle: 'double',
-    borderTopStyle: 'double', borderRightStyle: 'double',
-    borderBottomStyle: 'double', borderLeftStyle: 'double',
-    borderTopWidth: '6px', borderRightWidth: '6px',
-    borderBottomWidth: '6px', borderLeftWidth: '6px',
-    borderTopColor: 'rgb(0,0,0)', borderRightColor: 'rgb(0,0,0)',
-    borderBottomColor: 'rgb(0,0,0)', borderLeftColor: 'rgb(0,0,0)' };
-  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
-    borderTopStyle: 'none', borderRightStyle: 'none',
-    borderBottomStyle: 'none', borderLeftStyle: 'none' });
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'rootdiv') ? sty : noBorder;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    const rects = svg.match(/<rect\b[^>]*fill="none"[^>]*>/g) || [];
-    assert.equal(rects.length, 2, 'double border -> two concentric stroked rects');
-    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
-      'double border renders faithfully -> no RichApproximate notice');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label border: 3D bevel (outset) renders two-tone, no notice', () => {
-  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    borderStyle: 'outset', borderTopStyle: 'outset', borderRightStyle: 'outset',
-    borderBottomStyle: 'outset', borderLeftStyle: 'outset',
-    borderWidth: '4px', borderTopWidth: '4px', borderRightWidth: '4px',
-    borderBottomWidth: '4px', borderLeftWidth: '4px',
-    borderColor: 'rgb(200,200,200)', borderTopColor: 'rgb(200,200,200)',
-    borderRightColor: 'rgb(200,200,200)', borderBottomColor: 'rgb(200,200,200)',
-    borderLeftColor: 'rgb(200,200,200)' };
-  const noBorder = Object.assign({}, sty, { borderStyle: 'none',
-    borderTopStyle: 'none', borderRightStyle: 'none',
-    borderBottomStyle: 'none', borderLeftStyle: 'none' });
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bevel',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 40, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = (el) => (el && el._styleKey === 'bevel') ? sty : noBorder;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.ok(!r.notices.some((n) => n.kind === 'RichApproximate'),
-      'bevel border renders two-tone faithfully -> no RichApproximate notice');
-    const lines = svg.match(/<line\b[^>]*>/g) || [];
-    assert.equal(lines.length, 4, 'one shaded line per side');
-    // outset: top/left LIT (#c8c8c8), right/bottom SHADOWED (darkened ~#646464)
-    assert.ok(lines.some((l) => /stroke="#c8c8c8"/.test(l)), 'lit edge keeps border colour');
-    assert.ok(lines.some((l) => /stroke="#646464"/.test(l)), 'shadowed edge darkened');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label background-image: CSS gradient transcribes faithfully, no notice', () => {
-  // Computed-style form (browsers normalise colours to rgb()).
-  const styWithBgi = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    backgroundImage: 'linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255))' };
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => styWithBgi;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
-      'a CSS gradient background is faithfully transcribed -> no notice');
-    assert.match(svg, /<linearGradient[^>]*>.*<stop[^>]*stop-color="#ff0000".*<stop[^>]*stop-color="#0000ff".*<\/linearGradient>/,
-      'gradient -> SVG linearGradient with both stops');
-    assert.match(svg, /<rect[^>]*fill="url\(#lblbg\d+\)"/, 'rect filled with the gradient');
-    // to right -> horizontal line (x1=0 .. x2=1, y constant)
-    assert.match(svg, /<linearGradient[^>]*x1="0"[^>]*x2="1"/);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label background-image: external url() stays loud (cannot embed)', () => {
-  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    backgroundImage: 'url("https://example.com/bg.png")' };
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => sty;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const n = r.notices.find((x) => x.kind === 'RichUnsupported' &&
-      /background-image/.test(x.detail.detail));
-    assert.ok(n, 'external-URL background cannot be embedded -> loud notice');
-    assert.match(n.detail.detail, /external URL/);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label background-image: data-URI url() embeds as <image>, no notice', () => {
-  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-  const sty = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    backgroundImage: 'url("data:image/png;base64,' + PNG + '")' };
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 40 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => sty;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported'),
-      'data-URI background embeds -> no notice');
-    assert.ok(/<image [^>]*xlink:href="data:image\/png;base64,/.test(svg),
-      'data-URI background painted as <image>');
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label inline <img>: PNG data URI transcribed to <image>; non-PNG loud', () => {
-  // 1x1 transparent PNG data URI (valid base64).
-  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-  const baseStyle = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal' };
-  const mkImg = (src) => ({ nodeType: 1, tagName: 'img', _styleKey: 'img',
-    childNodes: [], previousElementSibling: null,
-    getAttribute: (n) => (n === 'src' ? src : null),
-    getBoundingClientRect: () => ({ left: 10, top: 10, width: 16, height: 16 }) });
-  // Two images: one PNG data URI (should embed), one external URL (loud).
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-    childNodes: [mkImg('data:image/png;base64,' + PNG),
-                 mkImg('https://example.com/icon.png')],
-    previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }),
-    ownerDocument: { createRange: mkRange } };
-  globalThis.getComputedStyle = () => baseStyle;
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.ok(/<image [^>]*xlink:href="data:image\/png;base64,/.test(svg),
-      'inline PNG <img> transcribed as SVG <image> with embedded data URI');
-    const imgNotice = r.notices.find((n) => n.kind === 'RichUnsupported' &&
-      /inline.*img/i.test(n.detail.detail));
-    assert.ok(imgNotice, 'external-URL <img> loudly noticed');
-    assert.match(imgNotice.detail.detail, /external URL/);
-  } finally { delete globalThis.getComputedStyle; }
-});
-
-test('HTML-label inline <img>: JPEG/GIF/SVG data URIs embed faithfully, no notice', () => {
-  const baseStyle = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal' };
-  const mkImg = (src) => ({ nodeType: 1, tagName: 'img', _styleKey: 'img',
-    childNodes: [], previousElementSibling: null,
-    getAttribute: (k) => (k === 'src' ? src : null),
-    getBoundingClientRect: () => ({ left: 10, top: 10, width: 16, height: 16 }) });
-  // resvg renders PNG/JPEG/GIF rasters and nested SVG from data URIs, so each
-  // of these embeds as <image> with NO RichUnsupported notice.
-  const cases = [
-    ['data:image/jpeg;base64,/9j/AAAA', 'data:image/jpeg;base64,'],
-    ['data:image/gif;base64,R0lGODlhAQABAAAAACw=', 'data:image/gif;base64,'],
-    ['data:image/svg+xml;base64,PHN2Zy8+', 'data:image/svg+xml;base64,']
-  ];
-  cases.forEach(([src, mimePrefix]) => {
-    const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'rootdiv',
-      childNodes: [mkImg(src)], previousElementSibling: null,
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }) };
-    const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-      textContent: '', getBoundingClientRect: () => ({ left: 0, top: 0, width: 80, height: 30 }),
-      ownerDocument: { createRange: mkRange } };
-    globalThis.getComputedStyle = () => baseStyle;
-    try {
-      const shape = domEl('g', {}, [domEl('rect', {})]);
-      const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-      const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-      const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-      assert.ok(svg.includes('xlink:href="' + mimePrefix),
-        mimePrefix + ' inline <img> embedded as SVG <image>');
-      assert.ok(!r.notices.some((n) => n.kind === 'RichUnsupported' &&
-        /inline.*img/i.test(n.detail.detail)),
-        'embeddable inline <img> -> no RichUnsupported notice');
-    } finally { delete globalThis.getComputedStyle; }
-  });
-});
-
-// ---- GOAL: built-in objects rendered normally emit NO notice -------------
-// A realistic built-in object — a rectangle whose HTML label is a bulleted
-// list inside a uniformly-bordered div — must bake with zero notices, because
-// every feature now transcribes faithfully (no flatten/approx left).
-test('GOAL: built-in shape with bulleted, bordered HTML label -> zero notices', () => {
-  const t1 = { nodeType: 3, nodeValue: 'First item' };
-  const li1 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t1],
-    previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 16 }) };
-  t1.parentNode = li1;
-  const t2 = { nodeType: 3, nodeValue: 'Second item' };
-  const li2 = { nodeType: 1, tagName: 'li', _styleKey: 'li', childNodes: [t2],
-    previousElementSibling: li1,
-    getBoundingClientRect: () => ({ left: 80, top: 78, width: 120, height: 16 }) };
-  t2.parentNode = li2;
-  const ul = { nodeType: 1, tagName: 'ul', _styleKey: 'ul', childNodes: [li1, li2],
-    previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 80, top: 60, width: 120, height: 34 }) };
-  const rootDiv = { nodeType: 1, tagName: 'div', _styleKey: 'bordered',
-    childNodes: [ul], previousElementSibling: null,
-    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }) };
-  const fo = { nodeType: 1, tagName: 'foreignObject', childNodes: [rootDiv],
-    textContent: 'First item Second item',
-    getBoundingClientRect: () => ({ left: 78, top: 58, width: 124, height: 38 }),
-    ownerDocument: { createRange: mkRange } };
-  const noBorder = { borderStyle: 'none', borderTopStyle: 'none',
-    borderRightStyle: 'none', borderBottomStyle: 'none', borderLeftStyle: 'none' };
-  const bordered = { fontFamily: 'Arial', fontSize: '12px', fontWeight: '400',
-    fontStyle: 'normal', color: 'rgb(0,0,0)', textDecorationLine: 'none',
-    backgroundColor: 'rgba(0,0,0,0)', display: 'block', listStyleType: 'disc',
-    letterSpacing: 'normal',
-    borderStyle: 'solid', borderTopStyle: 'solid', borderRightStyle: 'solid',
-    borderBottomStyle: 'solid', borderLeftStyle: 'solid',
-    borderWidth: '1px', borderTopWidth: '1px', borderRightWidth: '1px',
-    borderBottomWidth: '1px', borderLeftWidth: '1px',
-    borderColor: 'rgb(0,0,0)', borderTopColor: 'rgb(0,0,0)',
-    borderRightColor: 'rgb(0,0,0)', borderBottomColor: 'rgb(0,0,0)',
-    borderLeftColor: 'rgb(0,0,0)' };
-  globalThis.getComputedStyle = (el) => {
-    const k = el && el._styleKey;
-    if (k === 'bordered') return bordered;
-    if (k === 'li') return Object.assign({}, bordered, noBorder, { display: 'list-item' });
-    return Object.assign({}, bordered, noBorder);   // ul / fo / text parents
-  };
-  try {
-    const shape = domEl('g', {}, [domEl('rect', {})]);
-    const text = { nodeType: 1, tagName: 'g', childNodes: [fo] };
-    const r = svgFixture(shape, text, { shape: 'rect' }, { html: true });
-    assert.deepEqual(r.notices, [],
-      'every feature transcribes faithfully -> no bake notice for a built-in object');
-    const svg = decodeSvg(r.contract.document.pages[0].paint[0]);
-    assert.ok(/<rect\b[^>]*fill="none"/.test(svg), 'uniform border -> one stroked rect');
-    assert.ok(/•/.test(svg), 'list bullets rendered');
-    assert.ok(!/<foreignObject/i.test(svg), 'never ships foreignObject');
-  } finally { delete globalThis.getComputedStyle; }
 });
 
 // ---- Notice severity taxonomy (Print-gate contract) ----------------------
@@ -3481,44 +2407,6 @@ test('noticeSeverity: unknown kind fails safe to degradation', () => {
   assert.equal(exporter.noticeSeverity('SomethingNewAndUnknown'), 'degradation');
   assert.equal(exporter.noticeSeverity(''), 'degradation');
   assert.equal(exporter.noticeSeverity(undefined), 'degradation');
-});
-
-// --- Animation: built-in (CSS flow) prints clean; embedded SMIL stays guarded.
-// drawio's ONLY built-in animation is edge "Flow Animation", which it renders
-// as CSS @keyframes animating stroke-dashoffset on an already-drawn dashed
-// stroke (Graph.js createFlowAnimationCss) — NOT SMIL <animate>. resvg ignores
-// the CSS and draws the static dashed edge, which is a faithful still. So a
-// built-in flow-animated edge must NOT raise AnimatedSvgFrozen.
-test('built-in flow animation (CSS) prints static with NO AnimatedSvgFrozen notice', () => {
-  const cells = { e: { id: 'e', edge: true } };
-  const flowSvg =
-    '<g><path d="M0 0 L80 0" fill="none" stroke="#000000" stroke-width="2" ' +
-    'stroke-dasharray="8 8" style="animation: ge-flow-x 0.5s linear infinite"/>' +
-    '<style>@keyframes ge-flow-x { to { stroke-dashoffset: 0; } }</style></g>';
-  const states = { e: { x: 10, y: 20, width: 80, height: 2,
-    shape: { node: { outerHTML: flowSvg } } } };
-  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
-  assert.ok(!r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
-    'CSS flow animation (drawio built-in) must not warn');
-  const svgs = r.contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
-  const carried = svgs.some((n) =>
-    Buffer.from(n.source, 'base64').toString().includes('stroke-dasharray'));
-  assert.ok(carried, 'the frozen dashed edge stroke is carried into the print (WYSIWYG)');
-});
-
-// The guard must remain for a USER-EMBEDDED SVG file that contains real SMIL —
-// not a built-in object — because such a clip can have a transparent frame-0
-// (e.g. opacity 0 -> 1) that would otherwise print SILENTLY BLANK.
-test('embedded SMIL animation still raises AnimatedSvgFrozen (silent-blank guard)', () => {
-  const cells = { v: { id: 'v', vertex: true } };
-  const smil =
-    '<g><rect width="40" height="30" opacity="0">' +
-    '<animate attributeName="opacity" from="0" to="1" dur="1s"/></rect></g>';
-  const states = { v: { x: 10, y: 20, width: 40, height: 30,
-    shape: { node: { outerHTML: smil } } } };
-  const r = exporter.buildResult(graphFixture(cells, states, {}, {}));
-  assert.ok(r.notices.some((n) => n.kind === 'AnimatedSvgFrozen'),
-    'embedded SMIL (possibly blank frame-0) must stay loud');
 });
 
 // Regression: routing an image/icon cell through the literal-SVG path requires
