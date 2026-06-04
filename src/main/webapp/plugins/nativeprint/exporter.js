@@ -2896,9 +2896,62 @@
         ' L ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' Z';
       return { kind: 'path', d: bd, fill: arrowFill, stroke: null };
     }
-    // Genuinely unsupported (async half-arrow, ER crow's-foot family, cross,
-    // dash, halfCircle, …): loud notice + classic-triangle placeholder so the
-    // edge still terminates visibly. NEVER a silent wrong marker.
+    // Stroked-line markers (dash, cross) and the ER crow's-foot family are
+    // rendered faithfully here, matching drawio's mxMarker formulas exactly
+    // (Q = unitX*(size+sw+1), Ca = unitY*(size+sw+1); unit vector points at the
+    // tip). These are pure stroked lines/feet — no edge-line recession — so a
+    // multi-segment stencil is returned as an array of stroked path nodes.
+    var sw = (stroke && stroke.width) || 1;
+    var g = size + sw + 1;
+    var qx = ux * g, qy = uy * g;      // Q  (x-projection) and Ca (y-projection)
+    function line(x0, y0, x1, y1) {
+      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1),
+        fill: null, stroke: stroke };
+    }
+    function poly3(x0, y0, x1, y1, x2, y2) {
+      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1) +
+        ' L ' + p(x2, y2), fill: null, stroke: stroke };
+    }
+    if (t === 'dash') {
+      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2);
+    }
+    if (t === 'cross') {
+      return [
+        line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+          to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2),
+        line(to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2,
+          to.x - qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 + qx / 2)
+      ];
+    }
+    if (t === 'ERone') {
+      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2);
+    }
+    if (t === 'ERmany') {
+      return poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
+        to.x - qy / 2, to.y + qx / 2);
+    }
+    if (t === 'ERmandOne') {
+      return [
+        line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+          to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2),
+        line(to.x - qx - qy / 2, to.y - qy + qx / 2,
+          to.x - qx + qy / 2, to.y - qy - qx / 2)
+      ];
+    }
+    if (t === 'ERoneToMany') {
+      return [
+        line(to.x - qx - qy / 2, to.y - qy + qx / 2,
+          to.x - qx + qy / 2, to.y - qy - qx / 2),
+        poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
+          to.x - qy / 2, to.y + qx / 2)
+      ];
+    }
+    // Genuinely unsupported (async half-arrow, ER zero-to-* with endpoint
+    // recession, halfCircle curve, sysML glyphs, …): loud notice + classic-
+    // triangle placeholder so the edge still terminates visibly. NEVER a
+    // silent wrong marker.
     if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
       'edge marker "' + type + '" approximated as a classic arrowhead', cellId));
     return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
@@ -6019,12 +6072,14 @@
     if (style.endArrow && style.endArrow !== 'none') {
       var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
         points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices);
-      if (endNode) paint.push(endNode);
+      if (Array.isArray(endNode)) endNode.forEach(function(n) { if (n) paint.push(n); });
+      else if (endNode) paint.push(endNode);
     }
     if (style.startArrow && style.startArrow !== 'none') {
       var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
         arrowSize, stroke, arrowFill, cell.id, notices);
-      if (startNode) paint.push(startNode);
+      if (Array.isArray(startNode)) startNode.forEach(function(n) { if (n) paint.push(n); });
+      else if (startNode) paint.push(startNode);
     }
 
     var label = plainLabel(graph, cell);

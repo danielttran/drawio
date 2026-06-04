@@ -1072,9 +1072,10 @@ test('edge: default connector renders its classic arrowhead (no silent drop on d
 test('edge: arrowhead types render faithfully or are loudly noticed (no silent triangle)', async () => {
   // REGRESSION (C1): the headless re-derivation drew EVERY non-open marker as a
   // classic triangle with no notice — diamond/oval/circle/box/ER/etc. silently
-  // wrong. Now common markers render with their own geometry, and genuinely
-  // unsupported ones (ER crow's-foot, cross, async, circlePlus) raise a loud
-  // notice instead of a silent substitution.
+  // wrong. Now common markers render with their own geometry (incl. the ER
+  // crow's-foot family, dash and cross as faithful stroked paths), and the
+  // genuinely unsupported ones (async half-arrow, circlePlus glyph, halfCircle
+  // quad-curve) raise a loud notice instead of a silent substitution.
   const mk = (end) => `<mxGraphModel pageWidth="400" pageHeight="200"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="60" width="60" height="40" as="geometry"/></mxCell>
@@ -1096,6 +1097,10 @@ test('edge: arrowhead types render faithfully or are loudly noticed (no silent t
     ['circle',  (m) => /A /.test(m.d) && !m.fill && m.stroke],                // hollow circle
     ['box',     (m) => segs(m.d) === 3 && /Z$/.test(m.d) && m.fill],          // square, filled
     ['open',    (m) => segs(m.d) === 2 && !/Z$/.test(m.d) && !m.fill],        // open V
+    ['dash',    (m) => segs(m.d) === 1 && !/Z$/.test(m.d) && !m.fill && m.stroke], // 1 stroke
+    ['cross',   (m) => segs(m.d) === 1 && !m.fill && m.stroke],               // last of 2 strokes
+    ['ERone',   (m) => segs(m.d) === 1 && !m.fill && m.stroke],               // 1 perpendicular stroke
+    ['ERmany',  (m) => segs(m.d) === 2 && !/Z$/.test(m.d) && !m.fill && m.stroke], // crow's foot
   ]) {
     const { contract, notices } = await bake(mk(type), { keepPx: true });
     assert.equal(notices.length, 0, `${type}: unexpected notice ${notices.map((n) => n.kind).join(',')}`);
@@ -1104,7 +1109,7 @@ test('edge: arrowhead types render faithfully or are loudly noticed (no silent t
   }
 
   // Unsupported -> loud notice (never silent):
-  for (const type of ['ERmany', 'cross', 'async', 'circlePlus']) {
+  for (const type of ['async', 'circlePlus', 'halfCircle']) {
     const { notices } = await bake(mk(type), { keepPx: true });
     assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
       `${type}: must raise a loud notice rather than silently substitute`);

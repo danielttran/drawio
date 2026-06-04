@@ -503,6 +503,48 @@ test('flexArrow edge: closed arrow path emitted with zero notices', () => {
   assertSchemaValid(result.contract, 'flexArrow');
 });
 
+// ---- faithful stroked edge markers (dash, cross, ER crow's-foot) -----------
+// drawio's mxMarker dash/cross/ER* are pure stroked lines. They must render
+// faithfully (zero notices), NOT be approximated as a filled classic triangle.
+function oneEdgeMarker(marker) {
+  const cells = { e: { id: 'e', edge: true, style: 'endArrow=' + marker + ';', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+  const styles = { e: { endArrow: marker } };
+  return exporter.buildResult(graphFixture(cells, states, {}, styles));
+}
+
+test('edge marker dash/cross/ER render faithfully as stroked paths, zero notices', () => {
+  for (const m of ['dash', 'cross', 'ERone', 'ERmany', 'ERmandOne', 'ERoneToMany']) {
+    const result = oneEdgeMarker(m);
+    assert.equal(result.notices.length, 0,
+      `marker "${m}" must render faithfully without an approximation notice`);
+    const paths = result.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+    // edge line + at least one marker stroke node, all stroked (fill === null)
+    const markerNodes = paths.filter((n) => n.fill === null && n.stroke && /\bL /.test(n.d));
+    assert.ok(markerNodes.length >= 2,
+      `marker "${m}" must add ≥1 stroked marker path beyond the edge line, got ${markerNodes.length}`);
+    assertSchemaValid(result.contract, `marker-${m}`);
+  }
+});
+
+test('cross / ERmandOne / ERoneToMany emit two stroke segments', () => {
+  for (const m of ['cross', 'ERmandOne', 'ERoneToMany']) {
+    const result = oneEdgeMarker(m);
+    const paths = result.contract.document.pages[0].paint.filter(
+      (n) => n.kind === 'path' && n.fill === null && n.stroke);
+    // edge line (1) + two marker strokes = 3 stroked path nodes
+    assert.ok(paths.length >= 3,
+      `marker "${m}" must emit two marker strokes (+edge line), got ${paths.length}`);
+  }
+});
+
+test('genuinely unsupported markers still raise a loud notice', () => {
+  const result = oneEdgeMarker('halfCircle');
+  assert.ok(result.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'halfCircle (quad-curve marker) must still be loudly noticed, not silently wrong');
+});
+
 // ---- sketch fills: hachure/cross-hatch/dots emit kind:'svg' with clip ------
 function oneSketchVertex(style) {
   const cells = { v: { id: 'v', vertex: true } };
