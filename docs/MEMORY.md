@@ -762,6 +762,52 @@ img/table/sub/sup, but it is mode-A (unit-test-only) and superseded by
 `transcribeForeignObjects` (client-rect based) there — not reachable in the
 headless production print.
 
+## UPDATE 2026-06-04 rounds 22-29 (systematic headless-fidelity audit — 25 fixes, 2 clean rounds)
+
+A multi-round audit comparing the headless re-derivation path object-by-object
+against drawio's own mxShape/mxText/mxStencil source. Each round: probe an area,
+fix any drawio divergence, add a red-then-green regression test, regenerate any
+affected goldens, run the FULL matrix (exporter+bake+service+validate+render-gate
++production-audit+ctest) BEFORE committing, push to `claude/zen-lamport-ES5rt`
+AND fast-forward `print`. Bug count over the audit: bake 116→146 tests.
+
+**Significant correctness fixes (were losing/mis-placing content):**
+- `<fillcolor color="key" default="#hex">` stencils (salesforce/cisco/eip/gmdl/
+  gcp2/veeam/… — 1161 stencils) printed INVISIBLE → resolveStencilColor.
+- Edge arrowheads silently dropped (degenerate doubled endpoints) → dedupe points.
+- Non-classic arrowheads (diamond/oval/box/circle/ER/…) silently drawn as
+  classic triangle → edgeMarkerNode (faithful + loud-notice for ER/cross/async).
+- Non-HTML labels HTML-parsed → "List<String>" lost "<String>" → isHtmlLabelStyle.
+- Edge child-labels (UML multiplicity, ER cardinality) baked 1×1 at wrong spot →
+  emitEdgeChildLabel positions along the parent edge.
+- **Hidden layers / cells (visible="0") were PRINTED** → cellVisible() skip.
+- **<object>/<UserObject>-wrapped cells (metadata) dropped entirely** →
+  flattenObjectWrappers (id+label live on the wrapper).
+- Image cell opacity ignored (kind:image has no opacity field) → route to svg
+  <image opacity>. Page background colour not printed → full-page bg rect.
+
+**Geometry/proportion fixes (matched to drawio source):** rounded-rect radius
+(0.12→arcSize/100, default 0.15) + absoluteArcSize; dash pattern scales with
+strokeWidth (createDashPattern); shadow #808080 @(2,3) (was black @(4,4)); glass
+highlight rendered; flipH/flipV on built-in shapePath shapes (flipPathD, arc
+sweep handled); label spacing/spacingLeft/Top/etc (labelPads); letterSpacing on
+plain labels; edge corner radius arcSize/2=10; perimeterSpacing endpoint gap;
+cylinder cap min(40,h/5). Shape geometry rewritten to drawio formulas + size/
+fixedSize style: parallelogram/step/trapezoid/hexagon/card, document (0.3h two
+quad waves), dataStorage (curved D, was a parallelogram), loopLimit (cut-corner
+hexagon, was a pentagon), manualInput, tape (0.4h quads), display (two quads),
+internalStorage (dx/dy=20), cube (depth top-right, was mirrored), delay (two
+quads), offPageConnector (h-0.375h), cross (size attr), datastore (top cap -dy/3).
+
+**Clean rounds (no silent-divergence bug):** R28 (compressed `<diagram>`,
+object-wrapped edges, edge waypoints, style combos, curved edges, html entities,
+flagship no-regression) and R29 (locked cells, rotation+gradient, large fontSize)
+— two consecutive. Documented residuals (all LOUD or live-faithful, not silent):
+mockup/* JS shapes (shapes/mockup/, not in the checked-in corpus → loud
+ExporterUnsupportedShape + box placeholder); sketch/comic roughjs texture;
+swimlane collapse-icon chrome; flip+rotation combo; placeholder %var% expansion;
+callout tail / isoRectangle / datastore multi-ring detail.
+
 ## UPDATE 2026-06-03 round 22 (end-to-end Verification Gate + real WYSIWYG bug fixed)
 
 **Goal:** concrete, browser-free proof of WYSIWYG from drawio to the actual
