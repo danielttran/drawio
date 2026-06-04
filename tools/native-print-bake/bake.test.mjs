@@ -1585,6 +1585,53 @@ test('parser: object/UserObject-wrapped cells render (id+label on the wrapper)',
   assert.ok(contract.document.pages[0].paint.length >= 4, 'both wrapped shapes + labels present');
 });
 
+test('engine-compat: every stroke/fill is a well-formed contract descriptor', async () => {
+  // REGRESSION (PRODUCTION/C1): a swimlane with separatorColor assigned a bare
+  // paint object {type,color,alpha} to a node's stroke field (which requires a
+  // stroke DESCRIPTOR {paint,width,...}). bake emitted zero notices but the C++
+  // engine loader rejected the contract (stroke.paint missing), hard-failing the
+  // whole page with no warning. This structural invariant catches that class of
+  // bug browser-free over feature-rich diagrams.
+  const isPaint = (p) => p && typeof p === 'object' &&
+    (p.type === 'solid' || p.type === 'linear' || p.type === 'radial') &&
+    (p.type !== 'solid' || (typeof p.color === 'string' && typeof p.alpha === 'number'));
+  // Mirror the C++ engine loader's requirements exactly: stroke.paint present,
+  // width > 0 (require_positive), miterLimit > 0, cap/join from the enum, dash
+  // null-or-array. (The engine rejects width<=0, so 'number' is not enough.)
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
+  const isStroke = (s) => s === null || (s && typeof s === 'object' &&
+    isPaint(s.paint) && typeof s.width === 'number' && s.width > 0 &&
+    ['butt', 'round', 'square'].includes(s.cap) && ['miter', 'round', 'bevel'].includes(s.join) &&
+    typeof s.miterLimit === 'number' && s.miterLimit > 0 && (s.dash === null || Array.isArray(s.dash)));
+  const isFill = (f) => f === null || isPaint(f);
+  const diagrams = [
+    'swimlane;fillColor=#dae8fc;strokeColor=#6c8ebf;separatorColor=#ff0000;',
+    'swimlane;fillColor=#dae8fc;swimlaneFillColor=#ffffcc;swimlaneLine=0;horizontal=0;',
+    'swimlane;fillColor=#fff;gradientColor=#f00;strokeColor=#000;',
+    'swimlane;fillColor=#dae8fc;strokeColor=#000;separatorColor=#f00;strokeWidth=0;',
+    'shape=image;image=data:image/png;base64,' + PNG + ';imageBackground=#ffffcc;imageBorder=#ff0000;',
+    'shape=image;image=data:image/png;base64,' + PNG + ';imageBackground=#ffffcc;imageBorder=#ff0000;strokeWidth=0;',
+    'rounded=1;fillColor=#fff;strokeColor=#000;direction=north;strokeWidth=0;',
+    'shape=parallelogram;fillColor=#fff;gradientColor=#f00;direction=south;'
+  ];
+  const offenders = [];
+  for (const st of diagrams) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="L" style="${st}" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'path') {
+        if (!isStroke(n.stroke)) offenders.push(`${st} -> bad stroke ${JSON.stringify(n.stroke)}`);
+        if (!isFill(n.fill)) offenders.push(`${st} -> bad fill ${JSON.stringify(n.fill)}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `paint nodes with malformed stroke/fill (engine would reject): ${offenders.join('; ')}`);
+});
+
 test('engine-compat: kind:path nodes use only engine-supported commands (no Q/S/T)', async () => {
   // REGRESSION (PRODUCTION): the C++ engine path parser accepts only absolute
   // M/L/H/V/C/A/Z. A kind:"path" node containing Q (quadratic) — or S/T — is

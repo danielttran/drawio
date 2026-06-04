@@ -861,3 +861,56 @@ render gate is what checks ink.
 IDAT (bad Adler-32) → resvg blank. Replaced with verified-valid minimal images
 (distinct colours + a hand-rolled valid baseline JPEG), regenerated its golden,
 so the image path (PNG/JPEG/SVG/flip/rotate/label) is genuinely exercised.
+
+---
+
+## Rounds 38–54 headless-fidelity audit + advisor production sign-off (2026-06-04)
+
+**Goal:** audit end-to-end, fix all bugs; met when 2 consecutive clean rounds
+AND an independent advisor agrees production-ready. **STATUS: MET.**
+
+Method: each round bakes adversarial diagrams and drives the contract through
+the REAL C++ engine host (`build/print_engine_host`, framed stdio) — NOT just
+the resvg render-gate (which misses contract-loader rejections). Browser-free.
+
+**11 silent divergences fixed (each matched to drawio mxGraph source):**
+- R38 dash/cross/ER crow's-foot edge markers rendered faithfully (`edgeMarkerNode`).
+- R39 shape `direction` (N/S/E/W) honored — was silently ignored for ALL named
+  shapes. New `rotatePathD` (exact 90/180/270) + `outlinePath` (named shapes) +
+  rotate-wrap for `builtinShapeSvg`. `trianglePath` now drawio's default EAST.
+- R40 `textOpacity`; rotated/vertical-label underline/strikethrough.
+- R41 `endFill`/`startFill` hollow arrowheads. R42 `endFillColor`/`startFillColor`.
+- R43 swimlane header-only fill + `swimlaneFillColor`/`swimlaneLine`.
+- R44 mxLabel (`shape=label;image=`) → bg + small icon + text (mxLabel.getImageBounds).
+- R45 `imageBackground`/`imageBorder`. R46 gradient axis rotates with `direction`
+  (`rotateGradDir`). R47 `labelPadding`; loud notices for `textShadow`/`indicator`/rtl.
+- R48 swimlane header gradient stays faithful via `regionFillNode` (fixed a
+  self-introduced GradientDirectionApprox regression).
+
+**Advisor pass 1 → BLOCKING:** swimlane `separatorColor` assigned a bare paint
+`solid()={type,color,alpha}` to a node `stroke` field (needs full descriptor);
+baked with ZERO notices, engine rejected the whole page. Fixed (d591460): swimlane
+branch now matches mxSwimlane exactly — divider (strokeColor, solid, swimlaneLine)
+vs separator (separatorColor, DASHED, far edge), header/body borders gated
+swimlaneHead/swimlaneBody. `regionFillNode` id → `stableGradId` (deterministic).
+
+**Advisor pass 2 → BLOCKING (same class):** `imageBorder` width was
+`number(strokeWidth,1)` UNCLAMPED → `strokeWidth=0` baked `width:0`, engine
+rejected (require_positive). Fixed (a74a1b2): `Math.max(0.1,...)`. Strengthened
+`bake.test.mjs` structural invariant to mirror the C++ loader (stroke.width>0,
+miterLimit>0, cap/join enums, dash null-or-array; fill null-or-paint) over
+feature-rich diagrams incl. `strokeWidth=0` — catches this class browser-free.
+Audited ALL 25 `stroke:` sites: imageBorder was the last unguarded width.
+
+**Advisor pass 3 → PRODUCTION-READY.** Verified both fixes via engine round-trips
+WITH negative controls (the original bug shapes still get rejected, proving the
+gate is live). Bad-stroke/fill bug class fully closed. No other defects. C1+C2 hold.
+
+**C2 note:** `tools/native-print-bake/screenshot-editor.mjs` (Playwright) is a
+manual-only human debug tool — KEPT (owner intent) but now carries a prominent
+header forbidding any wire-up into the guarantee/verification/tests. Referenced
+by nothing; C2 holds.
+
+**Green on this box:** exporter 192, bake 152, production-audit 86 shapes +
+8910 stencils zero notices, render-gate, C++ ctest 172/172. Engine sweeps: all
+19 fixtures + 86 registered shapes + 8910 stencils → PreviewResult, zero notices.
