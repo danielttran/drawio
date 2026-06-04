@@ -1340,17 +1340,19 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
     const n = contract.document.pages[0].paint.find((x) => x.kind === 'path');
     return n && n.d;
   };
-  // triangle apex is top-centre (y=0); flipV must move the apex to the bottom (y=60).
+  // drawio default triangle points EAST (apex at right, mid-height); flipH must
+  // move the apex to the left. flipped geometry is mirrored about the box centre.
   const norm = pathD((await bake(mk('triangle;'), { keepPx: true })).contract);
-  const flv = pathD((await bake(mk('triangle;flipV=1;'), { keepPx: true })).contract);
-  assert.match(norm, /^M 50 0 /, 'normal triangle apex at top');
-  assert.match(flv, /^M 50 60 /, 'flipV triangle apex must move to bottom');
+  const flh = pathD((await bake(mk('triangle;flipH=1;'), { keepPx: true })).contract);
+  assert.match(norm, /L 100 30 /, 'east triangle apex at right (x=100,y=30)');
+  assert.match(flh, /L 0 30 /, 'flipH triangle apex must move to left (x=0,y=30)');
   // parallelogram flipH must mirror horizontally (differs from unflipped).
   const pn = pathD((await bake(mk('shape=parallelogram;'), { keepPx: true })).contract);
   const pf = pathD((await bake(mk('shape=parallelogram;flipH=1;'), { keepPx: true })).contract);
   assert.notEqual(pn, pf, 'parallelogram flipH must change the geometry');
-  // rotation + flip: flip must STILL be applied (not silently dropped) and the
-  // label must stay upright (flip wraps only the shape path).
+  // rotation + flip: the flip must STILL be applied (not silently dropped) and
+  // the label must stay upright. The flip is baked into the rotated path
+  // (flipPathD), so the rotated SVG differs from rotation-only.
   const mkLbl = (style) => `<mxGraphModel pageWidth="300" pageHeight="200"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" value="T" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="80" y="60" width="100" height="60" as="geometry"/></mxCell>
@@ -1359,11 +1361,11 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
     const n = (await bake(mkLbl(style), { keepPx: true })).contract.document.pages[0].paint.find((x) => x.kind === 'svg');
     return n ? n.source : '';
   };
-  const rotOnly = await svgSrc('triangle;rotation=30;');
-  const rotFlip = await svgSrc('triangle;rotation=30;flipV=1;');
+  const rotOnly = await svgSrc('shape=parallelogram;rotation=30;');
+  const rotFlip = await svgSrc('shape=parallelogram;rotation=30;flipH=1;');
   assert.notEqual(rotOnly, rotFlip, 'rotation+flip must apply the flip (not silently dropped)');
   const s = Buffer.from(rotFlip, 'base64').toString('utf8');
-  assert.match(s, /scale\(1 -1\)/, 'flipV applies a scale to the shape');
+  assert.match(s, /<path/, 'shape path still rendered');
   assert.match(s, /<text/, 'label still rendered (not mirrored away)');
 });
 

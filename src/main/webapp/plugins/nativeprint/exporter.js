@@ -2050,6 +2050,52 @@
     return out.join(' ');
   }
 
+  // Rotate a path's geometry by `deg` (exact for the 90/180/270 multiples used
+  // by drawio's direction= handling) around (cx,cy). Mirrors flipPathD's token
+  // walk. H/V become L (a horizontal segment is no longer horizontal once
+  // rotated); arc x-axis-rotation gains `deg`; sweep/large-arc flags are
+  // preserved (pure rotation keeps orientation).
+  function rotatePathD(d, cx, cy, deg) {
+    deg = ((deg % 360) + 360) % 360;
+    if (deg === 0) return d;
+    var rad = deg * Math.PI / 180;
+    var cos = Math.round(Math.cos(rad)), sin = Math.round(Math.sin(rad));
+    var RX = function (x, y) { return cx + (x - cx) * cos - (y - cy) * sin; };
+    var RY = function (x, y) { return cy + (x - cx) * sin + (y - cy) * cos; };
+    var toks = String(d).match(/[a-zA-Z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+    var out = [], i = 0, cmd = '', curX = 0, curY = 0, startX = 0, startY = 0;
+    var num = function () { return parseFloat(toks[i++]); };
+    while (i < toks.length) {
+      if (/[a-zA-Z]/.test(toks[i])) { cmd = toks[i++]; }
+      var C = cmd.toUpperCase(), x, y;
+      if (C === 'M' || C === 'L' || C === 'T') {
+        x = num(); y = num();
+        out.push(C, fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y; if (C === 'M') { startX = x; startY = y; }
+      } else if (C === 'C') {
+        var x1 = num(), y1 = num(), x2 = num(), y2 = num(); x = num(); y = num();
+        out.push('C', fmt(RX(x1, y1)), fmt(RY(x1, y1)),
+          fmt(RX(x2, y2)), fmt(RY(x2, y2)), fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'Q' || C === 'S') {
+        var qx = num(), qy = num(); x = num(); y = num();
+        out.push(C, fmt(RX(qx, qy)), fmt(RY(qx, qy)), fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'H') {
+        x = num(); y = curY; out.push('L', fmt(RX(x, y)), fmt(RY(x, y))); curX = x;
+      } else if (C === 'V') {
+        y = num(); x = curX; out.push('L', fmt(RX(x, y)), fmt(RY(x, y))); curY = y;
+      } else if (C === 'A') {
+        var rx = num(), ry = num(), xr = num(), laf = num(), sf = num();
+        x = num(); y = num();
+        out.push('A', fmt(rx), fmt(ry), fmt((xr + deg) % 360), fmt(laf), fmt(sf),
+          fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'Z') { out.push('Z'); curX = startX; curY = startY; }
+    }
+    return out.join(' ');
+  }
+
   // Rounded-rectangle corner radius, matching drawio mxRectangleShape.
   // Relative (default): f = arcSize/100 (default RECTANGLE_ROUNDING_FACTOR*100
   // = 15), r = min(w,h)*f. Absolute (absoluteArcSize=1): r = min(w/2, h/2,
@@ -2124,14 +2170,11 @@
       ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h / 2) + ' Z';
   }
 
-  function trianglePath(x, y, w, h, dir) {
-    if (dir === 'south') return 'M ' + p(x, y) + ' L ' + p(x + w, y) +
-      ' L ' + p(x + w / 2, y + h) + ' Z';
-    if (dir === 'east') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h / 2) +
-      ' L ' + p(x, y + h) + ' Z';
-    if (dir === 'west') return 'M ' + p(x + w, y) + ' L ' + p(x, y + h / 2) +
-      ' L ' + p(x + w, y + h) + ' Z';
-    return 'M ' + p(x + w / 2, y) + ' L ' + p(x + w, y + h) +
+  // drawio mxTriangle.redrawPath draws the default (east) triangle
+  // (0,0)->(w,h/2)->(0,h); direction= rotation is applied generically by the
+  // caller's outlinePath (mxShape.getShapeRotation), so this never branches.
+  function trianglePath(x, y, w, h) {
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y + h / 2) +
       ' L ' + p(x, y + h) + ' Z';
   }
 
@@ -2445,7 +2488,7 @@
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
     if (shape === 'rhombus' || shape === 'diamond') return rhombusPath(x, y, w, h);
-    if (shape === 'triangle') return trianglePath(x, y, w, h, style.direction);
+    if (shape === 'triangle') return trianglePath(x, y, w, h);
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
     if (shape === 'hexagon') return hexagonPath(x, y, w, h, shapeSize(style, w, 0.25, 1, 20, w * 0.5));
@@ -5637,6 +5680,22 @@
         builtinContent += tableGridLines(graph, cell, style, box.w, box.h);
       }
       if (builtinContent !== null) {
+        // direction= (N/S/E/W) rotates a multi-element shape like drawio's
+        // getShapeRotation (+90 S, +180 W, +270 N); N/S also invert the paint
+        // bounds. Bake it into the content (keeping the box.w x box.h viewport)
+        // so the rotation/plain branches and label positioning below are
+        // unchanged. Previously direction was silently ignored for these shapes.
+        var dirBI = String(style.direction || 'east').toLowerCase();
+        var dirDegBI = dirBI === 'south' ? 90 : dirBI === 'west' ? 180 : dirBI === 'north' ? 270 : 0;
+        if (dirDegBI) {
+          var dirInvBI = (dirBI === 'north' || dirBI === 'south');
+          var pwBI0 = dirInvBI ? box.h : box.w, phBI0 = dirInvBI ? box.w : box.h;
+          var rawBI = dirInvBI ? builtinShapeSvg(style, pwBI0, phBI0) : builtinContent;
+          builtinContent = '<g transform="rotate(' + fmt(dirDegBI) + ' ' +
+            fmt(box.w / 2) + ' ' + fmt(box.h / 2) + ') translate(' +
+            fmt((box.w - pwBI0) / 2) + ' ' + fmt((box.h - phBI0) / 2) + ')">' +
+            rawBI + '</g>';
+        }
         var rotDegBI = number(style.rotation, 0);
         if (rotDegBI) {
           var thetaBI = rotDegBI * Math.PI / 180;
@@ -5704,20 +5763,32 @@
         return;
       }
 
-      var d = shapePath(style, box.x, box.y, box.w, box.h);
+      // flipH/flipV mirror the shape geometry; direction (N/S/E/W) rotates it
+      // like drawio's getShapeRotation() (+90 south, +180 west, +270 north),
+      // with the paint bounds inverted for N/S (mxShape.isPaintBoundsInverted).
+      // The label stays upright (drawio flips/direction-rotates the SHAPE only).
+      // outlinePath builds the fully-transformed outline for a given cell box,
+      // matching c.rotate(getShapeRotation, flipH, flipV, cx, cy): draw in the
+      // (inverted) paint bounds, mirror, then rotate — all about the centre.
+      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
+      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
+      var dir = String(style.direction || 'east').toLowerCase();
+      var dirDeg = dir === 'south' ? 90 : dir === 'west' ? 180 : dir === 'north' ? 270 : 0;
+      var dirInv = (dir === 'north' || dir === 'south');
+      function outlinePath(ox, oy, w, h) {
+        var ccx = ox + w / 2, ccy = oy + h / 2;
+        var pw = dirInv ? h : w, ph = dirInv ? w : h;
+        var pd = shapePath(style, ccx - pw / 2, ccy - ph / 2, pw, ph);
+        if (!pd) return null;
+        if (flipH_ || flipV_) pd = flipPathD(pd, ccx, ccy, flipH_, flipV_);
+        if (dirDeg) pd = rotatePathD(pd, ccx, ccy, dirDeg);
+        return pd;
+      }
+      var d = outlinePath(box.x, box.y, box.w, box.h);
       if (!d) {
         d = rectPath(box.x, box.y, box.w, box.h);
         notices.push(degradation('ExporterUnsupportedShape',
           'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
-      }
-      // flipH/flipV mirror the shape geometry (label stays upright, per drawio).
-      // Stencils flip on their own path; built-in shapePath shapes did not.
-      // Applied to the non-rotated path here (and to the relative paths used by
-      // the sketch/gradient svg branches below).
-      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
-      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
-      if (!number(style.rotation, 0) && (flipH_ || flipV_)) {
-        d = flipPathD(d, box.x + box.w / 2, box.y + box.h / 2, flipH_, flipV_);
       }
 
       // Rotated shape (headless): construct a kind:'svg' node so both the shape
@@ -5738,7 +5809,10 @@
         // Rotation centre = midpoint of expanded viewport
         var rcx = expW / 2;
         var rcy = expH / 2;
-        var relD = shapePath(style, offX, offY, box.w, box.h) ||
+        // outlinePath bakes flip + direction into the path; the outer rotate()
+        // below adds the style rotation. The label is rotated by the style
+        // rotation only (direction/flip never rotate the label).
+        var relD = outlinePath(offX, offY, box.w, box.h) ||
                    rectPath(offX, offY, box.w, box.h);
         // Linear gradient defs (left-to-right in rotated frame; more accurate
         // than the path fallback since direction rotates with the shape).
@@ -5750,14 +5824,6 @@
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
-        // flipH/flipV mirror the SHAPE within its (rotated) frame; the label is
-        // NOT flipped (drawio applies flip then rotation, label stays upright).
-        if (flipH_ || flipV_) {
-          var fsx = flipH_ ? -1 : 1, fsy = flipV_ ? -1 : 1;
-          var fcx = offX + box.w / 2, fcy = offY + box.h / 2;
-          pathEl = '<g transform="translate(' + fmt(fcx) + ' ' + fmt(fcy) + ') scale(' +
-            fsx + ' ' + fsy + ') translate(' + fmt(-fcx) + ' ' + fmt(-fcy) + ')">' + pathEl + '</g>';
-        }
         var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
         var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
           pathEl + textEl + '</g>';
@@ -5779,7 +5845,7 @@
         var gsp = shadowParams(style);
         paint.push({
           kind: 'path',
-          d: shapePath(style, box.x + gsp.dx, box.y + gsp.dy, box.w, box.h) ||
+          d: outlinePath(box.x + gsp.dx, box.y + gsp.dy, box.w, box.h) ||
              rectPath(box.x + gsp.dx, box.y + gsp.dy, box.w, box.h),
           fill: solid(gsp.color, gsp.alpha),
           stroke: null
@@ -5793,8 +5859,7 @@
       if (boolish(style.sketch) && isPaintable(style.fillColor)) {
         var skFs = style.fillStyle || 'hachure';
         if (skFs === 'hachure' || skFs === 'cross-hatch' || skFs === 'dots') {
-          var skRelD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-          if (!number(style.rotation, 0) && (flipH_ || flipV_)) skRelD = flipPathD(skRelD, box.w / 2, box.h / 2, flipH_, flipV_);
+          var skRelD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
           paint.push(paddedSvgShapeNode(sketchFillSvg(style, skRelD, box.w, box.h),
             { x: box.x, y: box.y, w: box.w, h: box.h }, style));
         } else {
@@ -5807,8 +5872,7 @@
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
           hex(style.gradientColor), style.gradientDirection) + '</defs>';
-        var relD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-        if (!number(style.rotation, 0) && (flipH_ || flipV_)) relD = flipPathD(relD, box.w / 2, box.h / 2, flipH_, flipV_);
+        var relD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
       } else {

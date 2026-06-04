@@ -357,10 +357,13 @@ const SUPPORTED_SHAPES = [
   ['ellipse', { shape: 'ellipse' }, /^M 0 20 A 40 20 0 1 0 80 20 A 40 20 0 1 0 0 20 Z$/],
   ['rhombus', { shape: 'rhombus' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
   ['diamond', { shape: 'diamond' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
-  ['triangle north', { shape: 'triangle' }, /^M 40 0 L 80 40 L 0 40 Z$/],
-  ['triangle south', { shape: 'triangle', direction: 'south' }, /^M 0 0 L 80 0 L 40 40 Z$/],
+  // drawio default triangle points EAST (mxTriangle: 0,0 -> w,h/2 -> 0,h).
+  // direction= rotates it generically (south +90, west +180, north +270).
+  ['triangle default (east)', { shape: 'triangle' }, /^M 0 0 L 80 20 L 0 40 Z$/],
   ['triangle east', { shape: 'triangle', direction: 'east' }, /^M 0 0 L 80 20 L 0 40 Z$/],
-  ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 0 L 0 20 L 80 40 Z$/],
+  ['triangle south', { shape: 'triangle', direction: 'south' }, /^M 80 0 L 40 40 L 0 0 Z$/],
+  ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 40 L 0 20 L 80 0 Z$/],
+  ['triangle north', { shape: 'triangle', direction: 'north' }, /^M 0 40 L 40 0 L 80 40 Z$/],
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
   ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
@@ -377,6 +380,34 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
     assertSchemaValid(r.contract, name);
   });
 }
+
+test('direction (N/S/E/W) rotates asymmetric named shapes (no silent divergence)', () => {
+  // REGRESSION (C1): named shapes via shapePath honored rotation/flip but
+  // SILENTLY ignored direction= — a process/step/parallelogram with
+  // direction=north printed unrotated while drawio rotates it 270 deg.
+  for (const shape of ['parallelogram', 'step', 'process', 'cylinder', 'card', 'tape']) {
+    const east = oneVertex({ shape, direction: 'east', fillColor: '#eee', strokeColor: '#000' });
+    const north = oneVertex({ shape, direction: 'north', fillColor: '#eee', strokeColor: '#000' });
+    assert.equal(east.notices.length, 0, `${shape} east must not degrade`);
+    assert.equal(north.notices.length, 0, `${shape} north must not degrade`);
+    // path shapes carry .d; multi-element (builtinShapeSvg) shapes carry .source
+    const repr = (r) => { const n = r.contract.document.pages[0].paint[0]; return n.d || n.source; };
+    assert.notEqual(repr(east), repr(north),
+      `${shape}: direction=north must change geometry vs east (direction not silently ignored)`);
+  }
+});
+
+test('rotatePathD preserves shape bounding box for 90 deg direction', () => {
+  // A direction=south shape must still occupy the same on-page cell box
+  // (drawio inverts the paint bounds so the rotated shape fits the cell).
+  const r = oneVertex({ shape: 'parallelogram', direction: 'south', fillColor: '#eee', strokeColor: '#000' });
+  const d = r.contract.document.pages[0].paint[0].d;
+  const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const xs = nums.filter((_, i) => i % 2 === 0), ys = nums.filter((_, i) => i % 2 === 1);
+  // FIXED_BOUNDS cell is 80x40 at origin; rotated bounds must stay within [0,80]x[0,40].
+  assert.ok(Math.min(...xs) >= -0.01 && Math.max(...xs) <= 80.01, `x in cell box, got ${Math.min(...xs)}..${Math.max(...xs)}`);
+  assert.ok(Math.min(...ys) >= -0.01 && Math.max(...ys) <= 40.01, `y in cell box, got ${Math.min(...ys)}..${Math.max(...ys)}`);
+});
 
 test('supported shape faithfully baked: note', () => {
   const r = oneVertex({ shape: 'note', fillColor: '#112233', strokeColor: '#445566' });
