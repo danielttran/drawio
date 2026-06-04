@@ -1491,6 +1491,19 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
   assert.match(await d('offPageConnector'), /L 100 50 L 50 80 L 0 50 Z/, 'offPage shoulder at h-0.375h=50');
 });
 
+test('shape: cross honors size attr; datastore top cap matches drawio', async () => {
+  // REGRESSION: cross ignored the size style (default 0.2 was correct);
+  // datastore top-cap control point was 0 (drawio -dy/3).
+  const mk = (st) => `<mxGraphModel pageWidth="200" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${st}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="100" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const d = async (st) => (await bake(mk(st), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  assert.match(await d('shape=cross;'), /^M 0 40 L 40 40 /, 'cross default arms at 0.2*min=20 (t=40)');
+  assert.match(await d('shape=cross;size=0.5;'), /^M 0 25 L 25 25 /, 'cross size=0.5 -> arms at 25');
+  assert.match(await d('shape=datastore;'), /C 0 -[\d.]+ 100 -[\d.]+ 100 /, 'datastore top cap control = -dy/3');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

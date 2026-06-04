@@ -2305,7 +2305,7 @@
     var dy = Math.min(h / 2, Math.round(h / 8));
     return 'M ' + p(x, y + dy) + ' C ' + p(x, y + 2 * dy) + ' ' + p(x + w, y + 2 * dy) + ' ' + p(x + w, y + dy) +
       ' L ' + p(x + w, y + h - dy) + ' C ' + p(x + w, y + h) + ' ' + p(x, y + h) + ' ' + p(x, y + h - dy) + ' Z' +
-      ' M ' + p(x, y + dy) + ' C ' + p(x, y) + ' ' + p(x + w, y) + ' ' + p(x + w, y + dy);
+      ' M ' + p(x, y + dy) + ' C ' + p(x, y - dy / 3) + ' ' + p(x + w, y - dy / 3) + ' ' + p(x + w, y + dy);
   }
 
   function manualInputPath(x, y, w, h, sIn) {
@@ -2354,8 +2354,8 @@
       ' L ' + p(x + as, y + h) + ' Z';
   }
 
-  function crossPath(x, y, w, h) {
-    var m = Math.min(w, h), sz = m * 0.2;
+  function crossPath(x, y, w, h, szIn) {
+    var m = Math.min(w, h), sz = (szIn == null) ? m * 0.2 : szIn;
     var t = y + (h - sz) / 2, b = t + sz, l = x + (w - sz) / 2, r = l + sz;
     return 'M ' + p(x, t) + ' L ' + p(l, t) + ' L ' + p(l, y) + ' L ' + p(r, y) +
       ' L ' + p(r, t) + ' L ' + p(x + w, t) + ' L ' + p(x + w, b) +
@@ -2425,7 +2425,7 @@
     if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.375))));
     if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
     if (shape === 'doubleArrow') return doubleArrowPath(x, y, w, h);
-    if (shape === 'cross') return crossPath(x, y, w, h);
+    if (shape === 'cross') return crossPath(x, y, w, h, Math.min(w, h) * Math.max(0, Math.min(1, number(style.size, 0.2))));
     if (shape === 'display') return displayPath(x, y, w, h, Math.max(0, number(style.size, 0.25)) * w);
     if (shape === 'delay') return delayPath(x, y, w, h);
     if (shape === 'loopLimit') return loopLimitPath(x, y, w, h, Math.min(w / 2, Math.min(h, number(style.size, 20))));
