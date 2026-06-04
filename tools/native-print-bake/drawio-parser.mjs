@@ -221,6 +221,9 @@ function parseCells(xml) {
       vertex:   attrs.vertex === '1',
       edge:     attrs.edge   === '1',
       value:    attrs.value  || '',
+      // mxCell.visible defaults true; visible="0" hides the cell (and, for a
+      // layer, all its descendants) — such content must NOT print.
+      visible:  attrs.visible !== '0',
       parent:   attrs.parent || null,
       source:   attrs.source || null,
       target:   attrs.target || null,

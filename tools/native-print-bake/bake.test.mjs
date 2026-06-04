@@ -1504,6 +1504,26 @@ test('shape: cross honors size attr; datastore top cap matches drawio', async ()
   assert.match(await d('shape=datastore;'), /C 0 -[\d.]+ 100 -[\d.]+ 100 /, 'datastore top cap control = -dy/3');
 });
 
+test('visibility: hidden layers and hidden cells do not print', async () => {
+  // REGRESSION (WYSIWYG): content on a visible="0" layer (or a visible="0"
+  // cell) was printed. drawio renders only visible cells whose ancestors are
+  // all visible.
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="L2" visible="0" parent="0"/>
+    <mxCell id="v1" value="Visible" vertex="1" style="" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="h1" value="OnHiddenLayer" vertex="1" style="" parent="L2"><mxGeometry x="20" y="100" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="h2" value="HiddenCell" visible="0" vertex="1" style="" parent="1"><mxGeometry x="120" y="20" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const all = contract.document.pages[0].paint
+    .filter((n) => n.kind === 'svg')
+    .map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join('');
+  assert.match(all, /Visible/, 'visible cell must print');
+  assert.doesNotMatch(all, /OnHiddenLayer/, 'cell on a hidden layer must NOT print');
+  assert.doesNotMatch(all, /HiddenCell/, 'a hidden cell must NOT print');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

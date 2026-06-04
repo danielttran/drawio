@@ -5145,8 +5145,21 @@
     // dict-fallback path stays for headless fixtures / harnesses that do not
     // expose getRoot/getChildAt.
     var orderedCells = collectCellsInZOrder(model);
+    // A cell prints only if it AND every ancestor (incl. its layer) is visible
+    // (mxCell.visible). Hidden layers / cells must not appear in the print.
+    var cellsById = (model && model.cells) || {};
+    function cellVisible(c) {
+      var hops = 0;
+      while (c && hops++ < 1000) {
+        if (c.visible === false) return false;
+        var pid = c.parent && c.parent.id != null ? c.parent.id : c.parent;
+        c = (pid != null) ? cellsById[pid] : null;
+      }
+      return true;
+    }
     orderedCells.forEach(function (cell) {
       if (cell == null || (!model.isVertex(cell) && !model.isEdge(cell))) return;
+      if (!cellVisible(cell)) return;
       var state = view.getState(cell);
       if (state == null) return;
       var isEdgeCell = model.isEdge(cell);
