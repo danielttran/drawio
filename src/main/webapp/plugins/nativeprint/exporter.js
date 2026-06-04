@@ -1981,6 +1981,42 @@
       p(x + w, y + h) + ' L ' + p(x, y + h) + ' Z';
   }
 
+  // The C++ engine's path parser (path_parser.cpp) accepts only absolute
+  // M/L/H/V/C/A/Z — NOT Q (quadratic). kind:"path" nodes (plain shapePath
+  // shapes) are parsed by the engine, so any Q would be rejected with
+  // "unsupported SVG path command". Convert each quadratic to its exact cubic
+  // equivalent (control points = current/end + 2/3*(ctrl - current/end)).
+  // (kind:"svg" nodes go through resvg, which handles Q, and never reach here.)
+  function quadToCubicPath(d) {
+    if (!d || d.indexOf('Q') < 0) return d;
+    var toks = d.match(/[A-Za-z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+    var out = [], i = 0, cmd = '', cx = 0, cy = 0, sx = 0, sy = 0;
+    var num = function () { return parseFloat(toks[i++]); };
+    while (i < toks.length) {
+      if (/[A-Za-z]/.test(toks[i])) cmd = toks[i++];
+      var C = cmd.toUpperCase();
+      if (C === 'M' || C === 'L') {
+        var x1 = num(), y1 = num(); out.push(C, fmt(x1), fmt(y1)); cx = x1; cy = y1;
+        if (C === 'M') { sx = cx; sy = cy; }
+      } else if (C === 'H') { var hx = num(); out.push('H', fmt(hx)); cx = hx;
+      } else if (C === 'V') { var vy = num(); out.push('V', fmt(vy)); cy = vy;
+      } else if (C === 'C') {
+        var a = num(), b = num(), c2 = num(), d2 = num(), e = num(), f = num();
+        out.push('C', fmt(a), fmt(b), fmt(c2), fmt(d2), fmt(e), fmt(f)); cx = e; cy = f;
+      } else if (C === 'A') {
+        var rx = num(), ry = num(), rot = num(), laf = num(), sf = num(), ax = num(), ay = num();
+        out.push('A', fmt(rx), fmt(ry), fmt(rot), fmt(laf), fmt(sf), fmt(ax), fmt(ay)); cx = ax; cy = ay;
+      } else if (C === 'Q') {
+        var qx = num(), qy = num(), ex = num(), ey = num();
+        out.push('C', fmt(cx + 2 / 3 * (qx - cx)), fmt(cy + 2 / 3 * (qy - cy)),
+          fmt(ex + 2 / 3 * (qx - ex)), fmt(ey + 2 / 3 * (qy - ey)), fmt(ex), fmt(ey));
+        cx = ex; cy = ey;
+      } else if (C === 'Z') { out.push('Z'); cx = sx; cy = sy;
+      } else { i++; }
+    }
+    return out.join(' ');
+  }
+
   // Mirror an absolute SVG path about the box centre (cx,cy) for flipH/flipV.
   // Built-in shapePath shapes ignored flip (only stencils flipped). Reflecting
   // the geometry (label stays unflipped/upright, as drawio does) fixes that.
@@ -2399,7 +2435,12 @@
     return w * Math.max(0, Math.min(relCap, number(style.size, relDefault)));
   }
 
+  // Wrapper: ensure shapePath output uses only engine-supported path commands
+  // (Q -> exact C) before it can be emitted as a kind:"path" node.
   function shapePath(style, x, y, w, h) {
+    return quadToCubicPath(shapePathImpl(style, x, y, w, h));
+  }
+  function shapePathImpl(style, x, y, w, h) {
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
     if (shape === 'rhombus' || shape === 'diamond') return rhombusPath(x, y, w, h);
@@ -5653,6 +5694,14 @@
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
+        // flipH/flipV mirror the SHAPE within its (rotated) frame; the label is
+        // NOT flipped (drawio applies flip then rotation, label stays upright).
+        if (flipH_ || flipV_) {
+          var fsx = flipH_ ? -1 : 1, fsy = flipV_ ? -1 : 1;
+          var fcx = offX + box.w / 2, fcy = offY + box.h / 2;
+          pathEl = '<g transform="translate(' + fmt(fcx) + ' ' + fmt(fcy) + ') scale(' +
+            fsx + ' ' + fsy + ') translate(' + fmt(-fcx) + ' ' + fmt(-fcy) + ')">' + pathEl + '</g>';
+        }
         var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
         var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
           pathEl + textEl + '</g>';

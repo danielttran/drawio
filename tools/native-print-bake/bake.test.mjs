@@ -1344,6 +1344,22 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   const pn = pathD((await bake(mk('shape=parallelogram;'), { keepPx: true })).contract);
   const pf = pathD((await bake(mk('shape=parallelogram;flipH=1;'), { keepPx: true })).contract);
   assert.notEqual(pn, pf, 'parallelogram flipH must change the geometry');
+  // rotation + flip: flip must STILL be applied (not silently dropped) and the
+  // label must stay upright (flip wraps only the shape path).
+  const mkLbl = (style) => `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" value="T" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="80" y="60" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const svgSrc = async (style) => {
+    const n = (await bake(mkLbl(style), { keepPx: true })).contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+    return n ? n.source : '';
+  };
+  const rotOnly = await svgSrc('triangle;rotation=30;');
+  const rotFlip = await svgSrc('triangle;rotation=30;flipV=1;');
+  assert.notEqual(rotOnly, rotFlip, 'rotation+flip must apply the flip (not silently dropped)');
+  const s = Buffer.from(rotFlip, 'base64').toString('utf8');
+  assert.match(s, /scale\(1 -1\)/, 'flipV applies a scale to the shape');
+  assert.match(s, /<text/, 'label still rendered (not mirrored away)');
 });
 
 test('image: cell opacity is applied (frozen contract has no image opacity field)', async () => {
@@ -1446,10 +1462,10 @@ test('shape: flowchart document/dataStorage/manualInput/loopLimit match drawio g
   </root></mxGraphModel>`;
   const d = async (sh) => (await bake(mk(sh), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
   // document: bottom wave uses quadratics, dy = 0.3*80 = 24.
-  assert.match(await d('document'), /Q .* Q /, 'document should have two bottom-wave quads');
+  assert.equal(((await d('document')).match(/ C /g) || []).length, 2, 'document should have two bottom-wave cubic curves (Q->C)');
   // dataStorage: D-shape -> both right and left edges are quadratics (curved).
   const ds = await d('dataStorage');
-  assert.ok((ds.match(/ Q /g) || []).length === 2, `dataStorage must be a curved D-shape: ${ds}`);
+  assert.ok((ds.match(/ C /g) || []).length === 2, `dataStorage must be a curved D-shape: ${ds}`);
   // manualInput: top slopes from (0,s) to (w,0); s = min(80,30)=30.
   assert.match(await d('manualInput'), /^M 0 80 L 0 30 L 120 0 L 120 80 Z/);
   // loopLimit: cut-corner hexagon, s = min(60,80,20)=20; 6 vertices.
@@ -1467,9 +1483,9 @@ test('shape: tape/display/internalStorage match drawio geometry', async () => {
   </root></mxGraphModel>`;
   const d = async (sh) => (await bake(mk(sh), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
   // tape: four quadratic waves total (2 top + 2 bottom).
-  assert.equal(((await d('tape')).match(/ Q /g) || []).length, 4, 'tape should have 4 wave quads');
+  assert.equal(((await d('tape')).match(/ C /g) || []).length, 4, 'tape should have 4 wave cubics (Q->C)');
   // display: two quadratics on the right edge.
-  assert.equal(((await d('display')).match(/ Q /g) || []).length, 2, 'display should have 2 right-edge quads');
+  assert.equal(((await d('display')).match(/ C /g) || []).length, 2, 'display should have 2 right-edge cubics (Q->C)');
   // internalStorage: vertical divider at dx=20, horizontal at dy=20.
   assert.match(await d('internalStorage'), /M 20 0 L 20 80 M 0 20 L 120 20/, 'internalStorage dividers at 20');
 });
@@ -1486,7 +1502,7 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
   // cube: outline starts at (0,0) and cuts the TOP-RIGHT corner (w-s,0)->(w,s); s=20.
   assert.match(await d('cube'), /^M 0 0 L 80 0 L 100 20 /, 'cube depth must be top-right');
   // delay: two right-edge quadratics.
-  assert.equal(((await d('delay')).match(/ Q /g) || []).length, 2, 'delay should have 2 right-edge quads');
+  assert.equal(((await d('delay')).match(/ C /g) || []).length, 2, 'delay should have 2 right-edge cubics (Q->C)');
   // offPage: shoulder at h - 0.375h = 80 - 30 = 50.
   assert.match(await d('offPageConnector'), /L 100 50 L 50 80 L 0 50 Z/, 'offPage shoulder at h-0.375h=50');
 });
@@ -1560,6 +1576,29 @@ test('parser: object/UserObject-wrapped cells render (id+label on the wrapper)',
   assert.match(all, /UserObj/, 'UserObject-wrapped cell label must render');
   // both shapes present (a rect path + an ellipse svg).
   assert.ok(contract.document.pages[0].paint.length >= 4, 'both wrapped shapes + labels present');
+});
+
+test('engine-compat: kind:path nodes use only engine-supported commands (no Q/S/T)', async () => {
+  // REGRESSION (PRODUCTION): the C++ engine path parser accepts only absolute
+  // M/L/H/V/C/A/Z. A kind:"path" node containing Q (quadratic) — or S/T — is
+  // rejected with "unsupported SVG path command", so the shape fails to PRINT
+  // even though resvg (the render gate) handles it. Every shapePath shape must
+  // emit engine-parseable path data (Q is converted to exact cubic C).
+  const shapes = ['dataStorage', 'document', 'tape', 'delay', 'display', 'cylinder',
+    'datastore', 'card', 'cube', 'cloud', 'callout', 'note', 'umlActor', 'actor'];
+  const offenders = [];
+  for (const sh of shapes) {
+    const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="L" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const n of contract.document.pages[0].paint) {
+      if (n.kind === 'path' && /[QSTqst]/.test(n.d || '')) offenders.push(`${sh}: ${n.d.slice(0, 50)}`);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `kind:path nodes with engine-unsupported commands (would fail to print): ${offenders.join('; ')}`);
 });
 
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
