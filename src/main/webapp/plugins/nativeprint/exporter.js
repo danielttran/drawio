@@ -5465,6 +5465,20 @@
         paint.push(isvg);
         return;
       }
+      // mxImageShape draws an imageBackground fill (+ imageBorder stroke) behind
+      // the image when set; the headless path dropped it silently. Prepend it.
+      if (isPaintable(style.imageBackground)) {
+        var ibR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        paint.push({ kind: 'path',
+          d: ibR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, ibR)
+                     : rectPath(box.x, box.y, box.w, box.h),
+          fill: solid(style.imageBackground, opacity(style, 'fillOpacity')),
+          stroke: isPaintable(style.imageBorder)
+            ? { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
+                width: number(style.strokeWidth, 1), cap: 'butt', join: 'miter',
+                miterLimit: 10, dash: null }
+            : null });
+      }
       // An external URL pre-resolved to a data URI (embedExternalImages) prints
       // its real pixels instead of a placeholder.
       var imgSrc = (resolved && typeof style.image === 'string' &&

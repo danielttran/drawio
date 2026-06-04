@@ -389,6 +389,21 @@ function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height
     undefined, { mode: 'B' });
 }
 
+test('image cell honors imageBackground / imageBorder (no silent drop)', () => {
+  // REGRESSION (C1): mxImageShape draws an imageBackground fill (+ imageBorder
+  // stroke) behind the image; the headless path dropped it.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
+  const style = { shape: 'image', image: 'data:image/png;base64,' + png,
+    imageBackground: '#ffffcc', imageBorder: '#ff0000' };
+  const p = oneVertexB(style).contract.document.pages[0].paint;
+  const bg = p.find((n) => n.kind === 'path' && n.fill && n.fill.color === '#ffffcc');
+  assert.ok(bg, 'imageBackground rect is drawn');
+  assert.ok(bg.stroke && bg.stroke.paint.color === '#ff0000', 'imageBorder strokes the background');
+  // background is painted BEFORE the image (so the image sits on top).
+  assert.ok(p.indexOf(bg) < p.findIndex((n) => n.kind === 'image' || n.kind === 'svg'),
+    'background is behind the image');
+});
+
 test('mxLabel (shape=label;image=) renders bg + small icon + text, not a full-cell image', () => {
   // REGRESSION (C1): shape=label;image= filled the whole cell with the stretched
   // image and dropped the background; mxLabel draws a small icon (imageWidth/
