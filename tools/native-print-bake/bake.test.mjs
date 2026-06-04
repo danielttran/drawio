@@ -1639,6 +1639,25 @@ test('edge: segmentEdgeStyle routes orthogonally; isometric is loudly noticed', 
     'isometric edge routing must be loudly noticed (never silent)');
 });
 
+test('edge: self-loop (source==target) renders a loop (not silently dropped)', async () => {
+  // REGRESSION (WYSIWYG): a self-loop edge collapsed to one point and was
+  // dropped entirely. drawio (mxEdgeStyle.Loop) routes a small loop off the
+  // shape side.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" value="S" vertex="1" parent="1"><mxGeometry x="100" y="100" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" value="loop" edge="1" source="a" target="a" style="endArrow=classic;rounded=0;" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null && n.stroke);
+  assert.ok(edge, 'self-loop must render an edge line (was dropped)');
+  assert.ok((edge.d.match(/[ML] /g) || []).length >= 4, `self-loop must be a multi-segment loop: ${edge.d}`);
+  // and the loop label + an arrowhead are present.
+  const all = contract.document.pages[0].paint;
+  assert.ok(all.some((n) => n.kind === 'svg' && /loop/.test(Buffer.from(n.source, 'base64').toString('utf8'))), 'loop label present');
+  assert.ok(all.some((n) => n.kind === 'path' && n.fill && /Z$/.test(n.d || '')), 'arrowhead present');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

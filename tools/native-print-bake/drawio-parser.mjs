@@ -403,6 +403,22 @@ function entityRelationRoute(s, t, style) {
   return [{ x: x0, y: y0 }, ...mid, { x: xe, y: ye }];
 }
 
+// Self-loop (source == target, no waypoints): drawio's mxEdgeStyle.Loop routes
+// a small loop off one side of the shape (default WEST direction -> right side,
+// seg = gridSize = 10, out by 2*seg). Without this the endpoints collapse to one
+// point and the edge is dropped entirely.
+function selfLoopRoute(box) {
+  const seg = 10;
+  const cy = box.y + box.height / 2;
+  const x = box.x + box.width + 2 * seg;
+  return [
+    { x: box.x + box.width, y: cy - seg },
+    { x, y: cy - seg },
+    { x, y: cy + seg },
+    { x: box.x + box.width, y: cy + seg }
+  ];
+}
+
 function edgePoints(cell, cells) {
   const g = cell.geometry;
   const { ax, ay } = absolutePos(cell, cells);
@@ -416,6 +432,11 @@ function edgePoints(cell, cells) {
   const targetCenter = targetBox
     ? { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 }
     : null;
+
+  // Self-loop: source and target are the same cell.
+  if (cell.source && cell.source === cell.target && waypoints.length === 0 && sourceBox) {
+    return selfLoopRoute(sourceBox);
+  }
 
   const out = waypoints.slice();
   if (!cell.source && g.sourcePoint) out.unshift({ x: g.sourcePoint.x + ax, y: g.sourcePoint.y + ay });
