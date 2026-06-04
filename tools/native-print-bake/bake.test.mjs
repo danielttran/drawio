@@ -1457,6 +1457,23 @@ test('shape: flowchart document/dataStorage/manualInput/loopLimit match drawio g
   assert.match(ll, /^M 20 0 L 100 0 L 120 16 /, `loopLimit must be a cut-corner hexagon: ${ll}`);
 });
 
+test('shape: tape/display/internalStorage match drawio geometry', async () => {
+  // REGRESSION (WYSIWYG): tape wave was 0.12h (drawio 0.4h, quadratic waves);
+  // display used one cubic (drawio two quadratics through w,h/2);
+  // internalStorage divider lines were at 10 (drawio dx/dy=20).
+  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const d = async (sh) => (await bake(mk(sh), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // tape: four quadratic waves total (2 top + 2 bottom).
+  assert.equal(((await d('tape')).match(/ Q /g) || []).length, 4, 'tape should have 4 wave quads');
+  // display: two quadratics on the right edge.
+  assert.equal(((await d('display')).match(/ Q /g) || []).length, 2, 'display should have 2 right-edge quads');
+  // internalStorage: vertical divider at dx=20, horizontal at dy=20.
+  assert.match(await d('internalStorage'), /M 20 0 L 20 80 M 0 20 L 120 20/, 'internalStorage dividers at 20');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

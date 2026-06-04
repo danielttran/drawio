@@ -2236,13 +2236,15 @@
       ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + r, y) + ' Z';
   }
 
-  function tapePath(x, y, w, h) {
-    var a = Math.min(h * 0.12, w * 0.08);
-    return 'M ' + p(x, y + a) +
-      ' C ' + p(x + w * 0.25, y - a) + ' ' + p(x + w * 0.75, y + 3 * a) + ' ' + p(x + w, y + a) +
-      ' L ' + p(x + w, y + h - a) +
-      ' C ' + p(x + w * 0.75, y + h + a) + ' ' + p(x + w * 0.25, y + h - 3 * a) + ' ' + p(x, y + h - a) +
-      ' Z';
+  function tapePath(x, y, w, h, dyIn) {
+    var dy = (dyIn == null) ? h * 0.4 : dyIn; // drawio TapeShape size default 0.4
+    // quadratic waves top and bottom (fy = 1.4), midlines at dy/2 and h-dy/2.
+    return 'M ' + p(x, y + dy / 2) +
+      ' Q ' + p(x + w / 4, y + dy * 1.4) + ' ' + p(x + w / 2, y + dy / 2) +
+      ' Q ' + p(x + w * 3 / 4, y - dy * 0.4) + ' ' + p(x + w, y + dy / 2) +
+      ' L ' + p(x + w, y + h - dy / 2) +
+      ' Q ' + p(x + w * 3 / 4, y + h - dy * 1.4) + ' ' + p(x + w / 2, y + h - dy / 2) +
+      ' Q ' + p(x + w / 4, y + h + dy * 0.4) + ' ' + p(x, y + h - dy / 2) + ' Z';
   }
 
   function cardPath(x, y, w, h, dx) {
@@ -2312,8 +2314,9 @@
     return 'M ' + p(x, y + h) + ' L ' + p(x, y + s) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h) + ' Z';
   }
 
-  function internalStoragePath(x, y, w, h) {
-    var dx = Math.min(w, 10), dy = Math.min(h, 10);
+  function internalStoragePath(x, y, w, h, dxIn, dyIn) {
+    var dx = (dxIn == null) ? Math.min(w, 20) : Math.min(w, dxIn); // drawio dx default 20
+    var dy = (dyIn == null) ? Math.min(h, 20) : Math.min(h, dyIn); // drawio dy default 20
     return rectPath(x, y, w, h) + ' M ' + p(x + dx, y) + ' L ' + p(x + dx, y + h) +
       ' M ' + p(x, y + dy) + ' L ' + p(x + w, y + dy);
   }
@@ -2358,11 +2361,14 @@
       ' L ' + p(l, b) + ' L ' + p(x, b) + ' Z';
   }
 
-  function displayPath(x, y, w, h) {
-    var dx = Math.min(w, h / 2), ss = Math.min(w - dx, w * 0.25);
-    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + ss, y) + ' L ' + p(x + w - dx, y) +
-      ' C ' + p(x + w, y) + ' ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
-      ' L ' + p(x + ss, y + h) + ' Z';
+  function displayPath(x, y, w, h, sIn) {
+    var dx = Math.min(w, h / 2);
+    var s = (sIn == null) ? Math.min(w - dx, w * 0.25) : Math.min(w - dx, sIn); // drawio size default 0.25
+    // right edge = two quadratics through (w, h/2) (drawio DisplayShape).
+    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + s, y) + ' L ' + p(x + w - dx, y) +
+      ' Q ' + p(x + w, y) + ' ' + p(x + w, y + h / 2) +
+      ' Q ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
+      ' L ' + p(x + s, y + h) + ' Z';
   }
 
   function delayPath(x, y, w, h) {
@@ -2411,18 +2417,18 @@
     if (shape === 'document') return documentPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.3))));
     if (shape === 'trapezoid') return trapezoidPath(x, y, w, h, shapeSize(style, w, 0.2, 0.5, 20, w * 0.5));
     if (shape === 'manualInput') return manualInputPath(x, y, w, h, Math.min(h, number(style.size, 30)));
-    if (shape === 'internalStorage') return internalStoragePath(x, y, w, h);
+    if (shape === 'internalStorage') return internalStoragePath(x, y, w, h, number(style.dx, 20), number(style.dy, 20));
     if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h);
     if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
     if (shape === 'doubleArrow') return doubleArrowPath(x, y, w, h);
     if (shape === 'cross') return crossPath(x, y, w, h);
-    if (shape === 'display') return displayPath(x, y, w, h);
+    if (shape === 'display') return displayPath(x, y, w, h, Math.max(0, number(style.size, 0.25)) * w);
     if (shape === 'delay') return delayPath(x, y, w, h);
     if (shape === 'loopLimit') return loopLimitPath(x, y, w, h, Math.min(w / 2, Math.min(h, number(style.size, 20))));
     if (shape === 'parallelogram') return parallelogramPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
     if (shape === 'step') return stepPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
     if (shape === 'callout') return calloutPath(x, y, w, h);
-    if (shape === 'tape') return tapePath(x, y, w, h);
+    if (shape === 'tape') return tapePath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.4))));
     if (shape === 'card') return cardPath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 30)))));
     if (shape === 'cube') return cubePath(x, y, w, h);
     if (shape === 'note' || shape === 'note2') return rectPath(x, y, w, h);
