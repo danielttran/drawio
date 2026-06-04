@@ -955,6 +955,28 @@
     return solid(style.fillColor, opacity(style, 'fillOpacity'));
   }
 
+  // Fill a sub-region rect (e.g. a swimlane header) with the cell's fillColor,
+  // emitting a faithful kind:'svg' linear-gradient node when gradientColor is
+  // set (so the gradient direction is preserved) instead of a structural
+  // gradient path (which loses direction -> GradientDirectionApprox). Returns
+  // null when there is no fill.
+  function regionFillNode(style, rbox) {
+    if (!isPaintable(style.fillColor)) return null;
+    if (isPaintable(style.gradientColor)) {
+      var gid = 'rg' + String(Math.random()).replace(/[^0-9]/g, '').slice(0, 9);
+      var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
+        hex(style.gradientColor), style.gradientDirection) + '</defs>' +
+        '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
+        '" fill="url(#' + gid + ')"/>';
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(rbox.w) +
+        '" height="' + fmt(rbox.h) + '">' + inner + '</svg>';
+      return { kind: 'svg', box: { x: rbox.x, y: rbox.y, w: rbox.w, h: rbox.h },
+        source: base64(svg), aspect: 'preserve' };
+    }
+    return { kind: 'path', d: rectPath(rbox.x, rbox.y, rbox.w, rbox.h),
+      fill: solid(style.fillColor, opacity(style, 'fillOpacity')), stroke: null };
+  }
+
   function strokeOf(style) {
     if (!isPaintable(style.strokeColor)) return null;
     return {
@@ -5888,8 +5910,11 @@
           ? solid(style.separatorColor, opacity(style, 'strokeOpacity')) : swStroke;
         var swR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
         if (swFill) {
-          paint.push({ kind: 'path', fill: swFill, stroke: null,
-            d: swH ? rectPath(box.x, box.y, box.w, swSz) : rectPath(box.x, box.y, swSz, box.h) });
+          // header fill (faithful gradient when gradientColor is set)
+          var swHB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
+                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swHN = regionFillNode(style, swHB);
+          if (swHN) paint.push(swHN);
         }
         if (swLane) {
           paint.push({ kind: 'path', fill: swLane, stroke: null,
