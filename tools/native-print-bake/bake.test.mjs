@@ -1543,6 +1543,25 @@ test('page: background colour prints behind content (white/none skipped)', async
     'white background -> no bg rect (paper already white)');
 });
 
+test('parser: object/UserObject-wrapped cells render (id+label on the wrapper)', async () => {
+  // REGRESSION (WYSIWYG): drawio wraps cells with metadata in
+  // <object id=.. label=..><mxCell .../></object> (or <UserObject>); the inner
+  // mxCell has no id, so the bake dropped the cell entirely. Now flattened.
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <object label="Wrapped &amp; Co" customAttr="x" id="2"><mxCell vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="120" height="40" as="geometry"/></mxCell></object>
+    <UserObject label="UserObj" id="3"><mxCell vertex="1" style="ellipse;" parent="1"><mxGeometry x="20" y="100" width="120" height="40" as="geometry"/></mxCell></UserObject>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const all = contract.document.pages[0].paint
+    .filter((n) => n.kind === 'svg')
+    .map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join('');
+  assert.match(all, /Wrapped &amp; Co/, 'object-wrapped cell label must render (entity preserved)');
+  assert.match(all, /UserObj/, 'UserObject-wrapped cell label must render');
+  // both shapes present (a rect path + an ellipse svg).
+  assert.ok(contract.document.pages[0].paint.length >= 4, 'both wrapped shapes + labels present');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

@@ -202,8 +202,29 @@ function extractAllModels(xml) {
   return [];
 }
 
+// drawio wraps cells that carry metadata (custom attributes, links, tooltips)
+// in <object ...><mxCell .../></object> (or <UserObject>): the id and the
+// display label live on the WRAPPER, not the inner mxCell. Flatten them so the
+// inner mxCell gets the wrapper's id + value (kept raw/encoded so the normal
+// attribute decode runs once). Without this, object-wrapped cells have no id
+// and are dropped entirely from the print.
+function flattenObjectWrappers(xml) {
+  return xml.replace(/<(object|UserObject)\b([^>]*?)>([\s\S]*?)<\/\1>/gi,
+    function (full, tag, rawAttrs, inner) {
+      const idM = /\bid\s*=\s*"([^"]*)"/i.exec(rawAttrs);
+      const lblM = /\blabel\s*=\s*"([^"]*)"/i.exec(rawAttrs);
+      const idRaw = idM ? idM[1] : '';
+      const lblRaw = lblM ? lblM[1] : '';
+      return inner.replace(/<mxCell\b([^>]*?)(\/?)>/i, function (cm, cattrs, sc) {
+        const clean = cattrs.replace(/\s+id\s*=\s*"[^"]*"/i, '').replace(/\s+value\s*=\s*"[^"]*"/i, '');
+        return '<mxCell id="' + idRaw + '" value="' + lblRaw + '"' + clean + (sc ? '/' : '') + '>';
+      });
+    });
+}
+
 // Parse all mxCell elements from within <root>...</root>.
 function parseCells(xml) {
+  xml = flattenObjectWrappers(xml);
   const cells = {};
 
   // Match each mxCell — self-closing or paired.
