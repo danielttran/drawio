@@ -2466,3 +2466,240 @@ test('autosizeText: auto-scales fontSize to fit bounds headlessly', () => {
   assert.ok(size > 1, 'font size should be greater than 1');
 });
 
+
+// ===========================================================================
+// COMPREHENSIVE WYSIWYG COVERAGE MATRICES
+//
+// Goal: validate the native (headless) print engine faithfully transcribes
+// EVERY object type and EVERY text-style configuration drawio can produce —
+// or raises a LOUD notice. These are browser-free structural assertions over
+// the baked contract (the SVG label nodes are decoded and inspected). Rich
+// HTML-label formatting (which needs the SVG/DOM shim) is covered in
+// tools/native-print-bake/bake.test.mjs; here we pin the plain-text styles,
+// the per-object geometry, and the loud-notice boundaries.
+// ===========================================================================
+
+// ---- TEXT STYLE MATRIX ----------------------------------------------------
+
+// drawio fontStyle is a bitmask: 1=bold, 2=italic, 4=underline, 8=strikethrough.
+// Every one of the 16 combinations must map to the exact SVG text attributes.
+test('text style: fontStyle bitmask 0..15 -> exact weight/italic/decoration', () => {
+  for (let fs = 0; fs < 16; fs++) {
+    const svg = decodeSvg(labelSvgNode(
+      oneVertex({ shape: 'rectangle', fontColor: '#000000', fontStyle: String(fs) }, 'T')
+        .contract.document.pages[0].paint));
+    const wantWeight = (fs & 1) ? '700' : '400';
+    assert.match(svg, new RegExp(`font-weight="${wantWeight}"`), `fs=${fs} weight`);
+    assert.equal(/font-style="italic"/.test(svg), !!(fs & 2), `fs=${fs} italic`);
+    const u = !!(fs & 4), s = !!(fs & 8);
+    const wantDeco = u && s ? 'underline line-through' : u ? 'underline' : s ? 'line-through' : null;
+    if (wantDeco) assert.match(svg, new RegExp(`text-decoration="${wantDeco}"`), `fs=${fs} deco`);
+    else assert.ok(!/text-decoration=/.test(svg), `fs=${fs} no decoration`);
+  }
+});
+
+test('text style: letterSpacing maps to the SVG letter-spacing attribute', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', letterSpacing: '5' }, 'Sp')
+      .contract.document.pages[0].paint));
+  assert.match(svg, /letter-spacing="5"/);
+  // absent letterSpacing -> no attribute (faithful default).
+  const svg0 = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'Sp')
+      .contract.document.pages[0].paint));
+  assert.ok(!/letter-spacing=/.test(svg0), 'no letter-spacing when unset');
+});
+
+test('text style: vertical text (horizontal=0) rotates the label -90 in place', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', horizontal: '0' }, 'Vert')
+      .contract.document.pages[0].paint));
+  assert.match(svg, /rotate\(-90 /, 'vertical label is rotated -90 about the box centre');
+  assert.match(svg, /dominant-baseline="central"/, 'vertical label centres on its baseline');
+  assert.ok(svg.includes('Vert'), 'text preserved');
+});
+
+test('text style: verticalLabelPosition places the label outside the shape', () => {
+  // shape box is (0,0,80,40); label below the shape must start at y=40.
+  const below = labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000',
+      verticalLabelPosition: 'bottom', verticalAlign: 'top' }, 'Below')
+      .contract.document.pages[0].paint);
+  assert.equal(below.box.y, 40, 'bottom label box sits at the shape bottom edge');
+  // label above the shape must end at y=0 (negative top).
+  const above = labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000',
+      verticalLabelPosition: 'top', verticalAlign: 'bottom' }, 'Above')
+      .contract.document.pages[0].paint);
+  assert.ok(above.box.y < 0, 'top label box sits above the shape');
+});
+
+test('text style: whiteSpace=wrap breaks a long label into multiple <text> lines', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', whiteSpace: 'wrap' },
+      'a long sentence that must wrap onto several lines inside this box')
+      .contract.document.pages[0].paint));
+  const lines = (svg.match(/<text\b/g) || []).length;
+  assert.ok(lines >= 2, `wrapped label emits multiple lines (got ${lines})`);
+});
+
+test('text style: fontFamily / fontSize / fontColor are carried verbatim', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontFamily: 'Georgia', fontSize: 19, fontColor: '#3366cc' }, 'F')
+      .contract.document.pages[0].paint));
+  assert.match(svg, /font-family="Georgia/, 'family preserved (with fallback chain)');
+  assert.match(svg, /font-size="19"/, 'size preserved');
+  assert.match(svg, /fill="#3366cc"/, 'color preserved');
+});
+
+test('text style: multiline label (\\n) emits one <text> per line', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'L1\nL2\nL3')
+      .contract.document.pages[0].paint));
+  assert.match(svg, /<text[^>]*>L1<\/text>/);
+  assert.match(svg, /<text[^>]*>L2<\/text>/);
+  assert.match(svg, /<text[^>]*>L3<\/text>/);
+});
+
+test('text style: align h x verticalAlign v positions the label (text-anchor)', () => {
+  const anchor = { left: 'start', center: 'middle', right: 'end' };
+  for (const h of ['left', 'center', 'right']) {
+    for (const v of ['top', 'middle', 'bottom']) {
+      const node = labelSvgNode(
+        oneVertex({ shape: 'rectangle', fontColor: '#000000', align: h, verticalAlign: v }, 'A')
+          .contract.document.pages[0].paint);
+      const svg = decodeSvg(node);
+      assert.match(svg, new RegExp(`text-anchor="${anchor[h]}"`), `h=${h}`);
+      // vertical alignment shifts the first line's y: top<middle<bottom.
+      assert.ok(node.box && typeof node.box.y === 'number', `v=${v} box`);
+    }
+  }
+});
+
+test('text style: textOpacity fades the whole label via group opacity', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', textOpacity: '40' }, 'Fade')
+      .contract.document.pages[0].paint));
+  assert.match(svg, /opacity="0\.4"/, 'label group carries textOpacity');
+});
+
+test('text style: labelBackgroundColor/labelBorderColor paint a box behind the label', () => {
+  const paint = oneVertex({ shape: 'rectangle', strokeColor: 'none', fillColor: 'none',
+    labelBackgroundColor: '#ffff00', labelBorderColor: '#ff0000' }, 'Boxed')
+    .contract.document.pages[0].paint;
+  const boxes = paint.filter((n) => n.kind === 'path' && (n.fill || n.stroke));
+  assert.ok(boxes.length >= 1, 'a label background/border box is emitted');
+  // the box(es) are painted BEFORE (behind) the label text node.
+  const lblIdx = paint.indexOf(labelSvgNode(paint));
+  assert.ok(paint.indexOf(boxes[0]) < lblIdx, 'box painted behind the text');
+});
+
+test('text style: unsupported text features are loudly noticed, never silent', () => {
+  for (const [style, rx] of [
+    [{ shape: 'rectangle', textShadow: '1' }, /textShadow/],
+    [{ shape: 'rectangle', indicatorShape: 'triangle' }, /indicator/],
+    [{ shape: 'rectangle', textDirection: 'rtl' }, /right-to-left/]
+  ]) {
+    const notices = oneVertex(style, 'T').notices;
+    assert.ok(notices.some((n) => rx.test((n.detail && n.detail.detail) || '')),
+      `loud notice for ${JSON.stringify(style)}`);
+  }
+});
+
+// ---- OBJECT TYPE MATRIX ---------------------------------------------------
+
+// Every built-in (browser-free) vertex shape must bake faithfully: a real
+// body node (path or svg), no spurious "unsupported" notice, schema-valid.
+const COVERAGE_BUILTIN_SHAPES = [
+  'rectangle', 'ellipse', 'rhombus', 'triangle', 'parallelogram', 'hexagon',
+  'trapezoid', 'step', 'tape', 'card', 'callout', 'cloud', 'cylinder',
+  'process', 'internalStorage', 'cube', 'note', 'actor', 'or', 'dataStorage',
+  'display', 'document', 'umlActor', 'swimlane', 'table', 'tableRow',
+  'partialRectangle', 'smileyFace', 'folder', 'component'
+];
+for (const shape of COVERAGE_BUILTIN_SHAPES) {
+  test(`object type: built-in shape "${shape}" bakes faithfully (no notice)`, () => {
+    const r = oneVertex({ shape, fillColor: '#eeeeee', strokeColor: '#333333' }, 'Lbl');
+    assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+      `${shape} must not raise ExporterUnsupportedShape`);
+    const paint = r.contract.document.pages[0].paint;
+    assert.ok(paint.some((n) => n.kind === 'path' || n.kind === 'svg'),
+      `${shape} emits a real body node`);
+    assertSchemaValid(r.contract, shape);
+  });
+}
+
+// Every standard edge marker must render faithfully; exotic ones stay loud.
+const COVERAGE_MARKERS_OK = ['classic', 'classicThin', 'block', 'blockThin',
+  'open', 'openThin', 'oval', 'diamond', 'diamondThin', 'dash', 'cross',
+  'circle', 'ERone', 'ERmandOne', 'ERmany', 'ERoneToMany', 'none'];
+const COVERAGE_MARKERS_LOUD = ['circlePlus', 'async', 'ERzeroToOne',
+  'ERzeroToMany', 'halfCircle', 'baseDash'];
+test('object type: standard edge markers render faithfully (no notice)', () => {
+  for (const m of COVERAGE_MARKERS_OK) {
+    const r = oneEdge({ strokeColor: '#000000', endArrow: m },
+      [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+    assert.ok(!r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+      `marker "${m}" must render faithfully`);
+    assertSchemaValid(r.contract, `marker ${m}`);
+  }
+});
+test('object type: exotic edge markers are loudly noticed (no silent drop)', () => {
+  for (const m of COVERAGE_MARKERS_LOUD) {
+    const r = oneEdge({ strokeColor: '#000000', endArrow: m },
+      [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+    assert.ok(r.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+      `marker "${m}" must be loudly noticed`);
+  }
+});
+
+// Gradient fills carry their direction inline (v1 contract has no direction
+// field) so the engine renders the correct axis for every direction.
+test('object type: gradient fill carries the correct axis for all 4 directions', () => {
+  const want = { south: '0,0,0,1', north: '0,1,0,0', east: '0,0,1,0', west: '1,0,0,0' };
+  for (const [dir, axis] of Object.entries(want)) {
+    const p = oneVertex({ shape: 'rectangle', fillColor: '#ff0000',
+      gradientColor: '#0000ff', gradientDirection: dir }, '')
+      .contract.document.pages[0].paint;
+    assert.equal(p[0].kind, 'svg', `${dir} gradient is kind:svg`);
+    const svg = decodeSvg(p[0]);
+    assert.match(svg, /<linearGradient/, `${dir} has a linearGradient`);
+    assert.match(svg, /stop-color="#ff0000"/, `${dir} start stop`);
+    assert.match(svg, /stop-color="#0000ff"/, `${dir} end stop`);
+    const m = /x1="([^"]*)" y1="([^"]*)" x2="([^"]*)" y2="([^"]*)"/.exec(svg);
+    assert.equal(m.slice(1).join(','), axis, `${dir} gradient axis`);
+  }
+});
+
+// Each top-level object type maps to the expected contract node kind.
+test('object type: shape/text/image/gradient/sketch/edge map to expected node kinds', () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const kind = (r) => r.contract.document.pages[0].paint[0].kind;
+  assert.equal(kind(oneVertex({ shape: 'rectangle', fillColor: '#eee', strokeColor: '#333' })), 'path', 'plain shape -> path');
+  assert.equal(kind(oneVertex({ shape: 'text', fillColor: 'none', strokeColor: 'none' }, 'P')), 'svg', 'text-only -> svg label');
+  assert.equal(kind(oneVertex({ shape: 'image', image: 'data:image/png;base64,' + PNG })), 'image', 'image -> image node');
+  assert.equal(kind(oneVertex({ shape: 'rectangle', fillColor: '#f00', gradientColor: '#00f' })), 'svg', 'gradient -> svg');
+  assert.equal(kind(oneVertex({ shape: 'rectangle', fillColor: '#f00', sketch: '1', fillStyle: 'hachure' })), 'svg', 'sketch -> svg');
+  assert.equal(kind(oneEdge({ strokeColor: '#000' }, [{ x: 0, y: 0 }, { x: 50, y: 0 }])), 'path', 'edge -> path');
+});
+
+// Cross-cutting WYSIWYG: every labelled object type carries its own label text.
+test('object type: every object type carries its label verbatim (no silent drop)', () => {
+  const cases = [
+    ['rectangle shape', oneVertex({ shape: 'rectangle', strokeColor: '#000' }, 'ShapeLbl')],
+    ['ellipse shape', oneVertex({ shape: 'ellipse', strokeColor: '#000' }, 'EllLbl')],
+    ['text-only', oneVertex({ shape: 'text', fillColor: 'none', strokeColor: 'none' }, 'TextLbl')],
+    ['swimlane', oneVertex({ shape: 'swimlane', fillColor: '#fff', strokeColor: '#000' }, 'LaneLbl')],
+    ['edge', oneEdge({ strokeColor: '#000' }, [{ x: 0, y: 0 }, { x: 100, y: 0 }], 'EdgeLbl', { x: 50, y: 0 })]
+  ];
+  for (const [name, r, ] of cases) {
+    const want = name === 'rectangle shape' ? 'ShapeLbl'
+      : name === 'ellipse shape' ? 'EllLbl'
+      : name === 'text-only' ? 'TextLbl'
+      : name === 'swimlane' ? 'LaneLbl' : 'EdgeLbl';
+    const paint = r.contract.document.pages[0].paint;
+    const carried = paint.some((n) => n.kind === 'svg' && decodeSvg(n).includes(want));
+    assert.ok(carried, `${name} carries its label "${want}"`);
+    assertSchemaValid(r.contract, name);
+  }
+});
