@@ -5136,6 +5136,14 @@
       : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
           h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
 
+    // Page background colour (File > Page Setup) prints behind all content as a
+    // full-page filled rect. Skipped for white (paper is already white) / none.
+    var pgBg = paper && paper.background;
+    if (isPaintable(pgBg) && hex(pgBg).toLowerCase() !== '#ffffff') {
+      paint.push({ kind: 'path', d: rectPath(0, 0, page.w, page.h),
+        fill: solid(pgBg, 1), stroke: null });
+    }
+
     // WYSIWYG paint order = mxGraph z-order. The model's `cells` dict is keyed
     // by id (creation order); "Send to Back" / "Bring to Front" reorder a
     // cell's parent.children[] WITHOUT changing the dict. Iterating the dict

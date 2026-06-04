@@ -1524,6 +1524,25 @@ test('visibility: hidden layers and hidden cells do not print', async () => {
   assert.doesNotMatch(all, /HiddenCell/, 'a hidden cell must NOT print');
 });
 
+test('page: background colour prints behind content (white/none skipped)', async () => {
+  // REGRESSION (WYSIWYG): a page background colour (File > Page Setup) was not
+  // printed. Now emitted as a full-page rect behind all content; white/none
+  // are skipped (paper is already white).
+  const mk = (bg) => `<mxGraphModel pageWidth="200" pageHeight="120" background="${bg}"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const first = async (bg) => (await bake(mk(bg), { keepPx: true })).contract.document.pages[0].paint[0];
+  const c = await first('#ffeecc');
+  assert.ok(c.kind === 'path' && c.fill && c.fill.color === '#ffeecc' && /^M 0 0 L 200 0/.test(c.d),
+    'colored background must be a full-page rect first');
+  const n = await first('none');
+  assert.ok(!(n.kind === 'path' && n.fill && /^M 0 0 L 200 0/.test(n.d)), 'background=none -> no bg rect');
+  const wh = await first('#ffffff');
+  assert.ok(!(wh.kind === 'path' && wh.fill && wh.fill.color === '#ffffff' && /^M 0 0 L 200 0/.test(wh.d)),
+    'white background -> no bg rect (paper already white)');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

@@ -469,6 +469,10 @@ function parseModel(modelXml) {
   const paper = (pageW > 0 && pageH > 0)
     ? { wPx: pageW, hPx: pageH }
     : { wPx: Math.max(1, bounds.width), hPx: Math.max(1, bounds.height) };
+  // Page background colour (File > Page Setup) prints behind all content.
+  if (modelAttrs.background && modelAttrs.background !== 'none') {
+    paper.background = modelAttrs.background;
+  }
 
   return { cells, modelAttrs, paper };
 }
