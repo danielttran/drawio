@@ -1,5 +1,16 @@
 #!/usr/bin/env node
 // Screenshot the drawio editor rendering of test.drawio using Playwright.
+//
+// ⚠️  MANUAL DEBUG TOOL ONLY — NOT part of the native-print guarantee.
+// This launches a real browser (Playwright/Chromium) purely so a HUMAN can
+// eyeball what the editor draws. Per docs/CLAUDE.md C2 (NON-NEGOTIABLE), a
+// browser — and screenshot diffing in particular — is FORBIDDEN for the
+// WYSIWYG guarantee, verification, or any automated test. Do NOT import this
+// from bake.mjs, the exporter, or any *.test.* file, and do NOT build a
+// pixel/screenshot comparison oracle on top of it. The fidelity guarantee is
+// proven browser-free: by construction (the bake transcribes drawio's rendered
+// SVG) + structural invariants in the Node/C++ harness + the real-engine
+// round-trip + the resvg render-gate (opaque-pixel presence, never a ref diff).
 import { chromium } from 'playwright';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
