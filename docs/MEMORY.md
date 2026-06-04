@@ -914,3 +914,46 @@ by nothing; C2 holds.
 **Green on this box:** exporter 192, bake 152, production-audit 86 shapes +
 8910 stencils zero notices, render-gate, C++ ctest 172/172. Engine sweeps: all
 19 fixtures + 86 registered shapes + 8910 stencils → PreviewResult, zero notices.
+
+---
+
+## UPDATE 2026-06-04 (removed the browser/live-DOM render path — headless-only)
+
+Per owner directive ("the headless needs to be WYSIWYG so the browser is not
+needed"), the old **mode A** browser/live-DOM render strategy was removed; the
+exporter is now **headless-only** (what production — `nativeprint.js`, `bake.mjs`,
+`render-one`, `render-dpi` — always used via `headless:true`/`mode:'B'`). There
+is no longer an A/B `mode` flag; do not reintroduce "Path A/B" terminology.
+
+- **Deleted from `exporter.js`** (~1530 lines): the `mode` switch and the
+  live-DOM functions `svgCellNode`, `harvestShape`, `harvestMatrix`,
+  `transcribeForeignObjects` + their exclusive helpers (`elementPaint`,
+  `transformPath`/`transformArc`, `resolveGradient`, `primitiveToD`, `attrNum`,
+  `imageHref`, `serializeEl`, `collectDefs`, `xmlEsc`, `findForeignObjects`,
+  `fontRun`, `bgRect`, `textRunSvg`, `firstWordRect`, the CSS gradient/border
+  helpers `splitTopLevel`/`gradientLineFromAngle`/`cssGradientDefAndFill`/
+  `backgroundImageSvg`/`borderDash`/`borderStrokeAttrs`/`bevelSideColor`/
+  `borderSide`/`borderRect`/`pushListMarkerApprox`, `addFontFallback`,
+  `resolveCssColorFns`). Also removed the now-dead structural-label cluster
+  `textNode`/`richContent`/`resolveRichContentRoot`/`mergeAdjacentRichRuns`/
+  `richTextEnabled` (the mode-A `kind:'text'` label representation — production
+  always emits `kind:'svg'` labels via `textSvgNode`/`renderRichLabel`). Kept
+  shared helpers: `shadeHex`, `colorParts`, `embedImageHrefs`, `decodeUtf8B64`,
+  `plainLabel`, `parseImage`, etc.
+- **`labelTextNode`** collapsed to always build the SVG label node; the gradient
+  and `shape=label;image=` branches are now unconditional (they were mode-B-only).
+- **`exporter.test.mjs`** migrated to the headless reality: deleted the live-DOM
+  transcription / harvest / `AnimatedSvgFrozen` / structural-rich-extraction /
+  fallback-`GradientDirectionApprox` tests (those internals no longer exist), and
+  rewrote the label/gradient tests to decode the `kind:'svg'` source instead of
+  asserting `kind:'text'`/structural-fill. The WYSIWYG-invariant test keeps its
+  per-object strictness (each labelled cell carries its verbatim text in its own
+  svg label node).
+- **Docs** (`docs/CLAUDE.md` §3/§5, `plugins/nativeprint/CLAUDE.md` §3) updated:
+  the WYSIWYG guarantee now holds by the **headless re-derivation** (faithful
+  render or loud notice), enforced by browser-free structural invariants — NOT by
+  harvesting drawio's rendered SVG. §2 (no browser, ever) is unchanged.
+
+**Green on this box:** exporter `node --test` 148 pass / 1 skip (engine-binary
+test, no .exe on this box) / 0 fail; production `bake.test` 152/152. `exporter.js`
+6392 → 4861 lines. No change to production output (bake.test unchanged proves it).
