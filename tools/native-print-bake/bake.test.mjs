@@ -1474,6 +1474,23 @@ test('shape: tape/display/internalStorage match drawio geometry', async () => {
   assert.match(await d('internalStorage'), /M 20 0 L 20 80 M 0 20 L 120 20/, 'internalStorage dividers at 20');
 });
 
+test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
+  // REGRESSION (WYSIWYG): cube had the 3D depth in the WRONG direction
+  // (top-left vs drawio top-right); delay used one cubic (drawio two
+  // quadratics); offPageConnector shoulder was 0.65h (drawio h - 0.375h).
+  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const d = async (sh) => (await bake(mk(sh), { keepPx: true })).contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // cube: outline starts at (0,0) and cuts the TOP-RIGHT corner (w-s,0)->(w,s); s=20.
+  assert.match(await d('cube'), /^M 0 0 L 80 0 L 100 20 /, 'cube depth must be top-right');
+  // delay: two right-edge quadratics.
+  assert.equal(((await d('delay')).match(/ Q /g) || []).length, 2, 'delay should have 2 right-edge quads');
+  // offPage: shoulder at h - 0.375h = 80 - 30 = 50.
+  assert.match(await d('offPageConnector'), /L 100 50 L 50 80 L 0 50 Z/, 'offPage shoulder at h-0.375h=50');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');

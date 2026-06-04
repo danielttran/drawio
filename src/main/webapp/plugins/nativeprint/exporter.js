@@ -2254,14 +2254,14 @@
       p(x, y + h) + ' Z';
   }
 
-  function cubePath(x, y, w, h) {
-    var dx = Math.min(w * 0.22, h * 0.22);
-    return 'M ' + p(x, y + dx) + ' L ' + p(x + dx, y) + ' L ' +
-      p(x + w, y) + ' L ' + p(x + w, y + h - dx) + ' L ' +
-      p(x + w - dx, y + h) + ' L ' + p(x, y + h) + ' Z' +
-      ' M ' + p(x, y + dx) + ' L ' + p(x + w - dx, y + dx) +
-      ' L ' + p(x + w, y) + ' M ' + p(x + w - dx, y + dx) +
-      ' L ' + p(x + w - dx, y + h);
+  function cubePath(x, y, w, h, sIn) {
+    // drawio CubeShape: depth toward the TOP-RIGHT (size default 20, abs). The
+    // bake previously cut the wrong corners (top-left), drawing a mirrored cube.
+    var s = (sIn == null) ? Math.min(w, Math.min(h, 20)) : sIn;
+    return 'M ' + p(x, y) + ' L ' + p(x + w - s, y) + ' L ' + p(x + w, y + s) +
+      ' L ' + p(x + w, y + h) + ' L ' + p(x + s, y + h) + ' L ' + p(x, y + h - s) + ' Z' +
+      ' M ' + p(x + w, y + s) + ' L ' + p(x + s, y + s) + ' L ' + p(x, y) +
+      ' M ' + p(x + s, y + s) + ' L ' + p(x + s, y + h);
   }
 
   function trapezoidPath(x, y, w, h, dx) {
@@ -2330,9 +2330,11 @@
       ' Q ' + p(x - s, y + h / 2) + ' ' + p(x + s, y) + ' Z';
   }
 
-  function offPageConnectorPath(x, y, w, h) {
-    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h * 0.65) +
-      ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h * 0.65) + ' Z';
+  function offPageConnectorPath(x, y, w, h, sIn) {
+    // drawio OffPageConnectorShape: shoulder at h - s, s = h*(size||3/8).
+    var s = (sIn == null) ? h * 0.375 : sIn;
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h - s) +
+      ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h - s) + ' Z';
   }
 
   function singleArrowPath(x, y, w, h) {
@@ -2372,9 +2374,11 @@
   }
 
   function delayPath(x, y, w, h) {
+    // drawio DelayShape: right edge = two quadratics through (w, h/2).
     var dx = Math.min(w, h / 2);
     return 'M ' + p(x, y) + ' L ' + p(x + w - dx, y) +
-      ' C ' + p(x + w, y) + ' ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
+      ' Q ' + p(x + w, y) + ' ' + p(x + w, y + h / 2) +
+      ' Q ' + p(x + w, y + h) + ' ' + p(x + w - dx, y + h) +
       ' L ' + p(x, y + h) + ' Z';
   }
 
@@ -2418,7 +2422,7 @@
     if (shape === 'trapezoid') return trapezoidPath(x, y, w, h, shapeSize(style, w, 0.2, 0.5, 20, w * 0.5));
     if (shape === 'manualInput') return manualInputPath(x, y, w, h, Math.min(h, number(style.size, 30)));
     if (shape === 'internalStorage') return internalStoragePath(x, y, w, h, number(style.dx, 20), number(style.dy, 20));
-    if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h);
+    if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.375))));
     if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
     if (shape === 'doubleArrow') return doubleArrowPath(x, y, w, h);
     if (shape === 'cross') return crossPath(x, y, w, h);
@@ -2430,7 +2434,7 @@
     if (shape === 'callout') return calloutPath(x, y, w, h);
     if (shape === 'tape') return tapePath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.4))));
     if (shape === 'card') return cardPath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 30)))));
-    if (shape === 'cube') return cubePath(x, y, w, h);
+    if (shape === 'cube') return cubePath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 20)))));
     if (shape === 'note' || shape === 'note2') return rectPath(x, y, w, h);
     if (shape === 'cylinder2' || shape === 'cylinder3') return cylinderPath(x, y, w, h);
     if (shape === 'umlState') return roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12);
