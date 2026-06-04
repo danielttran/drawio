@@ -389,6 +389,27 @@ function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height
     undefined, { mode: 'B' });
 }
 
+test('swimlane fills only the header; body uses swimlaneFillColor (default transparent)', () => {
+  // REGRESSION (C1): the body was filled with fillColor across the whole shape;
+  // drawio fills only the header (fillColor) and the body with swimlaneFillColor
+  // (default none). swimlaneLine=0 must omit the separator.
+  const fills = (style) => oneVertexB(style, 'Lane')
+    .contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const def = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', startSize: '30' });
+  const filledNodes = def.filter((n) => n.fill && n.fill.color === '#dae8fc');
+  assert.equal(filledNodes.length, 1, 'exactly one header fill node');
+  // header fill node height must equal startSize (30), not the full cell height.
+  const ys = (filledNodes[0].d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number).filter((_, i) => i % 2 === 1);
+  assert.ok(Math.max(...ys) - Math.min(...ys) <= 30.01, 'header fill is only startSize tall, not full height');
+  // a default swimlane has a separator line; swimlaneLine=0 removes it.
+  const withLine = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000' });
+  const noLine = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', swimlaneLine: '0' });
+  assert.ok(withLine.length > noLine.length, 'swimlaneLine=0 must omit the separator line');
+  // swimlaneFillColor fills the body.
+  const bodyFilled = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', swimlaneFillColor: '#ffffcc' });
+  assert.ok(bodyFilled.some((n) => n.fill && n.fill.color === '#ffffcc'), 'swimlaneFillColor fills the body');
+});
+
 test('textOpacity is applied to labels (no silent divergence)', () => {
   // REGRESSION (C1): drawio STYLE_TEXT_OPACITY made the label translucent; the
   // exporter had ZERO references to textOpacity, so it printed fully opaque.

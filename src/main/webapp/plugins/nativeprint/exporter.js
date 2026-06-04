@@ -5784,6 +5784,49 @@
         return;
       }
 
+      // Swimlane (mxSwimlane): the HEADER is filled with fillColor and the BODY
+      // with swimlaneFillColor (default none = transparent) — previously the
+      // whole shape was filled with fillColor, silently filling the body. The
+      // separator line honors swimlaneLine (default on) / separatorColor. The
+      // title sits in the header. (Rotated swimlanes fall through to the generic
+      // path, which is an extremely rare combination.)
+      if (style.shape === 'swimlane' && !number(style.rotation, 0)) {
+        var swH = String(style.horizontal) !== '0';
+        var swSz = Math.min(Math.max(0, number(style.startSize, 30)), swH ? box.h : box.w);
+        var swStroke = strokeOf(style);
+        var swFill = fillOf(style);                 // header fill (null if none)
+        var swLane = isPaintable(style.swimlaneFillColor)
+          ? solid(style.swimlaneFillColor, opacity(style, 'fillOpacity')) : null;
+        var swSep = isPaintable(style.separatorColor)
+          ? solid(style.separatorColor, opacity(style, 'strokeOpacity')) : swStroke;
+        var swR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        if (swFill) {
+          paint.push({ kind: 'path', fill: swFill, stroke: null,
+            d: swH ? rectPath(box.x, box.y, box.w, swSz) : rectPath(box.x, box.y, swSz, box.h) });
+        }
+        if (swLane) {
+          paint.push({ kind: 'path', fill: swLane, stroke: null,
+            d: swH ? rectPath(box.x, box.y + swSz, box.w, box.h - swSz)
+                   : rectPath(box.x + swSz, box.y, box.w - swSz, box.h) });
+        }
+        paint.push({ kind: 'path', fill: null, stroke: swStroke,
+          d: swR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, swR)
+                     : rectPath(box.x, box.y, box.w, box.h) });
+        if (String(style.swimlaneLine) !== '0') {
+          paint.push({ kind: 'path', fill: null, stroke: swSep,
+            d: swH ? ('M ' + p(box.x, box.y + swSz) + ' L ' + p(box.x + box.w, box.y + swSz))
+                   : ('M ' + p(box.x + swSz, box.y) + ' L ' + p(box.x + swSz, box.y + box.h)) });
+        }
+        if (label !== '') {
+          var swLB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
+                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swLBn = labelBoxNode(style, swLB);
+          if (swLBn) paint.push(swLBn);
+          paint.push(labelTextNode(graph, cell, state, style, swLB, label, notices, mode, resolved));
+        }
+        return;
+      }
+
       // flipH/flipV mirror the shape geometry; direction (N/S/E/W) rotates it
       // like drawio's getShapeRotation() (+90 south, +180 west, +270 north),
       // with the paint bounds inverted for N/S (mxShape.isPaintBoundsInverted).
