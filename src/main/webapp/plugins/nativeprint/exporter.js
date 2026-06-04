@@ -2169,6 +2169,63 @@
       ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + r, y) + ' Z';
   }
 
+  // Faithful port of mxGraph mxShape.addPoints (close=true polygon path): emits
+  // straight edges with quadratic-rounded corners exactly as drawio draws a
+  // rounded polygon, so a rounded rhombus/triangle/etc. prints WYSIWYG. With
+  // arcSize<=0 it degrades to the sharp "M..L..Z" form (byte-identical to the
+  // plain polygon paths). Verified equal to drawio's own geometry by the
+  // tools/wysiwyg-oracle differential oracle.
+  function roundedPoly(pts, arcSize, close) {
+    if (pts == null || pts.length === 0) return '';
+    close = (close == null) ? true : close;
+    var pe = pts[pts.length - 1];
+    if (close && arcSize > 0) {
+      pts = pts.slice();
+      var p0 = pts[0];
+      pts.unshift({ x: pe.x + (p0.x - pe.x) / 2, y: pe.y + (p0.y - pe.y) / 2 });
+    }
+    var mod = function (n, m) { return ((n % m) + m) % m; };
+    var pt = pts[0], i = 1, d = ['M ' + p(pt.x, pt.y)];
+    while (i < (close ? pts.length : pts.length - 1)) {
+      var tmp = pts[mod(i, pts.length)];
+      var dx = pt.x - tmp.x, dy = pt.y - tmp.y;
+      if (arcSize > 0 && (dx !== 0 || dy !== 0)) {
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        var nx1 = dx * Math.min(arcSize, dist / 2) / dist;
+        var ny1 = dy * Math.min(arcSize, dist / 2) / dist;
+        d.push('L ' + p(tmp.x + nx1, tmp.y + ny1));
+        var next = pts[mod(i + 1, pts.length)];
+        while (i < pts.length - 2 && Math.round(next.x - tmp.x) === 0 && Math.round(next.y - tmp.y) === 0) {
+          next = pts[mod(i + 2, pts.length)]; i++;
+        }
+        dx = next.x - tmp.x; dy = next.y - tmp.y;
+        dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        var nx2 = dx * Math.min(arcSize, dist / 2) / dist;
+        var ny2 = dy * Math.min(arcSize, dist / 2) / dist;
+        var x2 = tmp.x + nx2, y2 = tmp.y + ny2;
+        d.push('Q ' + p(tmp.x, tmp.y) + ' ' + p(x2, y2));
+        tmp = { x: x2, y: y2 };
+      } else {
+        d.push('L ' + p(tmp.x, tmp.y));
+      }
+      pt = tmp; i++;
+    }
+    d.push(close ? 'Z' : ('L ' + p(pe.x, pe.y)));
+    return d.join(' ');
+  }
+
+  // drawio rounded-corner arc size for polygon shapes: STYLE_ARCSIZE (default
+  // LINE_ARCSIZE=20) halved, exactly as mxShape passes to addPoints.
+  function polyArcSize(style) {
+    return boolish(style.rounded) ? number(style.arcSize, 20) / 2 : 0;
+  }
+
+  // Common sharp-cornered polygon shapes drawio rounds via mxShape.addPoints
+  // but the headless bake still renders square. rhombus/triangle round
+  // faithfully (oracle-verified) and are NOT listed; these emit a loud notice
+  // when rounded=1 so a rounded setting is never a silent divergence.
+  var ROUNDED_NOT_YET = { hexagon: 1, parallelogram: 1, step: 1, trapezoid: 1 };
+
   function ellipsePath(x, y, w, h) {
     var rx = w / 2, ry = h / 2, cx = x + rx, cy = y + ry;
     return 'M ' + p(cx - rx, cy) +
@@ -2498,8 +2555,17 @@
   function shapePathImpl(style, x, y, w, h) {
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
-    if (shape === 'rhombus' || shape === 'diamond') return rhombusPath(x, y, w, h);
-    if (shape === 'triangle') return trianglePath(x, y, w, h);
+    if (shape === 'rhombus' || shape === 'diamond') {
+      if (boolish(style.rounded)) return roundedPoly([{ x: x + w / 2, y: y },
+        { x: x + w, y: y + h / 2 }, { x: x + w / 2, y: y + h }, { x: x, y: y + h / 2 }],
+        polyArcSize(style), true);
+      return rhombusPath(x, y, w, h);
+    }
+    if (shape === 'triangle') {
+      if (boolish(style.rounded)) return roundedPoly([{ x: x, y: y },
+        { x: x + w, y: y + h / 2 }, { x: x, y: y + h }], polyArcSize(style), true);
+      return trianglePath(x, y, w, h);
+    }
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
     if (shape === 'hexagon') return hexagonPath(x, y, w, h, shapeSize(style, w, 0.25, 1, 20, w * 0.5));
@@ -3988,6 +4054,17 @@
     if (String(style.textDirection || '').toLowerCase() === 'rtl') {
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
+    }
+    // LOUD-OR-FAITHFUL for rounded corners: rhombus/triangle round faithfully
+    // (verified by the differential oracle); these other sharp-cornered
+    // polygons are not yet rounded headlessly, so a rounded=1 setting would
+    // print square — never silently. (Rectangles round via roundedRectPath;
+    // ellipse/curved shapes have no corners to round.)
+    if (boolish(style.rounded) && ROUNDED_NOT_YET[style.shape]) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'rounded corners on "' + style.shape + '" are printed with square ' +
+        'corners (rounded-polygon rendering not yet implemented for this shape).',
+        cell.id));
     }
 
     // Edge child-label cell (multi-label edge): position along the parent edge.
