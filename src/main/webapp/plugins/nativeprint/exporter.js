@@ -963,7 +963,7 @@
   function regionFillNode(style, rbox) {
     if (!isPaintable(style.fillColor)) return null;
     if (isPaintable(style.gradientColor)) {
-      var gid = 'rg' + String(Math.random()).replace(/[^0-9]/g, '').slice(0, 9);
+      var gid = 'r' + stableGradId(style.fillColor, style.gradientColor);
       var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
         hex(style.gradientColor), style.gradientDirection) + '</defs>' +
         '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
@@ -5906,32 +5906,67 @@
         var swFill = fillOf(style);                 // header fill (null if none)
         var swLane = isPaintable(style.swimlaneFillColor)
           ? solid(style.swimlaneFillColor, opacity(style, 'fillOpacity')) : null;
-        var swSep = isPaintable(style.separatorColor)
-          ? solid(style.separatorColor, opacity(style, 'strokeOpacity')) : swStroke;
+        var swHead = String(style.swimlaneHead) !== '0';   // default 1
+        var swBody = String(style.swimlaneBody) !== '0';   // default 1
         var swR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        var bx = box.x, by = box.y, bw = box.w, bh = box.h;
+        // header fill (faithful gradient when gradientColor is set)
         if (swFill) {
-          // header fill (faithful gradient when gradientColor is set)
-          var swHB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
-                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swHB = swH ? { x: bx, y: by, w: bw, h: swSz }
+                         : { x: bx, y: by, w: swSz, h: bh };
           var swHN = regionFillNode(style, swHB);
           if (swHN) paint.push(swHN);
         }
+        // body fill (swimlaneFillColor; default none = transparent)
         if (swLane) {
           paint.push({ kind: 'path', fill: swLane, stroke: null,
-            d: swH ? rectPath(box.x, box.y + swSz, box.w, box.h - swSz)
-                   : rectPath(box.x + swSz, box.y, box.w - swSz, box.h) });
+            d: swH ? rectPath(bx, by + swSz, bw, bh - swSz)
+                   : rectPath(bx + swSz, by, bw - swSz, bh) });
         }
-        paint.push({ kind: 'path', fill: null, stroke: swStroke,
-          d: swR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, swR)
-                     : rectPath(box.x, box.y, box.w, box.h) });
-        if (String(style.swimlaneLine) !== '0') {
-          paint.push({ kind: 'path', fill: null, stroke: swSep,
-            d: swH ? ('M ' + p(box.x, box.y + swSz) + ' L ' + p(box.x + box.w, box.y + swSz))
-                   : ('M ' + p(box.x + swSz, box.y) + ' L ' + p(box.x + swSz, box.y + box.h)) });
+        // Border: drawio strokes the header on 3 sides (gated swimlaneHead) and
+        // the body on 3 sides (gated swimlaneBody); together they form the outer
+        // box. Rounded swimlanes use a single rounded outer border.
+        if (swStroke) {
+          if (swR > 0) {
+            paint.push({ kind: 'path', fill: null, stroke: swStroke,
+              d: roundedRectPath(bx, by, bw, bh, swR) });
+          } else {
+            if (swHead) {
+              paint.push({ kind: 'path', fill: null, stroke: swStroke,
+                d: swH ? 'M ' + p(bx, by + swSz) + ' L ' + p(bx, by) + ' L ' + p(bx + bw, by) + ' L ' + p(bx + bw, by + swSz)
+                       : 'M ' + p(bx + swSz, by) + ' L ' + p(bx, by) + ' L ' + p(bx, by + bh) + ' L ' + p(bx + swSz, by + bh) });
+            }
+            if (swBody) {
+              paint.push({ kind: 'path', fill: null, stroke: swStroke,
+                d: swH ? 'M ' + p(bx, by + swSz) + ' L ' + p(bx, by + bh) + ' L ' + p(bx + bw, by + bh) + ' L ' + p(bx + bw, by + swSz)
+                       : 'M ' + p(bx + swSz, by) + ' L ' + p(bx + bw, by) + ' L ' + p(bx + bw, by + bh) + ' L ' + p(bx + swSz, by + bh) });
+            }
+          }
+        }
+        // Divider line between header and body (drawio mxSwimlane.paintDivider):
+        // drawn in the STROKE colour, solid, gated on swimlaneLine (default on).
+        if (String(style.swimlaneLine) !== '0' && swStroke) {
+          paint.push({ kind: 'path', fill: null, stroke: swStroke,
+            d: swH ? ('M ' + p(bx, by + swSz) + ' L ' + p(bx + bw, by + swSz))
+                   : ('M ' + p(bx + swSz, by) + ' L ' + p(bx + swSz, by + bh)) });
+        }
+        // Separator (drawio mxSwimlane.paintSeparator): a SEPARATE dashed line in
+        // separatorColor at the far edge of the body, only when set. The divider
+        // bug previously used separatorColor for the divider and dropped this.
+        if (isPaintable(style.separatorColor)) {
+          var sepStroke = {
+            paint: solid(style.separatorColor, opacity(style, 'strokeOpacity')),
+            width: Math.max(0.1, number(style.strokeWidth, 1)),
+            cap: 'butt', join: 'miter', miterLimit: 10,
+            dash: dashPattern({ dashPattern: '3 3', strokeWidth: style.strokeWidth, fixDash: style.fixDash })
+          };
+          paint.push({ kind: 'path', fill: null, stroke: sepStroke,
+            d: swH ? ('M ' + p(bx + bw, by + swSz) + ' L ' + p(bx + bw, by + bh))
+                   : ('M ' + p(bx + swSz, by) + ' L ' + p(bx + bw, by)) });
         }
         if (label !== '') {
-          var swLB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
-                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swLB = swH ? { x: bx, y: by, w: bw, h: swSz }
+                         : { x: bx, y: by, w: swSz, h: bh };
           var swLBn = labelBoxNode(style, swLB);
           if (swLBn) paint.push(swLBn);
           paint.push(labelTextNode(graph, cell, state, style, swLB, label, notices, mode, resolved));

@@ -484,6 +484,35 @@ test('swimlane fills only the header; body uses swimlaneFillColor (default trans
   assert.ok(bodyFilled.some((n) => n.fill && n.fill.color === '#ffffcc'), 'swimlaneFillColor fills the body');
 });
 
+test('swimlane separatorColor emits a valid dashed stroke (not a bare paint)', () => {
+  // REGRESSION (BLOCKING/C1): separatorColor was assigned a solid() paint object
+  // to a node's stroke field, producing an engine-invalid contract that baked
+  // with zero notices and hard-failed at the engine. The separator is now a
+  // SEPARATE dashed line (drawio mxSwimlane.paintSeparator) with a proper stroke.
+  const p = oneVertexB({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#6c8ebf',
+    separatorColor: '#ff0000' }, 'Pool').contract.document.pages[0].paint;
+  const sep = p.find((n) => n.kind === 'path' && n.stroke && n.stroke.paint &&
+    n.stroke.paint.color === '#ff0000');
+  assert.ok(sep, 'a separator stroke in separatorColor is emitted');
+  assert.ok(sep.stroke.paint.type === 'solid' && typeof sep.stroke.width === 'number' &&
+    typeof sep.stroke.cap === 'string', 'separator stroke is a full descriptor, not a bare paint');
+  assert.ok(Array.isArray(sep.stroke.dash) && sep.stroke.dash.length > 0, 'separator is dashed');
+  // the divider (header/body line) stays in the STROKE color, not separatorColor.
+  const divider = p.find((n) => n.kind === 'path' && n.stroke && n.stroke.paint &&
+    n.stroke.paint.color === '#6c8ebf' && /^M [\d.]+ [\d.]+ L [\d.]+ [\d.]+$/.test(n.d) && n.stroke.dash === null);
+  assert.ok(divider, 'divider line uses the stroke color (solid), not separatorColor');
+});
+
+test('swimlaneHead=0 / swimlaneBody=0 suppress the header/body border', () => {
+  const border = (style) => oneVertexB({ shape: 'swimlane', fillColor: '#fff', strokeColor: '#000', ...style }, 'L')
+    .contract.document.pages[0].paint.filter((n) => n.kind === 'path' && n.fill === null && n.stroke && n.stroke.dash === null);
+  const full = border({});
+  const noHead = border({ swimlaneHead: '0' });
+  const noBody = border({ swimlaneBody: '0' });
+  assert.ok(noHead.length < full.length, 'swimlaneHead=0 drops the header border path');
+  assert.ok(noBody.length < full.length, 'swimlaneBody=0 drops the body border path');
+});
+
 test('textOpacity is applied to labels (no silent divergence)', () => {
   // REGRESSION (C1): drawio STYLE_TEXT_OPACITY made the label translucent; the
   // exporter had ZERO references to textOpacity, so it printed fully opaque.
