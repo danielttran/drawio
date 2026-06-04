@@ -32,6 +32,18 @@
     }
   }
 
+  // When a shape is direction-rotated and the gradient is baked into the path
+  // coordinates (not a group transform), the gradient axis must rotate with the
+  // shape too. drawio direction adds south=+90, west=+180, north=+270 (CW).
+  function rotateGradDir(gd, deg) {
+    if (!deg) return gd;
+    var ang = { east: 0, south: 90, west: 180, north: 270 };
+    var inv = { 0: 'east', 90: 'south', 180: 'west', 270: 'north' };
+    var base = ang[String(gd || 'south').toLowerCase()];
+    if (base == null) return gd;
+    return inv[((base + deg) % 360 + 360) % 360];
+  }
+
   // Build a <linearGradient> definition string with correct direction.
   function linearGradDef(id, c1, c2, dir) {
     var v = gradientVector(dir);
@@ -943,6 +955,28 @@
     return solid(style.fillColor, opacity(style, 'fillOpacity'));
   }
 
+  // Fill a sub-region rect (e.g. a swimlane header) with the cell's fillColor,
+  // emitting a faithful kind:'svg' linear-gradient node when gradientColor is
+  // set (so the gradient direction is preserved) instead of a structural
+  // gradient path (which loses direction -> GradientDirectionApprox). Returns
+  // null when there is no fill.
+  function regionFillNode(style, rbox) {
+    if (!isPaintable(style.fillColor)) return null;
+    if (isPaintable(style.gradientColor)) {
+      var gid = 'rg' + String(Math.random()).replace(/[^0-9]/g, '').slice(0, 9);
+      var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
+        hex(style.gradientColor), style.gradientDirection) + '</defs>' +
+        '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
+        '" fill="url(#' + gid + ')"/>';
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(rbox.w) +
+        '" height="' + fmt(rbox.h) + '">' + inner + '</svg>';
+      return { kind: 'svg', box: { x: rbox.x, y: rbox.y, w: rbox.w, h: rbox.h },
+        source: base64(svg), aspect: 'preserve' };
+    }
+    return { kind: 'path', d: rectPath(rbox.x, rbox.y, rbox.w, rbox.h),
+      fill: solid(style.fillColor, opacity(style, 'fillOpacity')), stroke: null };
+  }
+
   function strokeOf(style) {
     if (!isPaintable(style.strokeColor)) return null;
     return {
@@ -1070,11 +1104,17 @@
     var fsVal = number(style.fontStyle, 0);
     var isBold = !!(fsVal & 1);
     var isItalic = !!(fsVal & 2);
+    var deco = [];
+    if (fsVal & 4) deco.push('underline');
+    if (fsVal & 8) deco.push('line-through');
+    var topac = number(style.textOpacity, 100) / 100;
     var attrs = ' text-anchor="middle" dominant-baseline="central"' +
       ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
       ' fill="' + fc + '"' +
+      (topac < 1 ? ' fill-opacity="' + fmt(topac) + '"' : '') +
       (isBold ? ' font-weight="bold"' : '') +
-      (isItalic ? ' font-style="italic"' : '');
+      (isItalic ? ' font-style="italic"' : '') +
+      (deco.length ? ' text-decoration="' + deco.join(' ') + '"' : '');
     var lines = label.split('\n');
     if (lines.length === 1) {
       return '<text x="' + fmt(cx) + '" y="' + fmt(cy) + '"' + attrs + '>' +
@@ -1141,11 +1181,14 @@
   // spacingLeft=52 printed flush-left instead of indented.
   function labelPads(style) {
     var base = (style && style.shape === 'text') ? 0 : number(style && style.spacing, 2);
+    // labelPadding (STYLE_LABEL_PADDING) is a uniform inset added to every side
+    // of the label bounds; previously ignored, so a padded label printed flush.
+    var lp = number(style && style.labelPadding, 0);
     return {
-      l: base + number(style && style.spacingLeft, 0),
-      r: base + number(style && style.spacingRight, 0),
-      t: base + number(style && style.spacingTop, 0),
-      b: base + number(style && style.spacingBottom, 0)
+      l: base + lp + number(style && style.spacingLeft, 0),
+      r: base + lp + number(style && style.spacingRight, 0),
+      t: base + lp + number(style && style.spacingTop, 0),
+      b: base + lp + number(style && style.spacingBottom, 0)
     };
   }
 
@@ -1853,6 +1896,10 @@
     var pads = labelPads(style);
     var pl = pads.l, pr = pads.r, pt = pads.t, pb = pads.b;
     var letterSp = number(style.letterSpacing, 0); // drawio letterSpacing (CSS letter-spacing)
+    // drawio STYLE_TEXT_OPACITY: the whole label is drawn at this opacity.
+    // Applied as a group opacity so every run/decoration fades uniformly.
+    var topac = number(style.textOpacity, 100) / 100;
+    var gOpacityAttr = topac < 1 ? ' opacity="' + fmt(topac) + '"' : '';
     var clipId = 'txt' + String(cell && cell.id || Math.random()).replace(/[^a-z0-9]/gi, '');
 
     // HTML label -> faithful per-run rich-text renderer (colour / family / size
@@ -1887,7 +1934,7 @@
         ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
         '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
         '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + richEls +
+        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + richEls +
         '</g></svg>';
       return { kind: 'svg', box: box, source: base64(richSvg), aspect: 'preserve' };
     }
@@ -1954,6 +2001,7 @@
         ' font-size="' + fmt(Math.max(1, number(style.fontSize, 12))) +
         '" font-weight="' + (((fst & 1) ? 700 : 400)) + '"' +
         ((fst & 2) ? ' font-style="italic"' : '') +
+        (decoration.length ? ' text-decoration="' + decoration.join(' ') + '"' : '') +
         ' fill="' + color +
         '" text-anchor="middle" dominant-baseline="central" xml:space="preserve">' +
         escXml(String(label || stripHtml(raw))) + '</text></g>';
@@ -1962,15 +2010,19 @@
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
       '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
       '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')">' + textEls +
+      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + textEls +
       '</g></svg>';
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
   function labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved) {
-    return mode === 'B'
-      ? textSvgNode(graph, cell, style, box, label, notices, resolved)
-      : textNode(graph, cell, state, style, box, label, notices);
+    // The frozen kind:'text' node carries no text-opacity field, so a label with
+    // drawio's textOpacity<100 is routed through the svg label builder (which
+    // fades via group opacity) even on the live-DOM path — faithful in both
+    // modes with no contract-schema change.
+    if (mode === 'B' || number(style.textOpacity, 100) < 100)
+      return textSvgNode(graph, cell, style, box, label, notices, resolved);
+    return textNode(graph, cell, state, style, box, label, notices);
   }
 
   function p(x, y) {
@@ -2050,6 +2102,52 @@
     return out.join(' ');
   }
 
+  // Rotate a path's geometry by `deg` (exact for the 90/180/270 multiples used
+  // by drawio's direction= handling) around (cx,cy). Mirrors flipPathD's token
+  // walk. H/V become L (a horizontal segment is no longer horizontal once
+  // rotated); arc x-axis-rotation gains `deg`; sweep/large-arc flags are
+  // preserved (pure rotation keeps orientation).
+  function rotatePathD(d, cx, cy, deg) {
+    deg = ((deg % 360) + 360) % 360;
+    if (deg === 0) return d;
+    var rad = deg * Math.PI / 180;
+    var cos = Math.round(Math.cos(rad)), sin = Math.round(Math.sin(rad));
+    var RX = function (x, y) { return cx + (x - cx) * cos - (y - cy) * sin; };
+    var RY = function (x, y) { return cy + (x - cx) * sin + (y - cy) * cos; };
+    var toks = String(d).match(/[a-zA-Z]|-?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+    var out = [], i = 0, cmd = '', curX = 0, curY = 0, startX = 0, startY = 0;
+    var num = function () { return parseFloat(toks[i++]); };
+    while (i < toks.length) {
+      if (/[a-zA-Z]/.test(toks[i])) { cmd = toks[i++]; }
+      var C = cmd.toUpperCase(), x, y;
+      if (C === 'M' || C === 'L' || C === 'T') {
+        x = num(); y = num();
+        out.push(C, fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y; if (C === 'M') { startX = x; startY = y; }
+      } else if (C === 'C') {
+        var x1 = num(), y1 = num(), x2 = num(), y2 = num(); x = num(); y = num();
+        out.push('C', fmt(RX(x1, y1)), fmt(RY(x1, y1)),
+          fmt(RX(x2, y2)), fmt(RY(x2, y2)), fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'Q' || C === 'S') {
+        var qx = num(), qy = num(); x = num(); y = num();
+        out.push(C, fmt(RX(qx, qy)), fmt(RY(qx, qy)), fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'H') {
+        x = num(); y = curY; out.push('L', fmt(RX(x, y)), fmt(RY(x, y))); curX = x;
+      } else if (C === 'V') {
+        y = num(); x = curX; out.push('L', fmt(RX(x, y)), fmt(RY(x, y))); curY = y;
+      } else if (C === 'A') {
+        var rx = num(), ry = num(), xr = num(), laf = num(), sf = num();
+        x = num(); y = num();
+        out.push('A', fmt(rx), fmt(ry), fmt((xr + deg) % 360), fmt(laf), fmt(sf),
+          fmt(RX(x, y)), fmt(RY(x, y)));
+        curX = x; curY = y;
+      } else if (C === 'Z') { out.push('Z'); curX = startX; curY = startY; }
+    }
+    return out.join(' ');
+  }
+
   // Rounded-rectangle corner radius, matching drawio mxRectangleShape.
   // Relative (default): f = arcSize/100 (default RECTANGLE_ROUNDING_FACTOR*100
   // = 15), r = min(w,h)*f. Absolute (absoluteArcSize=1): r = min(w/2, h/2,
@@ -2124,14 +2222,11 @@
       ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h / 2) + ' Z';
   }
 
-  function trianglePath(x, y, w, h, dir) {
-    if (dir === 'south') return 'M ' + p(x, y) + ' L ' + p(x + w, y) +
-      ' L ' + p(x + w / 2, y + h) + ' Z';
-    if (dir === 'east') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h / 2) +
-      ' L ' + p(x, y + h) + ' Z';
-    if (dir === 'west') return 'M ' + p(x + w, y) + ' L ' + p(x, y + h / 2) +
-      ' L ' + p(x + w, y + h) + ' Z';
-    return 'M ' + p(x + w / 2, y) + ' L ' + p(x + w, y + h) +
+  // drawio mxTriangle.redrawPath draws the default (east) triangle
+  // (0,0)->(w,h/2)->(0,h); direction= rotation is applied generically by the
+  // caller's outlinePath (mxShape.getShapeRotation), so this never branches.
+  function trianglePath(x, y, w, h) {
+    return 'M ' + p(x, y) + ' L ' + p(x + w, y + h / 2) +
       ' L ' + p(x, y + h) + ' Z';
   }
 
@@ -2445,7 +2540,7 @@
     var shape = style.shape || 'rectangle';
     if (shape === 'ellipse') return ellipsePath(x, y, w, h);
     if (shape === 'rhombus' || shape === 'diamond') return rhombusPath(x, y, w, h);
-    if (shape === 'triangle') return trianglePath(x, y, w, h, style.direction);
+    if (shape === 'triangle') return trianglePath(x, y, w, h);
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
     if (shape === 'hexagon') return hexagonPath(x, y, w, h, shapeSize(style, w, 0.25, 1, 20, w * 0.5));
@@ -2847,13 +2942,19 @@
   // faithfully and emits a LOUD notice for the genuinely-unsupported ones
   // (drawing the closest approximation so the operator still sees a marker).
   // Returns a paint node ({kind:'path', d, fill, stroke}) or null.
-  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices) {
+  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices, filled) {
     var dx = to.x - from.x, dy = to.y - from.y;
     var len = Math.sqrt(dx * dx + dy * dy);
     if (len <= 0.001) return null;
     var ux = dx / len, uy = dy / len, px = -uy, py = ux;
     var base = { x: to.x - ux * size, y: to.y - uy * size };
     var t = String(type).replace(/Thin$/, '');
+    // drawio endFill/startFill: a filled marker (classic/block/diamond/oval/box)
+    // is fillAndStroke when filled, but a plain stroked OUTLINE (transparent
+    // inside) when endFill/startFill=0. Previously always filled -> a hollow
+    // arrowhead silently printed solid. `filled` defaults true (endFill!='0').
+    var fillIf = (filled === false) ? null : arrowFill;
+    var strokeIf = (filled === false) ? stroke : null;
     // Open V (stroked, not filled).
     if (t === 'open' || t === 'openAsync') {
       return { kind: 'path', d: openArrowPath(from, to, size), fill: null, stroke: stroke };
@@ -2861,7 +2962,7 @@
     // Filled triangle: classic (notched back) and block (flat back). We render
     // both as a flat-back triangle — visually equivalent at print marker sizes.
     if (t === 'classic' || t === 'block' || t === '') {
-      return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
+      return { kind: 'path', d: arrowPath(from, to, size), fill: fillIf, stroke: strokeIf };
     }
     // Filled rhombus.
     if (t === 'diamond') {
@@ -2870,7 +2971,7 @@
         ' L ' + p(dm.x + px * size * 0.5, dm.y + py * size * 0.5) +
         ' L ' + p(base.x, base.y) +
         ' L ' + p(dm.x - px * size * 0.5, dm.y - py * size * 0.5) + ' Z';
-      return { kind: 'path', d: dd, fill: arrowFill, stroke: null };
+      return { kind: 'path', d: dd, fill: fillIf, stroke: strokeIf };
     }
     // Circle/ellipse, centered half a marker back from the tip. circle = hollow.
     if (t === 'oval' || t === 'circle' || t === 'circlePlus') {
@@ -2878,7 +2979,7 @@
       var cd = 'M ' + p(c.x - r, c.y) +
         ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x + r) + ' ' + fmt(c.y) +
         ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x - r) + ' ' + fmt(c.y) + ' Z';
-      var hollow = (t === 'circle' || t === 'circlePlus');
+      var hollow = (t === 'circle' || t === 'circlePlus' || filled === false);
       var node = { kind: 'path', d: cd, fill: hollow ? null : arrowFill,
         stroke: hollow ? stroke : null };
       if (t === 'circlePlus') {
@@ -2894,11 +2995,64 @@
         ' L ' + p(to.x - px * size * 0.45, to.y - py * size * 0.45) +
         ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45) +
         ' L ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' Z';
-      return { kind: 'path', d: bd, fill: arrowFill, stroke: null };
+      return { kind: 'path', d: bd, fill: fillIf, stroke: strokeIf };
     }
-    // Genuinely unsupported (async half-arrow, ER crow's-foot family, cross,
-    // dash, halfCircle, …): loud notice + classic-triangle placeholder so the
-    // edge still terminates visibly. NEVER a silent wrong marker.
+    // Stroked-line markers (dash, cross) and the ER crow's-foot family are
+    // rendered faithfully here, matching drawio's mxMarker formulas exactly
+    // (Q = unitX*(size+sw+1), Ca = unitY*(size+sw+1); unit vector points at the
+    // tip). These are pure stroked lines/feet — no edge-line recession — so a
+    // multi-segment stencil is returned as an array of stroked path nodes.
+    var sw = (stroke && stroke.width) || 1;
+    var g = size + sw + 1;
+    var qx = ux * g, qy = uy * g;      // Q  (x-projection) and Ca (y-projection)
+    function line(x0, y0, x1, y1) {
+      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1),
+        fill: null, stroke: stroke };
+    }
+    function poly3(x0, y0, x1, y1, x2, y2) {
+      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1) +
+        ' L ' + p(x2, y2), fill: null, stroke: stroke };
+    }
+    if (t === 'dash') {
+      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2);
+    }
+    if (t === 'cross') {
+      return [
+        line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+          to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2),
+        line(to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2,
+          to.x - qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 + qx / 2)
+      ];
+    }
+    if (t === 'ERone') {
+      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2);
+    }
+    if (t === 'ERmany') {
+      return poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
+        to.x - qy / 2, to.y + qx / 2);
+    }
+    if (t === 'ERmandOne') {
+      return [
+        line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+          to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2),
+        line(to.x - qx - qy / 2, to.y - qy + qx / 2,
+          to.x - qx + qy / 2, to.y - qy - qx / 2)
+      ];
+    }
+    if (t === 'ERoneToMany') {
+      return [
+        line(to.x - qx - qy / 2, to.y - qy + qx / 2,
+          to.x - qx + qy / 2, to.y - qy - qx / 2),
+        poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
+          to.x - qy / 2, to.y + qx / 2)
+      ];
+    }
+    // Genuinely unsupported (async half-arrow, ER zero-to-* with endpoint
+    // recession, halfCircle curve, sysML glyphs, …): loud notice + classic-
+    // triangle placeholder so the edge still terminates visibly. NEVER a
+    // silent wrong marker.
     if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
       'edge marker "' + type + '" approximated as a classic arrowhead', cellId));
     return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
@@ -5284,8 +5438,66 @@
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
 
+    // C1: a handful of genuinely-rare visual style properties are not yet
+    // rendered (text drop-shadow, indicator sub-shapes/icons, RTL text). Emit a
+    // LOUD notice when one is actually set so it is never a SILENT divergence.
+    if (boolish(style.textShadow)) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'textShadow is not rendered (text drawn without its drop shadow).', cell.id));
+    }
+    if (isPaintable(style.indicatorShape) || style.indicatorShape ||
+        (typeof style.indicatorImage === 'string' && style.indicatorImage !== '')) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'indicator shape/image "' + (style.indicatorShape || style.indicatorImage) +
+        '" is not rendered.', cell.id));
+    }
+    if (String(style.textDirection || '').toLowerCase() === 'rtl') {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'right-to-left textDirection is not applied to the label.', cell.id));
+    }
+
     // Edge child-label cell (multi-label edge): position along the parent edge.
     if (emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, mode, resolved, label)) {
+      return;
+    }
+
+    // mxLabel with an image: a background rect + a SMALL icon (imageWidth/
+    // imageHeight, positioned by imageAlign/imageVerticalAlign per
+    // mxLabel.getImageBounds) + the text label. The headless path treated
+    // shape=label;image= as a plain image cell, filling the whole cell with the
+    // stretched image and dropping the background/text layout — a silent
+    // divergence. Mode A transcribes the real SVG (more faithful), so this only
+    // applies headless.
+    if (mode === 'B' && style.shape === 'label' &&
+        typeof style.image === 'string' && style.image !== '') {
+      var lblR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
+        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
+                    : rectPath(box.x, box.y, box.w, box.h) });
+      var liw = number(style.imageWidth, 24), lih = number(style.imageHeight, 24);
+      var lsp = number(style.spacing, 2) + 5;            // mxLabel: spacing + 5
+      var lia = style.imageAlign || 'left', liv = style.imageVerticalAlign || 'middle';
+      var liBox = {
+        x: box.x + (lia === 'center' ? (box.w - liw) / 2 : lia === 'right' ? box.w - liw - lsp : lsp),
+        y: box.y + (liv === 'top' ? lsp : liv === 'bottom' ? box.h - lih - lsp : (box.h - lih) / 2),
+        w: liw, h: lih
+      };
+      var lImgSrc = (resolved && resolved[style.image]) || style.image;
+      var lImg = parseImage(lImgSrc);
+      var lMime = embeddableImageMime(lImg);
+      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg));
+      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style));
+      else {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'label image could not be embedded — placeholder box printed.', cell.id));
+        paint.push({ kind: 'path', d: rectPath(liBox.x, liBox.y, liBox.w, liBox.h),
+          fill: null, stroke: strokeOf(style) });
+      }
+      if (label !== '') {
+        var lblBxN = labelBoxNode(style, box);
+        if (lblBxN) paint.push(lblBxN);
+        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, mode, resolved));
+      }
       return;
     }
 
@@ -5307,6 +5519,20 @@
         } catch (e) { /* keep transcribed source as-is */ }
         paint.push(isvg);
         return;
+      }
+      // mxImageShape draws an imageBackground fill (+ imageBorder stroke) behind
+      // the image when set; the headless path dropped it silently. Prepend it.
+      if (isPaintable(style.imageBackground)) {
+        var ibR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        paint.push({ kind: 'path',
+          d: ibR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, ibR)
+                     : rectPath(box.x, box.y, box.w, box.h),
+          fill: solid(style.imageBackground, opacity(style, 'fillOpacity')),
+          stroke: isPaintable(style.imageBorder)
+            ? { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
+                width: number(style.strokeWidth, 1), cap: 'butt', join: 'miter',
+                miterLimit: 10, dash: null }
+            : null });
       }
       // An external URL pre-resolved to a data URI (embedExternalImages) prints
       // its real pixels instead of a placeholder.
@@ -5584,6 +5810,22 @@
         builtinContent += tableGridLines(graph, cell, style, box.w, box.h);
       }
       if (builtinContent !== null) {
+        // direction= (N/S/E/W) rotates a multi-element shape like drawio's
+        // getShapeRotation (+90 S, +180 W, +270 N); N/S also invert the paint
+        // bounds. Bake it into the content (keeping the box.w x box.h viewport)
+        // so the rotation/plain branches and label positioning below are
+        // unchanged. Previously direction was silently ignored for these shapes.
+        var dirBI = String(style.direction || 'east').toLowerCase();
+        var dirDegBI = dirBI === 'south' ? 90 : dirBI === 'west' ? 180 : dirBI === 'north' ? 270 : 0;
+        if (dirDegBI) {
+          var dirInvBI = (dirBI === 'north' || dirBI === 'south');
+          var pwBI0 = dirInvBI ? box.h : box.w, phBI0 = dirInvBI ? box.w : box.h;
+          var rawBI = dirInvBI ? builtinShapeSvg(style, pwBI0, phBI0) : builtinContent;
+          builtinContent = '<g transform="rotate(' + fmt(dirDegBI) + ' ' +
+            fmt(box.w / 2) + ' ' + fmt(box.h / 2) + ') translate(' +
+            fmt((box.w - pwBI0) / 2) + ' ' + fmt((box.h - phBI0) / 2) + ')">' +
+            rawBI + '</g>';
+        }
         var rotDegBI = number(style.rotation, 0);
         if (rotDegBI) {
           var thetaBI = rotDegBI * Math.PI / 180;
@@ -5651,20 +5893,78 @@
         return;
       }
 
-      var d = shapePath(style, box.x, box.y, box.w, box.h);
+      // Swimlane (mxSwimlane): the HEADER is filled with fillColor and the BODY
+      // with swimlaneFillColor (default none = transparent) — previously the
+      // whole shape was filled with fillColor, silently filling the body. The
+      // separator line honors swimlaneLine (default on) / separatorColor. The
+      // title sits in the header. (Rotated swimlanes fall through to the generic
+      // path, which is an extremely rare combination.)
+      if (style.shape === 'swimlane' && !number(style.rotation, 0)) {
+        var swH = String(style.horizontal) !== '0';
+        var swSz = Math.min(Math.max(0, number(style.startSize, 30)), swH ? box.h : box.w);
+        var swStroke = strokeOf(style);
+        var swFill = fillOf(style);                 // header fill (null if none)
+        var swLane = isPaintable(style.swimlaneFillColor)
+          ? solid(style.swimlaneFillColor, opacity(style, 'fillOpacity')) : null;
+        var swSep = isPaintable(style.separatorColor)
+          ? solid(style.separatorColor, opacity(style, 'strokeOpacity')) : swStroke;
+        var swR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        if (swFill) {
+          // header fill (faithful gradient when gradientColor is set)
+          var swHB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
+                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swHN = regionFillNode(style, swHB);
+          if (swHN) paint.push(swHN);
+        }
+        if (swLane) {
+          paint.push({ kind: 'path', fill: swLane, stroke: null,
+            d: swH ? rectPath(box.x, box.y + swSz, box.w, box.h - swSz)
+                   : rectPath(box.x + swSz, box.y, box.w - swSz, box.h) });
+        }
+        paint.push({ kind: 'path', fill: null, stroke: swStroke,
+          d: swR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, swR)
+                     : rectPath(box.x, box.y, box.w, box.h) });
+        if (String(style.swimlaneLine) !== '0') {
+          paint.push({ kind: 'path', fill: null, stroke: swSep,
+            d: swH ? ('M ' + p(box.x, box.y + swSz) + ' L ' + p(box.x + box.w, box.y + swSz))
+                   : ('M ' + p(box.x + swSz, box.y) + ' L ' + p(box.x + swSz, box.y + box.h)) });
+        }
+        if (label !== '') {
+          var swLB = swH ? { x: box.x, y: box.y, w: box.w, h: swSz }
+                         : { x: box.x, y: box.y, w: swSz, h: box.h };
+          var swLBn = labelBoxNode(style, swLB);
+          if (swLBn) paint.push(swLBn);
+          paint.push(labelTextNode(graph, cell, state, style, swLB, label, notices, mode, resolved));
+        }
+        return;
+      }
+
+      // flipH/flipV mirror the shape geometry; direction (N/S/E/W) rotates it
+      // like drawio's getShapeRotation() (+90 south, +180 west, +270 north),
+      // with the paint bounds inverted for N/S (mxShape.isPaintBoundsInverted).
+      // The label stays upright (drawio flips/direction-rotates the SHAPE only).
+      // outlinePath builds the fully-transformed outline for a given cell box,
+      // matching c.rotate(getShapeRotation, flipH, flipV, cx, cy): draw in the
+      // (inverted) paint bounds, mirror, then rotate — all about the centre.
+      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
+      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
+      var dir = String(style.direction || 'east').toLowerCase();
+      var dirDeg = dir === 'south' ? 90 : dir === 'west' ? 180 : dir === 'north' ? 270 : 0;
+      var dirInv = (dir === 'north' || dir === 'south');
+      function outlinePath(ox, oy, w, h) {
+        var ccx = ox + w / 2, ccy = oy + h / 2;
+        var pw = dirInv ? h : w, ph = dirInv ? w : h;
+        var pd = shapePath(style, ccx - pw / 2, ccy - ph / 2, pw, ph);
+        if (!pd) return null;
+        if (flipH_ || flipV_) pd = flipPathD(pd, ccx, ccy, flipH_, flipV_);
+        if (dirDeg) pd = rotatePathD(pd, ccx, ccy, dirDeg);
+        return pd;
+      }
+      var d = outlinePath(box.x, box.y, box.w, box.h);
       if (!d) {
         d = rectPath(box.x, box.y, box.w, box.h);
         notices.push(degradation('ExporterUnsupportedShape',
           'Unsupported shape "' + style.shape + '" exported as bounding box.', cell.id));
-      }
-      // flipH/flipV mirror the shape geometry (label stays upright, per drawio).
-      // Stencils flip on their own path; built-in shapePath shapes did not.
-      // Applied to the non-rotated path here (and to the relative paths used by
-      // the sketch/gradient svg branches below).
-      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
-      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
-      if (!number(style.rotation, 0) && (flipH_ || flipV_)) {
-        d = flipPathD(d, box.x + box.w / 2, box.y + box.h / 2, flipH_, flipV_);
       }
 
       // Rotated shape (headless): construct a kind:'svg' node so both the shape
@@ -5685,7 +5985,10 @@
         // Rotation centre = midpoint of expanded viewport
         var rcx = expW / 2;
         var rcy = expH / 2;
-        var relD = shapePath(style, offX, offY, box.w, box.h) ||
+        // outlinePath bakes flip + direction into the path; the outer rotate()
+        // below adds the style rotation. The label is rotated by the style
+        // rotation only (direction/flip never rotate the label).
+        var relD = outlinePath(offX, offY, box.w, box.h) ||
                    rectPath(offX, offY, box.w, box.h);
         // Linear gradient defs (left-to-right in rotated frame; more accurate
         // than the path fallback since direction rotates with the shape).
@@ -5693,18 +5996,10 @@
         var gradId = '';
         if (isPaintable(style.gradientColor)) {
           gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
-        // flipH/flipV mirror the SHAPE within its (rotated) frame; the label is
-        // NOT flipped (drawio applies flip then rotation, label stays upright).
-        if (flipH_ || flipV_) {
-          var fsx = flipH_ ? -1 : 1, fsy = flipV_ ? -1 : 1;
-          var fcx = offX + box.w / 2, fcy = offY + box.h / 2;
-          pathEl = '<g transform="translate(' + fmt(fcx) + ' ' + fmt(fcy) + ') scale(' +
-            fsx + ' ' + fsy + ') translate(' + fmt(-fcx) + ' ' + fmt(-fcy) + ')">' + pathEl + '</g>';
-        }
         var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
         var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
           pathEl + textEl + '</g>';
@@ -5726,7 +6021,7 @@
         var gsp = shadowParams(style);
         paint.push({
           kind: 'path',
-          d: shapePath(style, box.x + gsp.dx, box.y + gsp.dy, box.w, box.h) ||
+          d: outlinePath(box.x + gsp.dx, box.y + gsp.dy, box.w, box.h) ||
              rectPath(box.x + gsp.dx, box.y + gsp.dy, box.w, box.h),
           fill: solid(gsp.color, gsp.alpha),
           stroke: null
@@ -5740,8 +6035,7 @@
       if (boolish(style.sketch) && isPaintable(style.fillColor)) {
         var skFs = style.fillStyle || 'hachure';
         if (skFs === 'hachure' || skFs === 'cross-hatch' || skFs === 'dots') {
-          var skRelD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-          if (!number(style.rotation, 0) && (flipH_ || flipV_)) skRelD = flipPathD(skRelD, box.w / 2, box.h / 2, flipH_, flipV_);
+          var skRelD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
           paint.push(paddedSvgShapeNode(sketchFillSvg(style, skRelD, box.w, box.h),
             { x: box.x, y: box.y, w: box.w, h: box.h }, style));
         } else {
@@ -5753,9 +6047,8 @@
       } else if (mode === 'B' && isPaintable(style.gradientColor)) {
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
-          hex(style.gradientColor), style.gradientDirection) + '</defs>';
-        var relD = shapePath(style, 0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
-        if (!number(style.rotation, 0) && (flipH_ || flipV_)) relD = flipPathD(relD, box.w / 2, box.h / 2, flipH_, flipV_);
+          hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
+        var relD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
       } else {
@@ -6016,15 +6309,27 @@
 
     var arrowFill = stroke.paint || solid('#000000', 1);
     var arrowSize = Math.max(7, stroke.width * 5);
+    // drawio endFill/startFill default to filled (1); '0' => hollow outline.
+    var endFilled = String(style.endFill) !== '0';
+    var startFilled = String(style.startFill) !== '0';
+    // drawio fills each marker with end/startFillColor (default = the edge
+    // stroke). Previously the arrowhead always used the stroke colour, so a
+    // differently-coloured arrowhead printed in the wrong colour.
+    var endArrowFill = isPaintable(style.endFillColor)
+      ? solid(style.endFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
+    var startArrowFill = isPaintable(style.startFillColor)
+      ? solid(style.startFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
     if (style.endArrow && style.endArrow !== 'none') {
       var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
-        points[points.length - 1], arrowSize, stroke, arrowFill, cell.id, notices);
-      if (endNode) paint.push(endNode);
+        points[points.length - 1], arrowSize, stroke, endArrowFill, cell.id, notices, endFilled);
+      if (Array.isArray(endNode)) endNode.forEach(function(n) { if (n) paint.push(n); });
+      else if (endNode) paint.push(endNode);
     }
     if (style.startArrow && style.startArrow !== 'none') {
       var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
-        arrowSize, stroke, arrowFill, cell.id, notices);
-      if (startNode) paint.push(startNode);
+        arrowSize, stroke, startArrowFill, cell.id, notices, startFilled);
+      if (Array.isArray(startNode)) startNode.forEach(function(n) { if (n) paint.push(n); });
+      else if (startNode) paint.push(startNode);
     }
 
     var label = plainLabel(graph, cell);

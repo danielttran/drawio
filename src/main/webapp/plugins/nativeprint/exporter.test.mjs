@@ -357,10 +357,13 @@ const SUPPORTED_SHAPES = [
   ['ellipse', { shape: 'ellipse' }, /^M 0 20 A 40 20 0 1 0 80 20 A 40 20 0 1 0 0 20 Z$/],
   ['rhombus', { shape: 'rhombus' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
   ['diamond', { shape: 'diamond' }, /^M 40 0 L 80 20 L 40 40 L 0 20 Z$/],
-  ['triangle north', { shape: 'triangle' }, /^M 40 0 L 80 40 L 0 40 Z$/],
-  ['triangle south', { shape: 'triangle', direction: 'south' }, /^M 0 0 L 80 0 L 40 40 Z$/],
+  // drawio default triangle points EAST (mxTriangle: 0,0 -> w,h/2 -> 0,h).
+  // direction= rotates it generically (south +90, west +180, north +270).
+  ['triangle default (east)', { shape: 'triangle' }, /^M 0 0 L 80 20 L 0 40 Z$/],
   ['triangle east', { shape: 'triangle', direction: 'east' }, /^M 0 0 L 80 20 L 0 40 Z$/],
-  ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 0 L 0 20 L 80 40 Z$/],
+  ['triangle south', { shape: 'triangle', direction: 'south' }, /^M 80 0 L 40 40 L 0 0 Z$/],
+  ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 40 L 0 20 L 80 0 Z$/],
+  ['triangle north', { shape: 'triangle', direction: 'north' }, /^M 0 40 L 40 0 L 80 40 Z$/],
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
   ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
@@ -377,6 +380,159 @@ for (const [name, style, dRe] of SUPPORTED_SHAPES) {
     assertSchemaValid(r.contract, name);
   });
 }
+
+// mode B = the headless bake path that actually feeds the printer.
+function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height: 40 }) {
+  const cells = { v: { id: 'v', vertex: true } };
+  return exporter.buildResult(
+    graphFixture(cells, { v: state }, { v: label }, { v: style }, FIXED_BOUNDS, 1),
+    undefined, { mode: 'B' });
+}
+
+test('labelPadding insets the label on every side', () => {
+  const pads = (lp) => {
+    const svg = oneVertexB({ shape: 'rectangle', fontColor: '#000', align: 'left', labelPadding: lp }, 'Hi')
+      .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    return Buffer.from(svg.source, 'base64').toString('utf8');
+  };
+  // a left-anchored line's x grows by labelPadding (base spacing 2 + lp).
+  const m0 = pads('0').match(/<text x="([\d.]+)"/);
+  const m10 = pads('10').match(/<text x="([\d.]+)"/);
+  assert.ok(parseFloat(m10[1]) - parseFloat(m0[1]) >= 9.99, 'labelPadding=10 shifts the label inward by 10');
+});
+
+test('rare unimplemented visuals raise a loud notice (textShadow/indicator/rtl)', () => {
+  assert.ok(oneVertexB({ shape: 'rectangle', textShadow: '1' }, 'T').notices
+    .some((n) => /textShadow/.test(n.detail && n.detail.detail || '')), 'textShadow noticed');
+  assert.ok(oneVertexB({ shape: 'rectangle', indicatorShape: 'triangle' }, 'T').notices
+    .some((n) => /indicator/.test(n.detail && n.detail.detail || '')), 'indicator noticed');
+  assert.ok(oneVertexB({ shape: 'rectangle', textDirection: 'rtl' }, 'T').notices
+    .some((n) => /right-to-left/.test(n.detail && n.detail.detail || '')), 'rtl noticed');
+  // a plain shape with none of these stays notice-free.
+  assert.equal(oneVertexB({ shape: 'rectangle' }, 'T').notices.length, 0, 'plain shape: no notice');
+});
+
+test('gradient axis rotates with shape direction (no silent divergence)', () => {
+  // REGRESSION (C1): direction is baked into the path coords for shapePath
+  // shapes, so the objectBoundingBox gradient must be rotated too — otherwise a
+  // direction-rotated gradient kept its original (top->bottom) axis.
+  const axis = (dir) => {
+    const svg = oneVertexB({ shape: 'parallelogram', fillColor: '#fff',
+      gradientColor: '#f00', gradientDirection: 'south', direction: dir })
+      .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    const s = Buffer.from(svg.source, 'base64').toString('utf8');
+    const m = s.match(/x1="([^"]*)" y1="([^"]*)" x2="([^"]*)" y2="([^"]*)" gradientUnits/);
+    return m.slice(1).join(',');
+  };
+  assert.equal(axis('east'), '0,0,0,1', 'east: gradient stays top->bottom');
+  assert.equal(axis('south'), '1,0,0,0', 'south: gradient rotates to right->left');
+  assert.equal(axis('north'), '0,0,1,0', 'north: gradient rotates to left->right');
+});
+
+test('image cell honors imageBackground / imageBorder (no silent drop)', () => {
+  // REGRESSION (C1): mxImageShape draws an imageBackground fill (+ imageBorder
+  // stroke) behind the image; the headless path dropped it.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
+  const style = { shape: 'image', image: 'data:image/png;base64,' + png,
+    imageBackground: '#ffffcc', imageBorder: '#ff0000' };
+  const p = oneVertexB(style).contract.document.pages[0].paint;
+  const bg = p.find((n) => n.kind === 'path' && n.fill && n.fill.color === '#ffffcc');
+  assert.ok(bg, 'imageBackground rect is drawn');
+  assert.ok(bg.stroke && bg.stroke.paint.color === '#ff0000', 'imageBorder strokes the background');
+  // background is painted BEFORE the image (so the image sits on top).
+  assert.ok(p.indexOf(bg) < p.findIndex((n) => n.kind === 'image' || n.kind === 'svg'),
+    'background is behind the image');
+});
+
+test('mxLabel (shape=label;image=) renders bg + small icon + text, not a full-cell image', () => {
+  // REGRESSION (C1): shape=label;image= filled the whole cell with the stretched
+  // image and dropped the background; mxLabel draws a small icon (imageWidth/
+  // Height at imageAlign/imageVerticalAlign) over a background rect with text.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwAEhgGAhqmM1QAAAABJRU5ErkJggg==';
+  const style = { shape: 'label', image: 'data:image/png;base64,' + png,
+    imageWidth: '24', imageHeight: '24', imageAlign: 'left', imageVerticalAlign: 'middle',
+    fillColor: '#ffffff', strokeColor: '#000000' };
+  const p = oneVertexB(style, 'Server').contract.document.pages[0].paint;
+  const bg = p.find((n) => n.kind === 'path' && n.fill);
+  assert.ok(bg, 'background rect is drawn');
+  const img = p.find((n) => n.kind === 'image');
+  assert.ok(img, 'icon image is present');
+  assert.ok(img.box.w <= 24.01 && img.box.h <= 24.01,
+    `icon is the small image size (24x24), not the full cell — got ${img.box.w}x${img.box.h}`);
+  // left/middle: icon x at spacing(=7), y centered.
+  assert.ok(Math.abs(img.box.x - 7) < 0.01, `left icon at spacing=7, got ${img.box.x}`);
+});
+
+test('swimlane fills only the header; body uses swimlaneFillColor (default transparent)', () => {
+  // REGRESSION (C1): the body was filled with fillColor across the whole shape;
+  // drawio fills only the header (fillColor) and the body with swimlaneFillColor
+  // (default none). swimlaneLine=0 must omit the separator.
+  const fills = (style) => oneVertexB(style, 'Lane')
+    .contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const def = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', startSize: '30' });
+  const filledNodes = def.filter((n) => n.fill && n.fill.color === '#dae8fc');
+  assert.equal(filledNodes.length, 1, 'exactly one header fill node');
+  // header fill node height must equal startSize (30), not the full cell height.
+  const ys = (filledNodes[0].d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number).filter((_, i) => i % 2 === 1);
+  assert.ok(Math.max(...ys) - Math.min(...ys) <= 30.01, 'header fill is only startSize tall, not full height');
+  // a default swimlane has a separator line; swimlaneLine=0 removes it.
+  const withLine = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000' });
+  const noLine = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', swimlaneLine: '0' });
+  assert.ok(withLine.length > noLine.length, 'swimlaneLine=0 must omit the separator line');
+  // swimlaneFillColor fills the body.
+  const bodyFilled = fills({ shape: 'swimlane', fillColor: '#dae8fc', strokeColor: '#000', swimlaneFillColor: '#ffffcc' });
+  assert.ok(bodyFilled.some((n) => n.fill && n.fill.color === '#ffffcc'), 'swimlaneFillColor fills the body');
+});
+
+test('textOpacity is applied to labels (no silent divergence)', () => {
+  // REGRESSION (C1): drawio STYLE_TEXT_OPACITY made the label translucent; the
+  // exporter had ZERO references to textOpacity, so it printed fully opaque.
+  const decode = (r) => {
+    const n = r.contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+    return n ? Buffer.from(n.source, 'base64').toString('utf8') : '';
+  };
+  const opaque = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000' }, 'Hi'));
+  assert.ok(!/opacity="0\.4"/.test(opaque), 'no spurious opacity when textOpacity unset');
+  const faded = decode(oneVertexB({ shape: 'rectangle', fontColor: '#000', textOpacity: '40' }, 'Hi'));
+  assert.match(faded, /opacity="0\.4"/, 'textOpacity=40 must fade the label to 0.4');
+});
+
+test('rotated plain label keeps underline / strikethrough (textSvgStr fidelity)', () => {
+  // textSvgStr (used for rotated plain labels) dropped fontStyle underline(4)/
+  // strike(8) — a rotated underlined label silently lost its underline.
+  const n = oneVertexB({ shape: 'rectangle', rotation: '30', fontStyle: '4', fontColor: '#000' }, 'Underlined')
+    .contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+  const svg = Buffer.from(n.source, 'base64').toString('utf8');
+  assert.match(svg, /text-decoration="underline"/, 'rotated plain label must keep underline');
+});
+
+test('direction (N/S/E/W) rotates asymmetric named shapes (no silent divergence)', () => {
+  // REGRESSION (C1): named shapes via shapePath honored rotation/flip but
+  // SILENTLY ignored direction= — a process/step/parallelogram with
+  // direction=north printed unrotated while drawio rotates it 270 deg.
+  for (const shape of ['parallelogram', 'step', 'process', 'cylinder', 'card', 'tape']) {
+    const east = oneVertex({ shape, direction: 'east', fillColor: '#eee', strokeColor: '#000' });
+    const north = oneVertex({ shape, direction: 'north', fillColor: '#eee', strokeColor: '#000' });
+    assert.equal(east.notices.length, 0, `${shape} east must not degrade`);
+    assert.equal(north.notices.length, 0, `${shape} north must not degrade`);
+    // path shapes carry .d; multi-element (builtinShapeSvg) shapes carry .source
+    const repr = (r) => { const n = r.contract.document.pages[0].paint[0]; return n.d || n.source; };
+    assert.notEqual(repr(east), repr(north),
+      `${shape}: direction=north must change geometry vs east (direction not silently ignored)`);
+  }
+});
+
+test('rotatePathD preserves shape bounding box for 90 deg direction', () => {
+  // A direction=south shape must still occupy the same on-page cell box
+  // (drawio inverts the paint bounds so the rotated shape fits the cell).
+  const r = oneVertex({ shape: 'parallelogram', direction: 'south', fillColor: '#eee', strokeColor: '#000' });
+  const d = r.contract.document.pages[0].paint[0].d;
+  const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const xs = nums.filter((_, i) => i % 2 === 0), ys = nums.filter((_, i) => i % 2 === 1);
+  // FIXED_BOUNDS cell is 80x40 at origin; rotated bounds must stay within [0,80]x[0,40].
+  assert.ok(Math.min(...xs) >= -0.01 && Math.max(...xs) <= 80.01, `x in cell box, got ${Math.min(...xs)}..${Math.max(...xs)}`);
+  assert.ok(Math.min(...ys) >= -0.01 && Math.max(...ys) <= 40.01, `y in cell box, got ${Math.min(...ys)}..${Math.max(...ys)}`);
+});
 
 test('supported shape faithfully baked: note', () => {
   const r = oneVertex({ shape: 'note', fillColor: '#112233', strokeColor: '#445566' });
@@ -501,6 +657,81 @@ test('flexArrow edge: closed arrow path emitted with zero notices', () => {
   const lCount = (d.match(/\bL /g) || []).length;
   assert.ok(lCount >= 8, `flexArrow must have ≥8 line segments (both markers), got ${lCount}`);
   assertSchemaValid(result.contract, 'flexArrow');
+});
+
+// ---- faithful stroked edge markers (dash, cross, ER crow's-foot) -----------
+// drawio's mxMarker dash/cross/ER* are pure stroked lines. They must render
+// faithfully (zero notices), NOT be approximated as a filled classic triangle.
+function oneEdgeMarker(marker) {
+  const cells = { e: { id: 'e', edge: true, style: 'endArrow=' + marker + ';', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+  const styles = { e: { endArrow: marker } };
+  return exporter.buildResult(graphFixture(cells, states, {}, styles));
+}
+
+test('edge marker dash/cross/ER render faithfully as stroked paths, zero notices', () => {
+  for (const m of ['dash', 'cross', 'ERone', 'ERmany', 'ERmandOne', 'ERoneToMany']) {
+    const result = oneEdgeMarker(m);
+    assert.equal(result.notices.length, 0,
+      `marker "${m}" must render faithfully without an approximation notice`);
+    const paths = result.contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+    // edge line + at least one marker stroke node, all stroked (fill === null)
+    const markerNodes = paths.filter((n) => n.fill === null && n.stroke && /\bL /.test(n.d));
+    assert.ok(markerNodes.length >= 2,
+      `marker "${m}" must add ≥1 stroked marker path beyond the edge line, got ${markerNodes.length}`);
+    assertSchemaValid(result.contract, `marker-${m}`);
+  }
+});
+
+test('cross / ERmandOne / ERoneToMany emit two stroke segments', () => {
+  for (const m of ['cross', 'ERmandOne', 'ERoneToMany']) {
+    const result = oneEdgeMarker(m);
+    const paths = result.contract.document.pages[0].paint.filter(
+      (n) => n.kind === 'path' && n.fill === null && n.stroke);
+    // edge line (1) + two marker strokes = 3 stroked path nodes
+    assert.ok(paths.length >= 3,
+      `marker "${m}" must emit two marker strokes (+edge line), got ${paths.length}`);
+  }
+});
+
+test('endFill=0 renders a hollow arrowhead (no silent solid fill)', () => {
+  // REGRESSION (C1): drawio endFill/startFill=0 draws a hollow (outline-only)
+  // arrowhead; the exporter always filled it -> a hollow arrow printed solid.
+  const mk = (extra) => {
+    const cells = { e: { id: 'e', edge: true, style: 'endArrow=classic;' + extra, value: '' } };
+    const states = { e: { x: 0, y: 0, width: 0, height: 0,
+      absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+    const styles = { e: { endArrow: 'classic', ...Object.fromEntries(new URLSearchParams(extra.replace(/;/g, '&'))) } };
+    return exporter.buildResult(graphFixture(cells, states, {}, styles));
+  };
+  const solid = mk('').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const solidHead = solid[solid.length - 1];
+  assert.ok(solidHead.fill && !solidHead.stroke, 'default arrowhead is filled');
+  const hollow = mk('endFill=0;').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const hollowHead = hollow[hollow.length - 1];
+  assert.ok(!hollowHead.fill && hollowHead.stroke, 'endFill=0 arrowhead must be a stroked outline (hollow)');
+});
+
+test('endFillColor colors the arrowhead independently of the edge stroke', () => {
+  // REGRESSION (C1): drawio fills each marker with end/startFillColor (default
+  // = edge stroke); the exporter always used the stroke colour, so a
+  // differently-coloured arrowhead printed in the wrong colour.
+  const cells = { e: { id: 'e', edge: true, style: 'endArrow=classic;strokeColor=#000000;endFillColor=#ff0000;', value: '' } };
+  const states = { e: { x: 0, y: 0, width: 0, height: 0,
+    absolutePoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }] } };
+  const styles = { e: { endArrow: 'classic', strokeColor: '#000000', endFillColor: '#ff0000' } };
+  const paths = exporter.buildResult(graphFixture(cells, states, {}, styles))
+    .contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  const head = paths[paths.length - 1];
+  assert.ok(head.fill, 'arrowhead is filled');
+  assert.equal(head.fill.color.toLowerCase(), '#ff0000', 'arrowhead uses endFillColor, not the stroke color');
+});
+
+test('genuinely unsupported markers still raise a loud notice', () => {
+  const result = oneEdgeMarker('halfCircle');
+  assert.ok(result.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'halfCircle (quad-curve marker) must still be loudly noticed, not silently wrong');
 });
 
 // ---- sketch fills: hachure/cross-hatch/dots emit kind:'svg' with clip ------
