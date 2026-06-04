@@ -389,6 +389,23 @@ function oneVertexB(style, label = '', state = { x: 10, y: 20, width: 80, height
     undefined, { mode: 'B' });
 }
 
+test('gradient axis rotates with shape direction (no silent divergence)', () => {
+  // REGRESSION (C1): direction is baked into the path coords for shapePath
+  // shapes, so the objectBoundingBox gradient must be rotated too — otherwise a
+  // direction-rotated gradient kept its original (top->bottom) axis.
+  const axis = (dir) => {
+    const svg = oneVertexB({ shape: 'parallelogram', fillColor: '#fff',
+      gradientColor: '#f00', gradientDirection: 'south', direction: dir })
+      .contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    const s = Buffer.from(svg.source, 'base64').toString('utf8');
+    const m = s.match(/x1="([^"]*)" y1="([^"]*)" x2="([^"]*)" y2="([^"]*)" gradientUnits/);
+    return m.slice(1).join(',');
+  };
+  assert.equal(axis('east'), '0,0,0,1', 'east: gradient stays top->bottom');
+  assert.equal(axis('south'), '1,0,0,0', 'south: gradient rotates to right->left');
+  assert.equal(axis('north'), '0,0,1,0', 'north: gradient rotates to left->right');
+});
+
 test('image cell honors imageBackground / imageBorder (no silent drop)', () => {
   // REGRESSION (C1): mxImageShape draws an imageBackground fill (+ imageBorder
   // stroke) behind the image; the headless path dropped it.

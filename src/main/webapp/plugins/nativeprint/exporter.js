@@ -32,6 +32,18 @@
     }
   }
 
+  // When a shape is direction-rotated and the gradient is baked into the path
+  // coordinates (not a group transform), the gradient axis must rotate with the
+  // shape too. drawio direction adds south=+90, west=+180, north=+270 (CW).
+  function rotateGradDir(gd, deg) {
+    if (!deg) return gd;
+    var ang = { east: 0, south: 90, west: 180, north: 270 };
+    var inv = { 0: 'east', 90: 'south', 180: 'west', 270: 'north' };
+    var base = ang[String(gd || 'south').toLowerCase()];
+    if (base == null) return gd;
+    return inv[((base + deg) % 360 + 360) % 360];
+  }
+
   // Build a <linearGradient> definition string with correct direction.
   function linearGradDef(id, c1, c2, dir) {
     var v = gradientVector(dir);
@@ -5938,7 +5950,7 @@
         var gradId = '';
         if (isPaintable(style.gradientColor)) {
           gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
@@ -5989,7 +6001,7 @@
       } else if (mode === 'B' && isPaintable(style.gradientColor)) {
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
         var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
-          hex(style.gradientColor), style.gradientDirection) + '</defs>';
+          hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         var relD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
