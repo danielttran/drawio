@@ -430,7 +430,8 @@ function edgePoints(cell, cells) {
   }
   if (waypoints.length === 0 && !hasLiteralTerminals && src && tgt &&
       (cell.style?.edgeStyle === 'elbowEdgeStyle' ||
-       cell.style?.edgeStyle === 'orthogonalEdgeStyle') &&
+       cell.style?.edgeStyle === 'orthogonalEdgeStyle' ||
+       cell.style?.edgeStyle === 'segmentEdgeStyle') &&
       cell.style?.noEdgeStyle !== '1') {
     if (cell.style?.elbow === 'horizontal') {
       const midX = (src.x + tgt.x) / 2;
@@ -446,7 +447,8 @@ function edgePoints(cell, cells) {
     const start = terminalPoint(cell, cells, cell.source, true, targetCenter) || sourceCenter;
     const end = terminalPoint(cell, cells, cell.target, false, sourceCenter) || targetCenter;
     if ((cell.style?.edgeStyle === 'elbowEdgeStyle' ||
-         cell.style?.edgeStyle === 'orthogonalEdgeStyle') &&
+         cell.style?.edgeStyle === 'orthogonalEdgeStyle' ||
+         cell.style?.edgeStyle === 'segmentEdgeStyle') &&
         cell.style?.noEdgeStyle !== '1') {
       const midY = (start.y + end.y) / 2;
       return [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];

@@ -5947,6 +5947,13 @@
       }
     }
     if (points.length < 2) return;
+    // Isometric edge routing (30deg isometric segments, mxEdgeStyle.Isometric-
+    // Connector) is not replicated headless — the edge routes straight. Never
+    // silent: emit a loud notice so the operator knows the route diverges.
+    if (style.edgeStyle === 'isometricEdgeStyle' || style.edgeStyle === 'isometricVConnector') {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'isometric edge routing not replicated — exported as a straight connector', cell.id));
+    }
     // perimeterSpacing (+ source/targetPerimeterSpacing) creates a gap between
     // the shape edge and the connector endpoints (drawio grows the perimeter by
     // the spacing). Pull each endpoint inward along the edge by that amount so

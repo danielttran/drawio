@@ -1620,6 +1620,25 @@ test('edge: entityRelationEdgeStyle routes with horizontal exit/entry (not a str
   assert.match(edge.d, /^M 80 20 L 1[01]\d 20/, `ER edge must exit horizontally (y constant): ${edge.d.slice(0, 30)}`);
 });
 
+test('edge: segmentEdgeStyle routes orthogonally; isometric is loudly noticed', async () => {
+  // segmentEdgeStyle (no waypoints) routes orthogonally like orthogonalEdgeStyle
+  // (was straight). isometricEdgeStyle is not replicated headless -> must be a
+  // LOUD notice, never a silent straight route (C1).
+  const mk = (es) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" parent="1"><mxGeometry x="280" y="220" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" style="edgeStyle=${es};rounded=0;" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const seg = await bake(mk('segmentEdgeStyle'), { keepPx: true });
+  const segEdge = seg.contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null);
+  assert.ok((segEdge.d.match(/[ML] /g) || []).length >= 3, 'segmentEdgeStyle must route orthogonally');
+  assert.equal(seg.notices.length, 0, 'segmentEdgeStyle is faithfully routed (no notice)');
+  const iso = await bake(mk('isometricEdgeStyle'), { keepPx: true });
+  assert.ok(iso.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'isometric edge routing must be loudly noticed (never silent)');
+});
+
 test('stencil: fixed-aspect AWS shape bakes to kind:svg with no unsupported notice', async () => {
   // aws4 shapes use aspect="fixed" — tests computeAspect centering
   const xml = makeStencilXml('shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;', 'Lambda');
