@@ -18,7 +18,7 @@
 
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 extern crate ttf_parser;
 
@@ -41,6 +41,12 @@ fn fontdb() -> &'static resvg::usvg::fontdb::Database {
     DB.get_or_init(|| {
         let mut db = resvg::usvg::fontdb::Database::new();
         db.load_system_fonts();
+        // The production print server is provisioned with the design fonts.
+        // Pin generic CSS families to the same Windows/browser defaults draw.io
+        // authors see, instead of silently substituting distro-local fonts.
+        db.set_sans_serif_family("Arial");
+        db.set_serif_family("Times New Roman");
+        db.set_monospace_family("Courier New");
         db
     })
 }
@@ -114,7 +120,9 @@ pub struct SpeTextMetrics {
 }
 
 fn c_str_to_str<'a>(ptr: *const c_char, fallback: &'a str) -> &'a str {
-    if ptr.is_null() { return fallback; }
+    if ptr.is_null() {
+        return fallback;
+    }
     unsafe { std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or(fallback) }
 }
 
@@ -127,7 +135,11 @@ fn measure_text_inner(
 ) -> Option<SpeTextMetrics> {
     use resvg::usvg::fontdb;
     let db = fontdb();
-    let style = if italic { fontdb::Style::Italic } else { fontdb::Style::Normal };
+    let style = if italic {
+        fontdb::Style::Italic
+    } else {
+        fontdb::Style::Normal
+    };
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
         weight: fontdb::Weight(weight),
@@ -149,9 +161,9 @@ fn measure_text_inner(
         let face = ttf_parser::Face::parse(data, idx).ok()?;
         let upem = face.units_per_em() as f32;
         let scale = size_px / upem;
-        let ascent  = face.ascender() as f32 * scale;
+        let ascent = face.ascender() as f32 * scale;
         let descent = -(face.descender() as f32 * scale); // positive
-        let gap     = face.line_gap() as f32 * scale;
+        let gap = face.line_gap() as f32 * scale;
         let mut advance = 0.0f32;
         for ch in text.chars() {
             if let Some(gid) = face.glyph_index(ch) {
@@ -161,9 +173,9 @@ fn measure_text_inner(
             }
         }
         Some(SpeTextMetrics {
-            advance_px:    advance,
-            ascent_px:     ascent,
-            descent_px:    descent,
+            advance_px: advance,
+            ascent_px: ascent,
+            descent_px: descent,
             line_height_px: ascent + descent + gap,
         })
     })?
@@ -172,35 +184,77 @@ fn measure_text_inner(
 /// D3: one font-metrics engine shared by bake measurement and rasterization.
 #[no_mangle]
 pub extern "C" fn spe_text_measure(
-    family:   *const c_char,
-    weight:   i32,
-    italic:   i32,
-    size_px:  f32,
-    text:     *const u8,
+    family: *const c_char,
+    weight: i32,
+    italic: i32,
+    size_px: f32,
+    text: *const u8,
     text_len: usize,
-    out:      *mut SpeTextMetrics,
+    out: *mut SpeTextMetrics,
 ) -> i32 {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if out.is_null() || size_px <= 0.0 { return SPE_SVG_ERR_BAD_ARGS; }
+        if out.is_null() || size_px <= 0.0 {
+            return SPE_SVG_ERR_BAD_ARGS;
+        }
         let fam = c_str_to_str(family as *const c_char, "Arial");
-        let txt = if text.is_null() || text_len == 0 { "" } else {
+        let txt = if text.is_null() || text_len == 0 {
+            ""
+        } else {
             let b = unsafe { std::slice::from_raw_parts(text, text_len) };
             std::str::from_utf8(b).unwrap_or("")
         };
         let w = (weight.max(100).min(900)) as u16;
         match measure_text_inner(fam, w, italic != 0, size_px, txt) {
-            Some(m) => { unsafe { *out = m; } SPE_SVG_OK }
-            None    => SPE_SVG_ERR_INTERNAL,
+            Some(m) => {
+                unsafe {
+                    *out = m;
+                }
+                SPE_SVG_OK
+            }
+            None => SPE_SVG_ERR_INTERNAL,
         }
     }));
     result.unwrap_or(SPE_SVG_ERR_INTERNAL)
 }
 
-/// Byte-level scan for `<foreignObject` so a malformed or non-UTF8 SVG still
-/// trips the guard. We match the start tag only (case sensitive per SVG
-/// spec; XML element names are case-sensitive in SVG/XHTML).
+/// Byte-level scan for an SVG `foreignObject` element so malformed or non-UTF8
+/// SVG still trips the guard before resvg can silently render the HTML subtree
+/// as transparent pixels. XML element names are case-sensitive, but namespace
+/// prefixes are legal (`<svg:foreignObject>`), so compare the parsed local name
+/// instead of searching only for the literal unprefixed spelling.
 fn contains_foreign_object(bytes: &[u8]) -> bool {
-    bytes.windows(14).any(|w| w == b"<foreignObject")
+    fn is_name_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')
+    }
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= bytes.len() || matches!(bytes[i], b'/' | b'!' | b'?') {
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_name_char(bytes[i]) {
+            i += 1;
+        }
+        if i == start {
+            continue;
+        }
+        let name = &bytes[start..i];
+        let local = name
+            .iter()
+            .rposition(|&b| b == b':')
+            .map(|pos| &name[pos + 1..])
+            .unwrap_or(name);
+        if local == b"foreignObject" {
+            return true;
+        }
+    }
+    false
 }
 
 fn write_err(err_buf: *mut c_char, err_buf_len: usize, msg: &str) {
@@ -250,13 +304,20 @@ pub extern "C" fn spe_svg_render(
         // -- exactly the silent divergence the C1 constraint forbids. Refuse
         // loudly here so the host's loud crosshatch + notice fire instead.
         if contains_foreign_object(svg_bytes) {
-            write_err(err_buf, err_buf_len,
-                "svg contains <foreignObject>; resvg cannot render HTML, refusing loudly");
+            write_err(
+                err_buf,
+                err_buf_len,
+                "svg contains <foreignObject>; resvg cannot render HTML, refusing loudly",
+            );
             return SPE_SVG_ERR_UNSUPPORTED;
         }
 
         let mut opt = resvg::usvg::Options::default();
-        opt.fontdb = std::sync::Arc::new(fontdb().clone());
+        // Reuse the initialized production font database for every SVG render.
+        // Text is converted to glyph outlines during usvg parsing; missing
+        // fonts remain an environment/preflight problem rather than a silent
+        // substitution to a non-design family.
+        opt.fontdb = Arc::new(fontdb().clone());
 
         let tree = match resvg::usvg::Tree::from_data(svg_bytes, &opt) {
             Ok(t) => t,
@@ -328,5 +389,39 @@ pub extern "C" fn spe_svg_render(
             write_err(err_buf, err_buf_len, "panic caught at ABI boundary");
             SPE_SVG_ERR_INTERNAL
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{contains_foreign_object, fontdb};
+    use resvg::usvg::fontdb::Family;
+
+    #[test]
+    fn foreign_object_guard_detects_unprefixed_and_prefixed_start_tags() {
+        assert!(contains_foreign_object(
+            b"<svg><foreignObject width='1'/></svg>"
+        ));
+        assert!(contains_foreign_object(
+            b"<svg><svg:foreignObject width='1'/></svg>"
+        ));
+    }
+
+    #[test]
+    fn foreign_object_guard_remains_case_sensitive_to_svg_element_names() {
+        assert!(!contains_foreign_object(
+            b"<svg><foreignobject width='1'/></svg>"
+        ));
+        assert!(!contains_foreign_object(
+            b"<svg><notforeignObject width='1'/></svg>"
+        ));
+    }
+
+    #[test]
+    fn generic_font_aliases_target_print_server_design_fonts() {
+        let db = fontdb();
+        assert_eq!(db.family_name(&Family::SansSerif), "Arial");
+        assert_eq!(db.family_name(&Family::Serif), "Times New Roman");
+        assert_eq!(db.family_name(&Family::Monospace), "Courier New");
     }
 }

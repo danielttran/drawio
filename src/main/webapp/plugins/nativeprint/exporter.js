@@ -1291,6 +1291,7 @@
   // <text>/<rect>/<image>/<line> that any SVG rasterizer draws 1:1.
 
   var LIST_INDENT_PX = 24;   // left indent added per nested list level
+  var richClipCounter = 0;       // stable per-exporter SVG clip ids for rich labels
   var CSS_NAMED_COLORS = {
     black: '#000000', white: '#ffffff', red: '#ff0000', lime: '#00ff00',
     green: '#008000', blue: '#0000ff', yellow: '#ffff00', cyan: '#00ffff',
@@ -1535,6 +1536,34 @@
           }
           continue;
         }
+        if (tag === 'foreignobject') {
+          // SVG <foreignObject> is the browser feature that normally lets HTML
+          // appear inside SVG. The native engine's resvg backend correctly
+          // refuses raw foreignObject (it would otherwise print blank), so the
+          // bake flattens its XHTML subtree into ordinary SVG text/rect/image
+          // primitives right here, browser-free. This preserves the declared
+          // x/y/width/height box and reuses the same rich HTML renderer as normal
+          // drawio labels; no <foreignObject> reaches the C++ print engine.
+          cur = null;
+          var foSt = applyElStyle(st, ch);
+          var foInl = parseInlineStyle(ch);
+          var fx = cssLengthPx(ch.getAttribute && ch.getAttribute('x'), 0);
+          var fy = cssLengthPx(ch.getAttribute && ch.getAttribute('y'), 0);
+          var fw = cssLengthPx(ch.getAttribute && ch.getAttribute('width'),
+            cssLengthPx(foInl.width, 0));
+          var fh = cssLengthPx(ch.getAttribute && ch.getAttribute('height'),
+            cssLengthPx(foInl.height, 0));
+          if (!(fw > 0)) fw = Math.max(1, st.size * 12);
+          if (!(fh > 0)) fh = Math.max(1, st.size * RICH_LINE_FACTOR);
+          var savedOut = out, savedCur = cur;
+          out = []; cur = null;
+          process(ch, foSt, inlineAlign(ch) || align, 0, pre, listDepth);
+          var foBlocks = out;
+          out = savedOut; cur = savedCur;
+          out.push({ kind: 'foreign', x: fx, y: fy, w: fw, h: fh,
+            blocks: foBlocks, st: foSt, align: inlineAlign(ch) || align });
+          continue;
+        }
         if (tag === 'table') {
           cur = null;
           out.push(buildTableEntry(ch, st, align, resolved, notices, cellId));
@@ -1777,6 +1806,23 @@
         '" stroke-width="1"/>');
       y += size * 1.2;
     }
+    function emitForeign(entry) {
+      var fw = Math.max(1, entry.w || width);
+      var fh = Math.max(1, entry.h || ((entry.st && entry.st.size) || 12) * RICH_LINE_FACTOR);
+      var laid = layoutBlocks(entry.blocks || [], fw, true, entry.align || defAlign);
+      var cid = 'fo' + (++richClipCounter);
+      var bg = entry.st && entry.st.bg
+        ? '<rect x="0" y="0" width="' + fmt(fw) + '" height="' + fmt(fh) +
+          '" fill="' + entry.st.bg + '"' +
+          (entry.st.bgAlpha < 1 ? ' fill-opacity="' + fmt(entry.st.bgAlpha) + '"' : '') + '/>'
+        : '';
+      parts.push('<g transform="translate(' + fmt(entry.x || 0) + ' ' + fmt(entry.y || 0) + ')">' +
+        '<defs><clipPath id="' + cid + '"><rect x="0" y="0" width="' + fmt(fw) +
+        '" height="' + fmt(fh) + '"/></clipPath></defs>' + bg +
+        '<g clip-path="url(#' + cid + ')">' + laid.svg + '</g></g>');
+      y = Math.max(y, (entry.y || 0) + fh);
+    }
+
     function emitTable(entry) {
       var rows = entry.rows || [];
       if (!rows.length) return;
@@ -1818,6 +1864,7 @@
     entries.forEach(function (entry) {
       if (entry.kind === 'rule') emitRule(entry);
       else if (entry.kind === 'table') emitTable(entry);
+      else if (entry.kind === 'foreign') emitForeign(entry);
       else emitPara(entry);
     });
     return { svg: parts.join(''), height: y };
@@ -3508,6 +3555,22 @@
     }
   }
 
+  // Numeric SVG/CSS length -> px. drawio's label editor emits px-sized HTML;
+  // SVG foreignObject attributes are unitless user units. Percent values depend
+  // on the parent viewport and are intentionally left to the caller's fallback.
+  function cssLengthPx(v, fallback) {
+    if (v == null || v === '') return fallback;
+    var s = String(v).trim().toLowerCase();
+    if (s.indexOf('%') >= 0) return fallback;
+    var n = parseFloat(s);
+    if (!Number.isFinite(n)) return fallback;
+    if (s.indexOf('pt') >= 0) return n * 96 / 72;
+    if (s.indexOf('cm') >= 0) return n * 96 / 2.54;
+    if (s.indexOf('mm') >= 0) return n * 96 / 25.4;
+    if (s.indexOf('in') >= 0) return n * 96;
+    return n;
+  }
+
   // Scale an #rrggbb toward black (factor<1) — the shade browsers use for the
   // dark edges of a 3D bevel border.
   function shadeHex(hex, factor) {
@@ -3898,6 +3961,10 @@
   }
 
   function buildResult(graph, paper, opts) {
+    // Reset per-contract generated SVG ids so repeated bakes of identical input
+    // remain byte-for-byte deterministic even when HTML labels contain flattened
+    // foreignObject clip paths.
+    richClipCounter = 0;
     // Native print renders every shape from its stencil geometry with zero
     // browser dependency — there is no live-DOM / rendered-SVG path. The
     // WYSIWYG guarantee holds by construction (faithful re-derivation or a loud
