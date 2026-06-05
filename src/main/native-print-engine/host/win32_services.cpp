@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cctype>
 #include <cwchar>
 #include <cstdint>
 #include <memory>
@@ -72,6 +73,37 @@ std::string narrow(const std::wstring& w) {
   WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
                       s.data(), n, nullptr, nullptr);
   return s;
+}
+
+bool is_xml_name_char(char ch) {
+  const unsigned char c = static_cast<unsigned char>(ch);
+  return std::isalnum(c) != 0 || ch == '_' || ch == '-' || ch == '.' ||
+         ch == ':';
+}
+
+bool contains_foreign_object_element(const std::string& svg) {
+  std::size_t i = 0;
+  while (i < svg.size()) {
+    if (svg[i] != '<') {
+      ++i;
+      continue;
+    }
+    ++i;
+    if (i >= svg.size() || svg[i] == '/' || svg[i] == '!' || svg[i] == '?') {
+      continue;
+    }
+    const std::size_t start = i;
+    while (i < svg.size() && is_xml_name_char(svg[i])) {
+      ++i;
+    }
+    if (i == start) continue;
+    const std::string name = svg.substr(start, i - start);
+    const std::size_t colon = name.rfind(':');
+    const std::string local =
+        colon == std::string::npos ? name : name.substr(colon + 1);
+    if (local == "foreignObject") return true;
+  }
+  return false;
 }
 
 struct PrinterHandle {
@@ -1139,7 +1171,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           // BLANK box -- silent C1 violation. Detect upfront, never call the
           // shim, fall to loud crosshatch + named notice.
           const bool has_foreign_object =
-              decoded.find("<foreignObject") != std::string::npos;
+              contains_foreign_object_element(decoded);
           if (has_foreign_object) {
             raster_fail_detail =
                 "svg_source contains <foreignObject>; refusing loudly "

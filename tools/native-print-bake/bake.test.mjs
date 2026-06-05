@@ -319,6 +319,60 @@ test('bake: html object type emits no print-warning notice', async () => {
     'the <b> run prints bold (per-run fidelity)');
 });
 
+test('bake: HTML label foreignObject is flattened to native SVG, not passed to C++ engine', async () => {
+  const foreignHtml = `&lt;svg width=&quot;120&quot; height=&quot;50&quot;&gt;` +
+    `&lt;foreignObject x=&quot;8&quot; y=&quot;6&quot; width=&quot;96&quot; height=&quot;32&quot;&gt;` +
+    `&lt;div xmlns=&quot;http://www.w3.org/1999/xhtml&quot; style=&quot;font-size:14px;color:#ff0000;background-color:#ffffcc;&quot;&gt;` +
+    `&lt;b&gt;Foreign&lt;/b&gt; HTML&lt;/div&gt;` +
+    `&lt;/foreignObject&gt;&lt;/svg&gt;`;
+  const xml = `<mxGraphModel pageWidth="220" pageHeight="120">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${foreignHtml}" style="shape=html;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;fontFamily=Arial;fontSize=12;" parent="1">
+        <mxGeometry x="10" y="10" width="140" height="70" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const { contract, notices } = await bake(xml);
+  assert.equal(notices.length, 0);
+  const svgNode = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgNode, 'foreignObject HTML emits native svg paint');
+  const decoded = Buffer.from(svgNode.source, 'base64').toString('utf8');
+  assert.doesNotMatch(decoded, /foreignObject/i,
+    'raw foreignObject never reaches the C++/resvg print engine');
+  assert.match(decoded, /transform="translate\(8 6\)"/,
+    'foreignObject x/y placement is preserved');
+  assert.match(decoded, /width="96" height="32"/,
+    'foreignObject width/height clipping is preserved');
+  assert.match(decoded, /fill="#ffffcc"/,
+    'foreignObject HTML background color is preserved');
+  assert.match(decoded, /fill="#ff0000"[^>]*>Foreign</,
+    'foreignObject HTML text color is preserved');
+  assert.match(decoded, /font-weight="700"[^>]*>Foreign</,
+    'foreignObject bold run is preserved');
+  assert.match(decoded, />HTML</, 'foreignObject plain text is preserved');
+});
+
+test('bake: flattened foreignObject output is deterministic across repeated exports', async () => {
+  const foreignHtml = `&lt;foreignObject x=&quot;0&quot; y=&quot;0&quot; width=&quot;80&quot; height=&quot;24&quot;&gt;` +
+    `&lt;div xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;&lt;b&gt;Stable&lt;/b&gt;&lt;/div&gt;` +
+    `&lt;/foreignObject&gt;`;
+  const xml = `<mxGraphModel pageWidth="120" pageHeight="80">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${foreignHtml}" style="shape=html;html=1;whiteSpace=wrap;fillColor=none;strokeColor=none;fontFamily=Arial;fontSize=12;" parent="1">
+        <mxGeometry x="10" y="10" width="90" height="40" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  const a = await bake(xml, { keepPx: true });
+  const b = await bake(xml, { keepPx: true });
+  assert.deepEqual(a.notices, []);
+  assert.deepEqual(b.notices, []);
+  assert.deepEqual(b.contract, a.contract,
+    'generated foreignObject clip ids must reset per contract');
+});
+
 function graphXmlForShapes(shapes, label) {
   let cells = '<mxCell id="0"/><mxCell id="1" parent="0"/>';
   shapes.forEach((shape, i) => {
