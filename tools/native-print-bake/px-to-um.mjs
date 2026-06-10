@@ -50,8 +50,13 @@ function scalePaintNode(node) {
   switch (n.kind) {
     case 'path':
       if (typeof n.d === 'string') n.d = scaleD(n.d);
-      if (n.stroke && typeof n.stroke.width === 'number') {
-        n.stroke = Object.assign({}, n.stroke, { width: scaleN(n.stroke.width) });
+      if (n.stroke) {
+        n.stroke = Object.assign({}, n.stroke);
+        if (typeof n.stroke.width === 'number') n.stroke.width = scaleN(n.stroke.width);
+        // dash lengths are absolute units too (SVG stroke-dasharray
+        // semantics) -- an unscaled px dash inside a um contract is
+        // internally inconsistent (prints effectively solid).
+        if (Array.isArray(n.stroke.dash)) n.stroke.dash = n.stroke.dash.map(scaleN);
       }
       break;
     case 'text':

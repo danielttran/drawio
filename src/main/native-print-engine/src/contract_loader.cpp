@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -126,7 +128,11 @@ private:
       skip_ws();
       expect(':');
       JsonValue value = parse_value();
-      object.emplace(std::move(key), std::move(value));
+      // Last-wins on duplicate keys, matching JavaScript JSON.parse: the
+      // producer-side validator reads the same text with JS semantics, so a
+      // first-wins map here would let the two sides read DIFFERENT values
+      // from one contract.
+      object[std::move(key)] = std::move(value);
       skip_ws();
       const char next = consume();
       if (next == '}') {
@@ -225,7 +231,25 @@ private:
         ++pos_;
       }
     }
-    return std::stod(std::string(input_.substr(start, pos_ - start)));
+    // std::from_chars, NOT std::stod: stod throws std::out_of_range for
+    // overflowing literals (1e999) and std::invalid_argument for a bare
+    // '-' -- both std::logic_error, which the runtime_error catch in
+    // parse() misses, killing the whole engine process on a malformed
+    // contract instead of returning a typed ContractSyntaxError. from_chars
+    // is also locale-independent (stod silently truncates "10.5" -> 10
+    // under an LC_NUMERIC comma locale if a future host initializes one).
+    const std::string_view token = input_.substr(start, pos_ - start);
+    double parsed = 0.0;
+    const auto [ptr, ec] =
+        std::from_chars(token.data(), token.data() + token.size(), parsed);
+    if (ec == std::errc::result_out_of_range) {
+      throw std::runtime_error("number literal out of range");
+    }
+    if (ec != std::errc() || ptr != token.data() + token.size() ||
+        !std::isfinite(parsed)) {
+      throw std::runtime_error("invalid number literal");
+    }
+    return parsed;
   }
 
   std::string_view input_;
@@ -343,6 +367,13 @@ private:
   if (std::floor(number.value()) != number.value()) {
     return Result<int, ContractError>::err(
       error(ContractErrorCode::ContractValueError, std::string(path), "expected integer"));
+  }
+  // Range-check before the cast: double->int outside int's range is UB
+  // (e.g. weight 1e10 silently became INT_MIN and bold was dropped).
+  if (number.value() < static_cast<double>(std::numeric_limits<int>::min()) ||
+      number.value() > static_cast<double>(std::numeric_limits<int>::max())) {
+    return Result<int, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, std::string(path), "integer out of range"));
   }
   return Result<int, ContractError>::ok(static_cast<int>(number.value()));
 }
@@ -680,7 +711,9 @@ private:
       }
       result.stops.push_back(PaintStop{offset.value(), rgba.value()});
     }
-    std::sort(result.stops.begin(), result.stops.end(), [](const PaintStop& a, const PaintStop& b) {
+    // stable_sort: equal-offset hard stops must keep author order, or a
+    // hard color transition can invert depending on the STL's sort.
+    std::stable_sort(result.stops.begin(), result.stops.end(), [](const PaintStop& a, const PaintStop& b) {
       return a.offset < b.offset;
     });
     return Result<Paint, ContractError>::ok(std::move(result));

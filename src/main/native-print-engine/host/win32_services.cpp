@@ -9,6 +9,7 @@
 
 #include "custom_stock.hpp"
 #include "print_engine/contract_loader.hpp"
+#include "print_engine/native_print.hpp"
 #include "print_engine/renderer.hpp"
 #include "svg_rasterizer.hpp"
 
@@ -183,11 +184,14 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
           static_cast<short>(custom->width_microns / 100);
       devmode->dmPaperLength =
           static_cast<short>(custom->height_microns / 100);
+      // Orientation stays PORTRAIT: dmPaperWidth/Length already describe
+      // the physical sheet exactly as the contract page maps onto it
+      // (identity, no rotation). Adding DMORIENT_LANDSCAPE because
+      // width > height double-specified the rotation: drivers honoring
+      // both rotated the raster 90 degrees and clipped a wide label to
+      // its short dimension -- a silently wrong paper mapping.
       devmode->dmFields |= DM_ORIENTATION;
-      devmode->dmOrientation =
-          static_cast<short>(custom->width_microns > custom->height_microns
-                                 ? DMORIENT_LANDSCAPE
-                                 : DMORIENT_PORTRAIT);
+      devmode->dmOrientation = DMORIENT_PORTRAIT;
       // Merge through DocumentProperties so the driver can fold this with its
       // private (dmDriverExtra) bytes; same code path as the named-stock case.
       devmode->dmFields |= DM_COPIES;
@@ -237,13 +241,14 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
       if (name == wanted) {
         devmode->dmFields |= DM_PAPERSIZE;
         devmode->dmPaperSize = static_cast<short>(paper_ids[static_cast<std::size_t>(i)]);
-        const POINT size = paper_sizes[static_cast<std::size_t>(i)];
-        if (size.x > 0 && size.y > 0) {
-          devmode->dmFields |= DM_ORIENTATION;
-          devmode->dmOrientation =
-              static_cast<short>(size.x > size.y ? DMORIENT_LANDSCAPE
-                                                 : DMORIENT_PORTRAIT);
-        }
+        // Orientation stays PORTRAIT (identity mapping): the stock list
+        // shown to the operator carries DC_PAPERSIZE dims as-is, and the
+        // contract page is baked to those dims. Deriving LANDSCAPE from
+        // the paper's natural aspect rotated the raster on top of the
+        // already-correct dims (double rotation on wide label stocks).
+        (void)paper_sizes;
+        devmode->dmFields |= DM_ORIENTATION;
+        devmode->dmOrientation = DMORIENT_PORTRAIT;
         found = true;
         break;
       }
@@ -330,6 +335,11 @@ std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
         colors.push_back(gdip_color(stop.color));
         positions.push_back(static_cast<Gdiplus::REAL>(stop.offset));
       }
+      // GDI+ requires positions[0]==0 and positions[n-1]==1 or it rejects
+      // the call (silently -- Status unchecked) and falls back to the
+      // 2-color constructor endpoints.
+      positions.front() = 0.0f;
+      positions.back() = 1.0f;
       brush->SetInterpolationColors(colors.data(), positions.data(),
                                     static_cast<INT>(colors.size()));
     }
@@ -344,14 +354,22 @@ std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
     INT count = 1;
     brush->SetSurroundColors(&surround, &count);
     if (paint.stops.size() > 2) {
+      // GDI+ PathGradientBrush interpolation positions run 0 = path
+      // BOUNDARY -> 1 = center, the opposite of SVG radial offsets
+      // (0 = center). Feed the stops reversed or >=3-stop radial
+      // gradients render inverted. Positions are pinned to start at 0
+      // and end at 1 (GDI+ rejects the call otherwise -- silently, as
+      // the Status was unchecked).
       std::vector<Gdiplus::Color> colors;
       std::vector<Gdiplus::REAL> positions;
       colors.reserve(paint.stops.size());
       positions.reserve(paint.stops.size());
-      for (const auto& stop : paint.stops) {
-        colors.push_back(gdip_color(stop.color));
-        positions.push_back(static_cast<Gdiplus::REAL>(stop.offset));
+      for (auto it = paint.stops.rbegin(); it != paint.stops.rend(); ++it) {
+        colors.push_back(gdip_color(it->color));
+        positions.push_back(static_cast<Gdiplus::REAL>(1.0 - it->offset));
       }
+      positions.front() = 0.0f;
+      positions.back() = 1.0f;
       brush->SetInterpolationColors(colors.data(), positions.data(),
                                     static_cast<INT>(colors.size()));
     }
@@ -389,10 +407,16 @@ StyledPen make_pen(const StrokeStyle& stroke,
   styled.pen->SetLineJoin(line_join(stroke.join));
   styled.pen->SetMiterLimit(static_cast<Gdiplus::REAL>(stroke.miter_limit));
   if (!stroke.dash.empty()) {
+    // GDI+ dash-array elements are MULTIPLES OF PEN WIDTH; the contract
+    // carries absolute units (SVG stroke-dasharray semantics, already
+    // pre-multiplied by stroke width on the producer side). Feeding raw
+    // values printed dash lengths proportional to width^2 -- divide by the
+    // stroke width so device dash length == value * scale.
+    const double width_divisor = std::max(stroke.width, 1e-6);
     std::vector<Gdiplus::REAL> dash;
     dash.reserve(stroke.dash.size());
     for (const double value : stroke.dash) {
-      dash.push_back(static_cast<Gdiplus::REAL>(value));
+      dash.push_back(static_cast<Gdiplus::REAL>(value / width_divisor));
     }
     styled.pen->SetDashPattern(dash.data(), static_cast<INT>(dash.size()));
   }
@@ -432,12 +456,18 @@ bool decode_base64(const std::string& text, std::vector<std::uint8_t>& out) {
   if (text.empty() || text.size() % 4 != 0) return false;
   out.clear();
   for (std::size_t index = 0; index < text.size(); index += 4) {
+    const bool last_group = index + 4 == text.size();
+    const bool pad2 = text[index + 2] == '=';
+    const bool pad3 = text[index + 3] == '=';
+    // '=' is only valid as trailing padding of the FINAL group; "AB=A"
+    // previously emitted a garbage byte from c=-1 instead of failing loud.
+    if ((pad2 || pad3) && !last_group) return false;
+    if (pad2 && !pad3) return false;
     const int a = base64_value(text[index]);
     const int b = base64_value(text[index + 1]);
-    const int c = text[index + 2] == '=' ? -1 : base64_value(text[index + 2]);
-    const int d = text[index + 3] == '=' ? -1 : base64_value(text[index + 3]);
-    if (a < 0 || b < 0 || (text[index + 2] != '=' && c < 0) ||
-        (text[index + 3] != '=' && d < 0)) {
+    const int c = pad2 ? -1 : base64_value(text[index + 2]);
+    const int d = pad3 ? -1 : base64_value(text[index + 3]);
+    if (a < 0 || b < 0 || (!pad2 && c < 0) || (!pad3 && d < 0)) {
       return false;
     }
     out.push_back(static_cast<std::uint8_t>((a << 2) | (b >> 4)));
@@ -568,109 +598,6 @@ void straight_rgba_to_premul_bgra(const std::uint8_t* src,
   }
 }
 
-// D3: generate an SVG <text> fragment for a text command so the same resvg
-// pipeline handles both static (baked) SVG artwork and variable/merge text.
-// The SVG uses the text command's pre-computed device_box as the viewport;
-// a TranslateTransform in the caller positions it on the page.
-//
-// Limitations (loud notice when hit, never silent):
-//  - Word-wrap via spe_text_measure; falls back to fixed-width estimation.
-//  - Rich paragraphs: each paragraph is one <tspan> block with the run text
-//    concatenated; per-run sub-styling is applied via <tspan> children.
-//  - Alignment: left/center/right → SVG text-anchor start/middle/end.
-//  - No sub-pixel positioning (device_box provides the bounding rectangle).
-std::string text_to_svg(const EmittedCommand& c, ISvgRasterizer* sr) {
-  const double bw = std::max(1.0, c.device_box.w);
-  const double bh = std::max(1.0, c.device_box.h);
-  const double fs = std::max(1.0, c.font_size_px * command_scale(c));
-
-  // SVG text-anchor from horizontal alignment.
-  const char* anchor = "middle";
-  double tx = bw * 0.5;
-  if (c.align_h == "left")  { anchor = "start";  tx = 0.0; }
-  if (c.align_h == "right") { anchor = "end";    tx = bw; }
-
-  // Baseline: try spe_text_measure for exact ascent; fall back to 0.8*em.
-  float ascent = static_cast<float>(fs * 0.8);
-  if (sr) {
-    const auto m = sr->measure_text(
-        c.font_family.empty() ? std::string("Arial") : c.font_family,
-        (c.bold ? 700 : 400), c.italic, static_cast<float>(fs), c.label);
-    if (m.has_value()) ascent = m->ascent_px;
-  }
-
-  // Collect paragraph lines (label split by '\n', or rich paragraph runs).
-  struct Para { std::string text; std::string align; };
-  std::vector<Para> paras;
-  if (!c.rich_paragraphs.empty()) {
-    for (const auto& p : c.rich_paragraphs) {
-      std::string t;
-      for (const auto& r : p.runs) t += r.text;
-      paras.push_back({t, p.align.empty() ? c.align_h : p.align});
-    }
-  } else {
-    const std::string& s = c.label;
-    std::size_t pos = 0;
-    while (true) {
-      const std::size_t nl = s.find('\n', pos);
-      paras.push_back({s.substr(pos, nl == std::string::npos ? nl : nl - pos),
-                       c.align_h});
-      if (nl == std::string::npos) break;
-      pos = nl + 1;
-    }
-  }
-
-  const double line_h = fs * 1.2;  // fallback line height
-
-  auto xml_escape = [](const std::string& s) {
-    std::string out; out.reserve(s.size());
-    for (char ch : s) {
-      if      (ch == '&')  out += "&amp;";
-      else if (ch == '<')  out += "&lt;";
-      else if (ch == '>')  out += "&gt;";
-      else if (ch == '"')  out += "&quot;";
-      else                 out += ch;
-    }
-    return out;
-  };
-
-  const std::string family =
-      c.font_family.empty() ? std::string("Arial") : c.font_family;
-  const std::string weight_s = c.bold ? "bold" : "normal";
-  const std::string style_s  = c.italic ? "italic" : "normal";
-  const std::string color_s  = color_to_css(c.text_color);
-
-  // SVG viewport = device_box; all coordinates are relative to it.
-  std::ostringstream svg;
-  svg << "<svg xmlns=\"http://www.w3.org/2000/svg\""
-      << " width=\"" << bw << "\" height=\"" << bh << "\">";
-
-  for (std::size_t i = 0; i < paras.size(); ++i) {
-    const double y = ascent + static_cast<double>(i) * line_h;
-    if (y > bh + line_h) break;  // off-box: clip, never silent here
-
-    const char* para_anchor = anchor;
-    double para_x = tx;
-    if (paras[i].align == "left")  { para_anchor = "start";  para_x = 0.0; }
-    if (paras[i].align == "right") { para_anchor = "end";    para_x = bw; }
-    if (paras[i].align == "center") { para_anchor = "middle"; para_x = bw * 0.5; }
-
-    svg << "<text"
-        << " x=\"" << para_x << "\""
-        << " y=\"" << y << "\""
-        << " font-family=\"" << xml_escape(family) << "\""
-        << " font-size=\"" << fs << "\""
-        << " font-weight=\"" << weight_s << "\""
-        << " font-style=\"" << style_s << "\""
-        << " fill=\"" << color_s << "\""
-        << " text-anchor=\"" << para_anchor << "\""
-        << " dominant-baseline=\"auto\""
-        << ">" << xml_escape(paras[i].text) << "</text>\n";
-  }
-  svg << "</svg>";
-  return svg.str();
-}
-
 // Draw one render trace onto a Graphics already translated so device (0,0) is
 // the page origin. Shared by preview and print so they cannot diverge (INV-5).
 // `svg_rasterizer` may be null (no backend installed); when null OR the
@@ -698,6 +625,19 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
   for (const auto& c : trace.commands) {
     if (c.kind == EmittedKind::StartTile) {
       current_page_id = c.label;
+      g.ResetClip();
+    } else if (c.kind == EmittedKind::EndTile) {
+      g.ResetClip();
+    } else if (c.kind == EmittedKind::Clip) {
+      // Per-tile clip. The engine RELIES on the sink honoring this (its
+      // HardwareMarginClip notice says content "was clipped"); ignoring it
+      // let preview show overhanging/neighbor-tile content that paper
+      // clips -- an INV-5 preview!=print divergence.
+      g.SetClip(Gdiplus::RectF(
+          static_cast<Gdiplus::REAL>(c.device_box.x),
+          static_cast<Gdiplus::REAL>(c.device_box.y),
+          static_cast<Gdiplus::REAL>(c.device_box.w),
+          static_cast<Gdiplus::REAL>(c.device_box.h)));
     } else if (c.kind == EmittedKind::Path) {
       const Affine a = affine_for(c.contract_box, c.device_box);
       Gdiplus::GraphicsPath path;
@@ -723,58 +663,13 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         continue;
       }
 
-      // D3 TEXT UNIFICATION: when the SVG rasterizer is available, route the
-      // text through the same resvg pipeline as baked SVG artwork (one shaper
-      // for static and variable text). On success: rasterize and composite, then
-      // emit SvgArtworkRasterized notice and continue. On failure: fall through
-      // to the GDI+ DrawString path below (loud notice only if text would be
-      // wrong, not for every missing-DLL scenario — GDI+ is a correct fallback).
-      if (svg_rasterizer != nullptr && svg_rasterizer->available()) {
-        const int tw = static_cast<int>(std::max(1.0, c.device_box.w));
-        const int th = static_cast<int>(std::max(1.0, c.device_box.h));
-        const std::string text_svg = text_to_svg(c, svg_rasterizer);
-        const SvgRasterResult rr = svg_rasterizer->render(
-            text_svg,
-            static_cast<std::uint32_t>(tw),
-            static_cast<std::uint32_t>(th),
-            static_cast<double>(g.GetDpiX()));
-        if (rr.ok() && rr.raster.width > 0 && rr.raster.height > 0 &&
-            rr.raster.rgba.size() ==
-                static_cast<std::size_t>(rr.raster.width) *
-                    rr.raster.height * 4u) {
-          // Convert straight RGBA -> premul BGRA for GDI+.
-          const std::size_t pixel_count =
-              static_cast<std::size_t>(rr.raster.width) * rr.raster.height;
-          std::vector<std::uint8_t> premul(pixel_count * 4u);
-          straight_rgba_to_premul_bgra(rr.raster.rgba.data(), premul.data(),
-                                        pixel_count);
-          const INT stride = static_cast<INT>(rr.raster.width) * 4;
-          Gdiplus::Bitmap bmp(static_cast<INT>(rr.raster.width),
-                               static_cast<INT>(rr.raster.height),
-                               stride, PixelFormat32bppPARGB, premul.data());
-          if (bmp.GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::RectF dst(
-                static_cast<Gdiplus::REAL>(c.device_box.x),
-                static_cast<Gdiplus::REAL>(c.device_box.y),
-                static_cast<Gdiplus::REAL>(c.device_box.w),
-                static_cast<Gdiplus::REAL>(c.device_box.h));
-            g.DrawImage(&bmp, dst, 0.0f, 0.0f,
-                        static_cast<Gdiplus::REAL>(rr.raster.width),
-                        static_cast<Gdiplus::REAL>(rr.raster.height),
-                        Gdiplus::UnitPixel);
-            push_notice_unique(result.notices,
-                DegradationNotice{DegradationNoticeType::SvgArtworkRasterized,
-                                  current_page_id, "text via resvg", {}, {}});
-            continue;  // D3: done — skip GDI+ fallback
-          }
-        }
-        // Fall through to GDI+ DrawString (rasterizer refused or failed).
-      }
-
-      // GDI+ DrawString fallback (no rasterizer, or D3 rasterize failed).
       // §2 measure-at-the-sink: ALL text layout (wrap, shrink-to-fit, align,
-      // clip) is done here with real GDI+ glyph metrics. Preview and print run
-      // this same code, so what is measured is exactly what prints (INV-5).
+      // clip) is done here with real GDI+ glyph metrics. Preview and print
+      // run this same code, so what is measured is exactly what prints
+      // (INV-5). NB: an earlier "route text through resvg" bypass was
+      // removed -- it silently discarded wrap/overflow/align_v/decoration/
+      // rich-run styling that this reference sink implements (C1).
+
       const double scale = command_scale(c);
       const std::wstring family =
           widen(c.font_family.empty() ? std::string("Arial") : c.font_family);
@@ -1538,8 +1433,19 @@ class Win32Services final : public EngineServices {
           ContractErrorCode::PrintDeviceError, printer_id,
           "could not open printer device"});
     }
-    const double dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    const RenderTarget target{dpi > 0 ? dpi : 300.0, units_per_inch(doc.units)};
+    const double dpi_x = GetDeviceCaps(hdc, LOGPIXELSX);
+    const double dpi_y = GetDeviceCaps(hdc, LOGPIXELSY);
+    // Printer DCs draw in PRINTABLE-AREA coordinates: device (0,0) sits
+    // PHYSICALOFFSETX/Y pixels inside the paper corner. The contract page
+    // is the PAPER, so every draw must be shifted by -offset or the whole
+    // page prints displaced down-right and the bottom/right strip vanishes
+    // -- silently, and differently from preview (INV-5).
+    const double phys_off_x =
+        std::max(0, GetDeviceCaps(hdc, PHYSICALOFFSETX));
+    const double phys_off_y =
+        std::max(0, GetDeviceCaps(hdc, PHYSICALOFFSETY));
+    const RenderTarget target{dpi_x > 0 ? dpi_x : 300.0,
+                              units_per_inch(doc.units)};
     auto rendered = render_to_trace(doc, target, merge, false);
     if (!rendered) {
       DeleteDC(hdc);
@@ -1566,6 +1472,36 @@ class Win32Services final : public EngineServices {
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id,
           "render trace contained no printable tiles"});
+    }
+
+    // Loud notice when content falls inside the hardware non-printable
+    // margin (the band blit physically cannot reach it). Uses the engine's
+    // own DeviceCaps model so the rule is testable off-Windows.
+    {
+      DeviceCaps caps{};
+      caps.log_pixels_x = dpi_x > 0 ? dpi_x : 300.0;
+      caps.log_pixels_y = dpi_y > 0 ? dpi_y : caps.log_pixels_x;
+      caps.physical_offset_x = phys_off_x;
+      caps.physical_offset_y = phys_off_y;
+      caps.physical_width = GetDeviceCaps(hdc, PHYSICALWIDTH);
+      caps.physical_height = GetDeviceCaps(hdc, PHYSICALHEIGHT);
+      caps.horz_res = GetDeviceCaps(hdc, HORZRES);
+      caps.vert_res = GetDeviceCaps(hdc, VERTRES);
+      const NativePrintTarget npt{units_per_inch(doc.units)};
+      if (caps.horz_res > 0 && caps.vert_res > 0) {
+        for (const auto& page : doc.pages) {
+          std::size_t tile_index = 0;
+          for (const auto& tile : page.tiles) {
+            if (tile_content_hits_hardware_margin(npt, caps, page, tile)) {
+              push_notice_unique(device_notices, DegradationNotice{
+                  DegradationNoticeType::HardwareMarginClip, page.id,
+                  "content lies in the printer's non-printable margin",
+                  {}, std::to_string(tile_index)});
+            }
+            ++tile_index;
+          }
+        }
+      }
     }
 
     if (StartDocW(hdc, &di) <= 0) {
@@ -1607,9 +1543,19 @@ class Win32Services final : public EngineServices {
             Gdiplus::Graphics gb(&band_bmp);
             gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white
             gb.SetPageUnit(Gdiplus::UnitPixel);
-            // Shift the world origin so page row band_y maps to band row 0.
-            gb.TranslateTransform(
-                0.0f, static_cast<Gdiplus::REAL>(-band_y));
+            // World -> band-device mapping:
+            //  x' = x - phys_off_x
+            //  y' = (dpi_y/dpi_x) * y - band_y - phys_off_y
+            // The trace is rendered at dpi_x on both axes; the m22 factor
+            // corrects anisotropic devices (e.g. 203x300 thermal heads)
+            // that previously printed everything vertically distorted.
+            const double aniso_y =
+                (dpi_x > 0.0 && dpi_y > 0.0) ? dpi_y / dpi_x : 1.0;
+            Gdiplus::Matrix world(
+                1.0f, 0.0f, 0.0f, static_cast<Gdiplus::REAL>(aniso_y),
+                static_cast<Gdiplus::REAL>(-phys_off_x),
+                static_cast<Gdiplus::REAL>(-band_y - phys_off_y));
+            gb.SetTransform(&world);
             auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get(),
                                     opts.edge_crisp);
             if (!drawn) {
@@ -1626,7 +1572,20 @@ class Win32Services final : public EngineServices {
             }
             Gdiplus::Graphics gp(hdc);
             gp.SetPageUnit(Gdiplus::UnitPixel);
-            gp.DrawImage(&band_bmp, 0, band_y, pw, band_h);  // opaque → crisp
+            // Opaque blit -> crisp. Status checked: a failed band blit
+            // (driver OOM) previously printed a blank 512px stripe with no
+            // notice.
+            const Gdiplus::Status blit =
+                gp.DrawImage(&band_bmp, 0, band_y, pw, band_h);
+            if (blit != Gdiplus::Ok) {
+              aborted = true;
+              fail_detail = "band composite failed at copy=" +
+                            std::to_string(copy + 1) +
+                            " page=" + tile.page_id +
+                            " tile=" + std::to_string(tile.tile_index) +
+                            " band=" + std::to_string(band);
+              break;
+            }
           }
         }
         if (EndPage(hdc) <= 0) {
@@ -1644,7 +1603,14 @@ class Win32Services final : public EngineServices {
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id, fail_detail});
     }
-    EndDoc(hdc);
+    // EndDoc can still fail (spooler/driver rejects the document); an
+    // unchecked call reported success while nothing reached paper.
+    if (EndDoc(hdc) <= 0) {
+      DeleteDC(hdc);
+      return Result<PrintOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, printer_id,
+          "EndDoc failed (document rejected by spooler/driver)"});
+    }
     DeleteDC(hdc);
 
     PrintOutput job;
@@ -1698,8 +1664,10 @@ class Win32Services final : public EngineServices {
     const double dpix = hdc ? GetDeviceCaps(hdc, LOGPIXELSX) : 300.0;
     const double dpiy = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 300.0;
     if (hdc) DeleteDC(hdc);
-    const int show = std::min(paper_count, 24);
-    for (int i = 0; i < show; ++i) {
+    // Advertise EVERY paper the driver reports: the old 24-entry cap
+    // silently hid stocks from the operator's picker (office drivers
+    // commonly report 60+ named papers).
+    for (int i = 0; i < paper_count; ++i) {
       StockInfo s;
       // DC_PAPERNAMES entries are 64-wchar fixed cells, NOT guaranteed
       // null-terminated when the name fills the cell — bound the length so

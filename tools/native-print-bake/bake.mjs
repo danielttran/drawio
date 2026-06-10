@@ -100,6 +100,46 @@ if (typeof exporter.registerStencils === 'function') {
   exporter.registerStencils(_stencilRegistry);
 }
 
+// Minimal absolute-path bounds (M/L/H/V/C/A/Z) for the ink-extent pass.
+// C uses the control hull (conservative), A the endpoint boxes grown by r.
+function inkPathMin(d) {
+  const toks = String(d).match(/[a-zA-Z]|[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g) || [];
+  let i = 0, cx = 0, cy = 0, cmd = '';
+  let minX = Infinity, minY = Infinity;
+  const ext = (x, y) => { if (x < minX) minX = x; if (y < minY) minY = y; };
+  const num = () => parseFloat(toks[i++]);
+  while (i < toks.length) {
+    if (/[a-zA-Z]/.test(toks[i])) cmd = toks[i++];
+    const C = (cmd || '').toUpperCase();
+    if (C === 'M' || C === 'L') { cx = num(); cy = num(); ext(cx, cy); if (C === 'M') cmd = 'L'; }
+    else if (C === 'H') { cx = num(); ext(cx, cy); }
+    else if (C === 'V') { cy = num(); ext(cx, cy); }
+    else if (C === 'C') { ext(num(), num()); ext(num(), num()); cx = num(); cy = num(); ext(cx, cy); }
+    else if (C === 'A') { num(); num(); num(); num(); num();
+      // Endpoints only: end+-r over-estimates by up to 2r and would shift
+      // content spuriously. An arc's true extremes never exceed its cell
+      // geometry, which the parser bounds already cover.
+      const x = num(), y = num(); ext(x, y); cx = x; cy = y; }
+    else if (C === 'Z') { /* nothing */ }
+    else break;
+  }
+  return isFinite(minX) ? { x: minX, y: minY } : null;
+}
+
+// True ink minimum of an emitted page (boxes for box-bearing nodes, parsed
+// path extents for kind:path).
+function pageInkMin(page) {
+  let minX = 0, minY = 0;
+  for (const n of page.paint || []) {
+    if (n.box) { minX = Math.min(minX, n.box.x); minY = Math.min(minY, n.box.y); }
+    else if (n.kind === 'path' && typeof n.d === 'string') {
+      const m = inkPathMin(n.d);
+      if (m) { minX = Math.min(minX, m.x); minY = Math.min(minY, m.y); }
+    }
+  }
+  return { x: minX, y: minY };
+}
+
 // Bake a single page (internal helper). Resolves external images first.
 // Returns { pxContract (one-page), notices }.
 async function bakePage(pageData, exporterOpts, fetchFn) {
@@ -111,8 +151,31 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
     resolvedImages = await exporter.embedExternalImages(graph, fetchFn || localFileFetch, null, null)
       .catch(() => ({}));
   }
-  return exporter.buildResult(graph, pageData.paper,
+  const first = exporter.buildResult(graph, pageData.paper,
     { ...(exporterOpts || {}), resolvedImages });
+  // INK-EXTENT PASS: the parser's geometry bounds cannot know every painted
+  // halo (outside-positioned labels, wedge/arrow band widths, rotation
+  // slop). If any EMITTED ink lands above/left of the page origin, shift
+  // the anchor by the overhang and re-bake once -- so what the editor shows
+  // at the content edge is on the paper, not off it.
+  const page0 = first.contract.document.pages[0];
+  const inkMin = pageInkMin(page0);
+  const PAD = 2.5; // exporter SVG_PAD slop: boxes legitimately sit ~2px out
+  if (inkMin.x < -PAD || inkMin.y < -PAD) {
+    const shiftX = Math.min(0, inkMin.x + PAD);
+    const shiftY = Math.min(0, inkMin.y + PAD);
+    const b = graph.getGraphBounds();
+    const shifted = {
+      ...graph,
+      getGraphBounds: () => ({
+        x: b.x + shiftX, y: b.y + shiftY,
+        width: b.width, height: b.height
+      })
+    };
+    return exporter.buildResult(shifted, pageData.paper,
+      { ...(exporterOpts || {}), resolvedImages });
+  }
+  return first;
 }
 
 // Bake a .drawio XML string to a multi-page um-unit contract.
@@ -129,6 +192,10 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
 // Returns Promise<{ contract, notices }> where:
 //   contract — schema-1.1 um-unit object with all baked pages
 //   notices  — flat array of all notices from all pages
+// The dialog's tested severity taxonomy (exporter.js noticeSeverity):
+// 'silent' / 'info' never block printing; 'degradation' requires an ack.
+export const noticeSeverity = exporter.noticeSeverity;
+
 export async function bake(drawioXml, options) {
   const opts = options || {};
   const parsed = parseDrawio(drawioXml);

@@ -59,6 +59,24 @@ Json notice_to_json(const DegradationNotice& n) {
   return j;
 }
 
+// Minor-ahead contracts may carry additive paint properties this engine
+// ignores; the operator must see that on EVERY render/print path, not only
+// when the app happens to call GetContractFields first (silent feature loss
+// otherwise -- the C1 class).
+void append_schema_minor_ahead(Json& notices, const BakedDocument& doc) {
+  if (doc.schema.minor <= SupportedMinor) {
+    return;
+  }
+  Json n = Json::object();
+  n.set("kind", Json::str(to_wire(NoticeKind::SchemaMinorAhead)));
+  n.set("pageId", Json());
+  Json d = Json::object();
+  d.set("fileVersion", Json::number(doc.schema.minor));
+  d.set("supported", Json::number(SupportedMinor));
+  n.set("detail", std::move(d));
+  notices.push_back(std::move(n));
+}
+
 Result<std::string, ContractError> read_contract_ref(
     const Json& contract_ref) {
   using R = Result<std::string, ContractError>;
@@ -240,16 +258,7 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
       }
       r.control.set("fields", std::move(fields));
       Json notices = Json::array();
-      if (doc.schema.minor > SupportedMinor) {
-        Json n = Json::object();
-        n.set("kind", Json::str(to_wire(NoticeKind::SchemaMinorAhead)));
-        n.set("pageId", Json());
-        Json d = Json::object();
-        d.set("fileVersion", Json::number(doc.schema.minor));
-        d.set("supported", Json::number(SupportedMinor));
-        n.set("detail", std::move(d));
-        notices.push_back(std::move(n));
-      }
+      append_schema_minor_ahead(notices, doc);
       r.control.set("notices", std::move(notices));
       r.control.set("proto", proto_echo());
       return r;
@@ -299,6 +308,7 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
       sv.set("minor", Json::number(loaded.value().schema.minor));
       r.control.set("schemaVersion", std::move(sv));
       Json notices = Json::array();
+      append_schema_minor_ahead(notices, loaded.value());
       for (const auto& n : po.notices) notices.push_back(notice_to_json(n));
       r.control.set("notices", std::move(notices));
       r.control.set("proto", proto_echo());
@@ -346,6 +356,7 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
       r.control.set("result", Json::str("PrintResult"));
       r.control.set("jobId", Json::str(job.job_id));
       Json notices = Json::array();
+      append_schema_minor_ahead(notices, loaded.value());
       for (const auto& n : job.notices) notices.push_back(notice_to_json(n));
       r.control.set("notices", std::move(notices));
       r.control.set("jobLog", job.job_log);
