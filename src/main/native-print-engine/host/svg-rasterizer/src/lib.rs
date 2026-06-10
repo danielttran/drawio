@@ -36,17 +36,71 @@ const SPE_SVG_ABI_VERSION: i32 = 1;
 /// host records backend name+version (and is expected to record resolved
 /// fonts) for regulated traceability; cross-machine text byte-equality is not
 /// claimed.
+/// First family from `prefs` that resolves to an installed face, if any.
+/// fontdb is exact-name-match at query time (it does NOT consult fontconfig
+/// aliases), so pointing a generic family at an ABSENT name makes resvg skip
+/// text shaping entirely -> silently blank text (a C1 violation).
+fn first_installed_family(
+    db: &resvg::usvg::fontdb::Database,
+    prefs: &[&'static str],
+) -> Option<&'static str> {
+    use resvg::usvg::fontdb;
+    prefs.iter().copied().find(|name| {
+        db.query(&fontdb::Query {
+            families: &[fontdb::Family::Name(name)],
+            ..Default::default()
+        })
+        .is_some()
+    })
+}
+
+/// Generic-family preference chains: the production design font first, then
+/// its metric-compatible open clones, then a guaranteed-glyph distro face.
+const SANS_PREFS: &[&'static str] = &[
+    "Arial",
+    "Helvetica",
+    "Liberation Sans",
+    "Arimo",
+    "DejaVu Sans",
+    "FreeSans",
+];
+const SERIF_PREFS: &[&'static str] = &[
+    "Times New Roman",
+    "Liberation Serif",
+    "Tinos",
+    "DejaVu Serif",
+    "FreeSerif",
+];
+const MONO_PREFS: &[&'static str] = &[
+    "Courier New",
+    "Liberation Mono",
+    "Cousine",
+    "DejaVu Sans Mono",
+    "FreeMono",
+];
+
 fn fontdb() -> &'static resvg::usvg::fontdb::Database {
     static DB: OnceLock<resvg::usvg::fontdb::Database> = OnceLock::new();
     DB.get_or_init(|| {
         let mut db = resvg::usvg::fontdb::Database::new();
         db.load_system_fonts();
-        // The production print server is provisioned with the design fonts.
-        // Pin generic CSS families to the same Windows/browser defaults draw.io
-        // authors see, instead of silently substituting distro-local fonts.
-        db.set_sans_serif_family("Arial");
-        db.set_serif_family("Times New Roman");
-        db.set_monospace_family("Courier New");
+        // The production print server is provisioned with the design fonts;
+        // when installed they are pinned exactly (Windows/browser defaults
+        // draw.io authors see). On a box without them (Linux CI, the
+        // browser-free verification gate), fall back to the metric-compatible
+        // clone -- the same substitution fontconfig/browsers apply -- because
+        // an alias naming an absent family is not a loud failure: resvg
+        // returns SPE_SVG_OK with fully transparent text, the exact
+        // silent-blank class this backend must never produce.
+        if let Some(f) = first_installed_family(&db, SANS_PREFS) {
+            db.set_sans_serif_family(f);
+        }
+        if let Some(f) = first_installed_family(&db, SERIF_PREFS) {
+            db.set_serif_family(f);
+        }
+        if let Some(f) = first_installed_family(&db, MONO_PREFS) {
+            db.set_monospace_family(f);
+        }
         db
     })
 }
@@ -419,9 +473,37 @@ mod tests {
 
     #[test]
     fn generic_font_aliases_target_print_server_design_fonts() {
+        use super::{first_installed_family, MONO_PREFS, SANS_PREFS, SERIF_PREFS};
+        use resvg::usvg::fontdb::Query;
         let db = fontdb();
-        assert_eq!(db.family_name(&Family::SansSerif), "Arial");
-        assert_eq!(db.family_name(&Family::Serif), "Times New Roman");
-        assert_eq!(db.family_name(&Family::Monospace), "Courier New");
+        for (generic, prefs) in [
+            (Family::SansSerif, SANS_PREFS),
+            (Family::Serif, SERIF_PREFS),
+            (Family::Monospace, MONO_PREFS),
+        ] {
+            let alias = db.family_name(&generic).to_string();
+            match first_installed_family(db, prefs) {
+                Some(expected) => {
+                    // Highest-preference installed family wins; on the
+                    // production print server that is the design font itself
+                    // (Arial / Times New Roman / Courier New).
+                    assert_eq!(alias, expected);
+                    // And the alias MUST resolve to a real face, otherwise
+                    // resvg renders generic-family text silently blank.
+                    assert!(
+                        db.query(&Query {
+                            families: &[generic],
+                            ..Default::default()
+                        })
+                        .is_some(),
+                        "generic {generic:?} alias '{alias}' must resolve to an installed face"
+                    );
+                }
+                None => {
+                    // No candidate installed at all: nothing to pin; the
+                    // verification gate / font preflight stays loud.
+                }
+            }
+        }
     }
 }
