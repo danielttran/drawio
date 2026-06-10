@@ -70,13 +70,22 @@ function validatePaintNode(node, path) {
       if (!node.d.startsWith('M')) {
         bad(path + '.d', 'SVG path must start with an absolute M command (uppercase)');
       }
-      // dash key is REQUIRED on stroke when stroke is an object (null is
-      // valid and represents "no stroke"). The engine rejects a stroke
-      // object missing dash.
-      if (node.stroke && typeof node.stroke === 'object' &&
-          !Object.prototype.hasOwnProperty.call(node.stroke, 'dash')) {
-        bad(path + '.stroke.dash', 'stroke object missing required dash key (use null for solid)');
+      // Mirror the C++ path parser's command whitelist (path_parser.cpp):
+      // ONLY absolute M L H V C A Z. A validator that lets Q/S/T or any
+      // lowercase command through blesses a contract the engine rejects
+      // mid-job -- the exact failure the C5 runbook validation exists to
+      // prevent.
+      {
+        const cmds = node.d.match(/[A-Za-z]/g) || [];
+        for (const cmd of cmds) {
+          if (!'MLHVCAZ'.includes(cmd)) {
+            bad(path + '.d', `engine-unsupported path command ${JSON.stringify(cmd)} (only absolute M L H V C A Z)`);
+            break;
+          }
+        }
       }
+      validatePaint(node.fill, path + '.fill');
+      validateStroke(node.stroke, path + '.stroke');
       break;
     }
     case 'text': {
@@ -149,16 +158,91 @@ function validatePaintNode(node, path) {
       break;
     }
     case 'barcode': {
-      // Barcode lives behind a loud stub until the enLabel SDK lands; we
-      // still check the schema fields are present so the engine accepts it.
+      // Barcode lives behind a loud stub until the enLabel SDK lands; the
+      // ENGINE (contract_loader.cpp) requires a `value` OBJECT carrying
+      // type static|merge -- the old top-level valueType check validated a
+      // field that does not exist and missed the required one.
       required(node, 'symbology', path, 'string');
-      if (node.valueType !== 'static' && node.valueType !== 'merge') {
-        bad(path + '.valueType', `must be static|merge, got ${JSON.stringify(node.valueType)}`);
+      const bv = node.value;
+      if (!bv || typeof bv !== 'object') {
+        bad(path + '.value', 'barcode requires a value object');
+      } else if (bv.type !== 'static' && bv.type !== 'merge') {
+        bad(path + '.value.type', `must be static|merge, got ${JSON.stringify(bv.type)}`);
       }
       break;
     }
     default:
       bad(path + '.kind', `unknown kind ${JSON.stringify(node.kind)}`);
+  }
+}
+
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function validateColor(c, path) {
+  if (typeof c !== 'string' || !HEX_COLOR.test(c)) {
+    bad(path, `engine requires exactly #rrggbb, got ${JSON.stringify(c)}`);
+  }
+}
+
+// Mirrors contract_loader.cpp parse_paint: null, or solid {color, alpha},
+// or linear/radial {stops:[{offset, color, alpha?}]}.
+function validatePaint(paint, path) {
+  if (paint == null) return;
+  if (typeof paint !== 'object') { bad(path, 'paint must be null or an object'); return; }
+  if (paint.type === 'solid') {
+    validateColor(paint.color, path + '.color');
+    if (paint.alpha != null && !(typeof paint.alpha === 'number' && paint.alpha >= 0 && paint.alpha <= 1)) {
+      bad(path + '.alpha', 'alpha must be in [0,1]');
+    }
+  } else if (paint.type === 'linear' || paint.type === 'radial') {
+    if (!Array.isArray(paint.stops) || paint.stops.length < 2) {
+      bad(path + '.stops', 'gradient needs >= 2 stops');
+      return;
+    }
+    paint.stops.forEach((stop, i) => {
+      if (!(typeof stop?.offset === 'number' && stop.offset >= 0 && stop.offset <= 1)) {
+        bad(`${path}.stops[${i}].offset`, 'offset must be in [0,1]');
+      }
+      validateColor(stop?.color, `${path}.stops[${i}].color`);
+      if (stop?.alpha != null && !(typeof stop.alpha === 'number' && stop.alpha >= 0 && stop.alpha <= 1)) {
+        bad(`${path}.stops[${i}].alpha`, 'alpha must be in [0,1]');
+      }
+    });
+  } else {
+    bad(path + '.type', `unknown paint type ${JSON.stringify(paint.type)}`);
+  }
+}
+
+// Mirrors contract_loader.cpp parse_stroke: null, or an object requiring
+// paint, width>0, cap/join enums, miterLimit>0, dash null-or-positive-array.
+function validateStroke(stroke, path) {
+  if (stroke == null) return;
+  if (typeof stroke !== 'object') { bad(path, 'stroke must be null or an object'); return; }
+  if (!Object.prototype.hasOwnProperty.call(stroke, 'paint')) {
+    bad(path + '.paint', 'stroke object missing required paint');
+  } else {
+    validatePaint(stroke.paint, path + '.paint');
+  }
+  if (!(typeof stroke.width === 'number' && stroke.width > 0)) {
+    bad(path + '.width', 'stroke width must be > 0');
+  }
+  if (!['butt', 'round', 'square'].includes(stroke.cap)) {
+    bad(path + '.cap', `must be butt|round|square, got ${JSON.stringify(stroke.cap)}`);
+  }
+  if (!['miter', 'round', 'bevel'].includes(stroke.join)) {
+    bad(path + '.join', `must be miter|round|bevel, got ${JSON.stringify(stroke.join)}`);
+  }
+  if (!(typeof stroke.miterLimit === 'number' && stroke.miterLimit > 0)) {
+    bad(path + '.miterLimit', 'miterLimit must be > 0');
+  }
+  if (!Object.prototype.hasOwnProperty.call(stroke, 'dash')) {
+    bad(path + '.dash', 'stroke object missing required dash key (use null for solid)');
+  } else if (stroke.dash != null) {
+    if (!Array.isArray(stroke.dash) ||
+        !stroke.dash.every((v) => typeof v === 'number' && v > 0)) {
+      bad(path + '.dash', 'dash must be null or an array of positive numbers');
+    }
   }
 }
 

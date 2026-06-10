@@ -26,6 +26,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 // Lazy-import so the module is importable without bake being required at parse
 // time (lets tests import just the service factory without the full bake dep).
 let _bake = null;
+let _noticeSeverity = null;
 let _assertFontsAvailable = null;
 let _referencedFonts = null;
 let _checkFontAvailability = null;
@@ -34,6 +35,7 @@ async function loadDeps() {
   if (!_bake) {
     const b = await import('../native-print-bake/bake.mjs');
     _bake = b.bake;
+    _noticeSeverity = b.noticeSeverity;
     const fp = await import('../native-print-bake/font-preflight.mjs');
     _assertFontsAvailable = fp.assertFontsAvailable;
     _referencedFonts = fp.referencedFonts;
@@ -198,11 +200,15 @@ export class PrintService {
         unattended: false,  // we apply D5 ourselves below
         pages: pages || undefined
       });
-      // D5: any bake notice → refuse
-      if (notices.length > 0) {
-        const err = new Error(`bake produced ${notices.length} notice(s)`);
+      // D5: any DEGRADATION-severity bake notice -> refuse BEFORE printing.
+      // info/silent kinds (e.g. SvgArtworkRasterized, HardwareMarginClip per
+      // the owner's taxonomy) never block: refusing on them made nearly every
+      // faithful job fail.
+      const blocking = notices.filter((n) => _noticeSeverity(n.kind) === 'degradation');
+      if (blocking.length > 0) {
+        const err = new Error(`bake produced ${blocking.length} degradation notice(s)`);
         err.code = 'BAKE_NOTICES';
-        err.notices = notices;
+        err.notices = blocking;
         throw err;
       }
       contract = baked;
@@ -224,15 +230,20 @@ export class PrintService {
     const { jobId, notices: engineNotices, jobLog } =
       await this._client.print(contract, printerId, stockId, copies, data, options);
 
-    // D5: any engine notice → refuse (job not printed)
-    if (engineNotices.length > 0) {
-      const err = new Error(`engine produced ${engineNotices.length} notice(s)`);
-      err.code = 'PRINT_NOTICES';
-      err.notices = engineNotices;
-      throw err;
-    }
-
-    return { jobId, notices: [], jobLog };
+    // Engine notices arrive AFTER the sheet is physically printed (Op::Print
+    // performs the print), so a thrown "refusal" here was FALSE: the paper
+    // was already out, the client saw 422 and retried -> duplicate prints.
+    // Report the printed job honestly, with its notices, and let the caller
+    // decide. Severity-filter so faithful-render info notices don't read as
+    // degradations.
+    const printedDegradations = engineNotices.filter(
+      (n) => _noticeSeverity(n.kind) === 'degradation');
+    return {
+      jobId,
+      notices: engineNotices,
+      degradations: printedDegradations,
+      jobLog
+    };
   }
 }
 
@@ -258,7 +269,22 @@ async function main() {
 
   const { HostClient } = await import('./host-client.mjs');
   const client = new HostClient({ bin: hostBin });
-  const svc = new PrintService({ hostClient: client, token });
+  // Section 3.5 font preflight: NATIVE_PRINT_FONTS names the faces installed
+  // on the print server (comma-separated, or @/path/to/list with one face
+  // per line). Without it the preflight cannot run -- say so loudly instead
+  // of silently skipping it forever.
+  let availableFonts = null;
+  const fontsEnv = process.env.NATIVE_PRINT_FONTS;
+  if (fontsEnv) {
+    let raw = fontsEnv;
+    if (raw.startsWith('@')) raw = await readFile(raw.slice(1), 'utf8');
+    availableFonts = new Set(raw.split(/[,\n]/).map((f) => f.trim()).filter(Boolean));
+    process.stderr.write(`font preflight enabled (${availableFonts.size} faces)\n`);
+  } else {
+    process.stderr.write(
+      'WARNING: NATIVE_PRINT_FONTS not set -- section 3.5 font preflight is DISABLED\n');
+  }
+  const svc = new PrintService({ hostClient: client, token, availableFonts });
 
   const addr = await svc.start(port);
   process.stderr.write(`native-print-service listening on http://127.0.0.1:${addr.port}\n`);

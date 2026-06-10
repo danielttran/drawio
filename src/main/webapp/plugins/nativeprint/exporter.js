@@ -36,7 +36,7 @@
   // coordinates (not a group transform), the gradient axis must rotate with the
   // shape too. drawio direction adds south=+90, west=+180, north=+270 (CW).
   function rotateGradDir(gd, deg) {
-    if (!deg) return gd;
+    if (!deg || String(gd || '').toLowerCase() === 'radial') return gd;
     var ang = { east: 0, south: 90, west: 180, north: 270 };
     var inv = { 0: 'east', 90: 'south', 180: 'west', 270: 'north' };
     var base = ang[String(gd || 'south').toLowerCase()];
@@ -44,8 +44,18 @@
     return inv[((base + deg) % 360 + 360) % 360];
   }
 
-  // Build a <linearGradient> definition string with correct direction.
+  // Build a gradient definition string with correct direction.
+  // gradientDirection=radial is a REAL radial gradient in drawio
+  // (mxSvgCanvas2D creates <radialGradient>, default 50%/50%/50%) -- the
+  // old fallthrough silently printed it as a top-to-bottom linear fade.
   function linearGradDef(id, c1, c2, dir) {
+    if (String(dir || '').toLowerCase() === 'radial') {
+      return '<radialGradient id="' + id + '" cx="0.5" cy="0.5" r="0.5"' +
+        ' gradientUnits="objectBoundingBox">' +
+        '<stop offset="0" stop-color="' + c1 + '"/>' +
+        '<stop offset="1" stop-color="' + c2 + '"/>' +
+        '</radialGradient>';
+    }
     var v = gradientVector(dir);
     return '<linearGradient id="' + id + '" x1="' + v.x1 + '" y1="' + v.y1 +
       '" x2="' + v.x2 + '" y2="' + v.y2 + '" gradientUnits="objectBoundingBox">' +
@@ -598,8 +608,15 @@
   }
 
   function opacity(style, key) {
-    var raw = style && style[key] != null ? style[key] : style && style.opacity;
-    return raw == null ? 1 : clamp01(number(raw, 100) / 100);
+    // mxSvgCanvas2D composes MULTIPLICATIVELY: fill-opacity = alpha *
+    // fillAlpha (same for stroke). The old "specific OR general" fallback
+    // silently rendered opacity=50;fillOpacity=50 at 0.5 instead of 0.25.
+    var base = style && style.opacity != null
+      ? clamp01(number(style.opacity, 100) / 100) : 1;
+    // key === 'opacity' callers want the base alpha itself, not its square.
+    var specific = style && key && key !== 'opacity' && style[key] != null
+      ? clamp01(number(style[key], 100) / 100) : null;
+    return specific == null ? base : base * specific;
   }
 
   function isPaintable(c) {
@@ -1798,6 +1815,12 @@
   function layoutBlocks(entries, width, wrap, defAlign) {
     var parts = [];
     var y = 0;
+    var minX = 0;
+    var maxX = 0;
+    function extend(x0, x1) {
+      if (x0 < minX) minX = x0;
+      if (x1 > maxX) maxX = x1;
+    }
     function emitPara(entry) {
       var indent = entry.indent || 0;
       var avail = Math.max(1, width - indent);
@@ -1841,7 +1864,11 @@
         var align = alignH(entry.align || defAlign);
         var x0 = indent + (align === 'right' ? (avail - rowW)
           : align === 'center' ? (avail - rowW) / 2 : 0);
-        if (x0 < indent) x0 = indent;
+        // drawio default overflow is VISIBLE: long unbreakable rows extend
+        // past the box on screen (left for right-align, both for center).
+        // The old clamp hid the real x0, so the overflow side was wrong
+        // and the viewport could not be grown to show it.
+        extend(x0, x0 + rowW);
         var x = x0;
         var bgRects = [], texts = [];
         row.forEach(function (tk, i) {
@@ -1949,7 +1976,7 @@
       else if (entry.kind === 'foreign') emitForeign(entry);
       else emitPara(entry);
     });
-    return { svg: parts.join(''), height: y };
+    return { svg: parts.join(''), height: y, minX: minX, maxX: maxX };
   }
 
   // Render an HTML label faithfully (headless) -> { body, height }.
@@ -1966,7 +1993,52 @@
     var wrap = style.whiteSpace === 'wrap';
     var contentW = Math.max(1, box.w - rpads.l - rpads.r);
     var laid = layoutBlocks(entries, contentW, wrap, defAlign);
-    return { body: laid.svg, height: laid.height, pad: rpads.l, contentW: contentW };
+    return { body: laid.svg, height: laid.height, pad: rpads.l,
+      contentW: contentW, minX: laid.minX, maxX: laid.maxX };
+  }
+
+
+  // Assemble the final label <svg> node. drawio clips a label to its box
+  // ONLY for overflow=hidden (and fill, which sizes content to the cell);
+  // the DEFAULT is overflow visible -- long unwrapped lines and overflowing
+  // paragraphs extend past the shape on screen. The old unconditional
+  // clipPath silently amputated that ink. For visible overflow the SVG
+  // viewport (and the contract box) is grown by the measured overhang and
+  // the content translated, so the printed label shows exactly what the
+  // editor shows. `over` = {l,r,t,b} in BOX space.
+  function labelSvgAssemble(box, content, clipId, clipped, gOpacityAttr, over) {
+    if (clipped || !over || (over.l <= 0 && over.r <= 0 && over.t <= 0 && over.b <= 0)) {
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg"' +
+        ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
+        '" height="' + fmt(box.h) + '">' +
+        (clipped
+          ? '<defs><clipPath id="' + clipId + '"><rect x="0" y="0" width="' +
+            fmt(box.w) + '" height="' + fmt(box.h) + '"/></clipPath></defs>' +
+            '<g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>'
+          : '<g' + gOpacityAttr + '>') +
+        content + '</g></svg>';
+      return { kind: 'svg',
+        box: { x: box.x, y: box.y, w: box.w, h: box.h },
+        source: base64(svg), aspect: 'preserve' };
+    }
+    var gl = Math.max(0, over.l), gr = Math.max(0, over.r);
+    var gt = Math.max(0, over.t), gb = Math.max(0, over.b);
+    var w2 = box.w + gl + gr, h2 = box.h + gt + gb;
+    var grown = '<svg xmlns="http://www.w3.org/2000/svg"' +
+      ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(w2) +
+      '" height="' + fmt(h2) + '"><g transform="translate(' + fmt(gl) + ' ' +
+      fmt(gt) + ')"' + gOpacityAttr + '>' + content + '</g></svg>';
+    return { kind: 'svg',
+      box: { x: box.x - gl, y: box.y - gt, w: w2, h: h2 },
+      source: base64(grown), aspect: 'preserve' };
+  }
+
+  // Map label-space overflow (l,r,t,b) into box space for a vertical
+  // (horizontal=0, rotate -90) label: label +x (right) exits the box TOP,
+  // label +y (down) exits the box RIGHT.
+  function rotateOverflow(over, vertical) {
+    if (!vertical) return over;
+    return { l: over.t, r: over.b, t: over.r, b: over.l };
   }
 
   function textSvgNode(graph, cell, style, box, label, notices, resolved) {
@@ -2020,13 +2092,21 @@
           richEls = body;
         }
       }
-      var richSvg = '<svg xmlns="http://www.w3.org/2000/svg"' +
-        ' xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
-        '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
-        '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-        '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + richEls +
-        '</g></svg>';
-      return { kind: 'svg', box: box, source: base64(richSvg), aspect: 'preserve' };
+      var richClipped = style.overflow === 'hidden' || style.overflow === 'fill';
+      // Label-space overflow: rows can overhang horizontally (minX<0 /
+      // maxX>contentW) and the paragraph stack can overhang the bottom.
+      var rOy = rich.body !== ''
+        ? Math.max(0, v === 'middle' ? (lh - rich.height) / 2 :
+            v === 'bottom' ? lh - rich.height - pb : pt)
+        : 0;
+      var labelOver = {
+        l: Math.max(0, -((rich.minX || 0) + pl)),
+        r: Math.max(0, (rich.maxX || 0) + pl - lw),
+        t: 0,
+        b: Math.max(0, rOy + rich.height - lh)
+      };
+      return labelSvgAssemble(box, richEls, clipId, richClipped, gOpacityAttr,
+        rotateOverflow(labelOver, vertical));
     }
 
     // Non-HTML labels are literal text: render verbatim (no tag stripping), so
@@ -2097,12 +2177,33 @@
         escXml(String(label || stripHtml(raw))) + '</text></g>';
     }
 
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(box.w) +
-      '" height="' + fmt(box.h) + '"><defs><clipPath id="' + clipId +
-      '"><rect x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '"/></clipPath></defs><g clip-path="url(#' + clipId + ')"' + gOpacityAttr + '>' + textEls +
-      '</g></svg>';
-    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+    var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill';
+    var plainOver = { l: 0, r: 0, t: 0, b: 0 };
+    if (String(style.horizontal) === '0') {
+      // Vertical single-line label, anchored at the box centre: a line
+      // longer than the box height overhangs symmetrically top/bottom.
+      var vW = textWidthPx(String(label || stripHtml(raw)),
+        Math.max(1, number(style.fontSize, 12)));
+      var vOver = Math.max(0, (vW - box.h) / 2);
+      plainOver = { l: 0, r: 0, t: vOver, b: vOver };
+    } else {
+      var yEnd = y;
+      plainOver.b = Math.max(0, yEnd - box.h);
+      rows.forEach(function (r) {
+        if (r.rule || r.text == null) return;
+        var rw = textWidthPx(r.text, r.size) +
+          (letterSp ? letterSp * r.text.length : 0);
+        var rh2 = alignH(r.align || h);
+        var rx0 = rh2 === 'right' ? box.w - pr - rw :
+          rh2 === 'center' ? (box.w - rw) / 2 : pl;
+        plainOver.l = Math.max(plainOver.l, -rx0);
+        plainOver.r = Math.max(plainOver.r, rx0 + rw - box.w);
+      });
+      plainOver.l = Math.max(0, plainOver.l);
+      plainOver.r = Math.max(0, plainOver.r);
+    }
+    return labelSvgAssemble(box, textEls, clipId, plainClipped, gOpacityAttr,
+      plainOver);
   }
 
   function labelTextNode(graph, cell, state, style, box, label, notices, resolved) {
@@ -3032,11 +3133,28 @@
   }
 
   function edgePath(points, rounded, curved, radius) {
-    if (curved && points.length === 4) {
-      return 'M ' + p(points[0].x, points[0].y) + ' C ' +
-        p(points[1].x, points[1].y) + ' ' +
-        p(points[2].x, points[2].y) + ' ' +
-        p(points[3].x, points[3].y);
+    if (curved && points.length > 2) {
+      // mxPolyline.paintCurvedLine: quadratics through successive segment
+      // midpoints, for ANY point count (the old 4-point-only cubic left
+      // every other curved edge printing as a cornered polyline). Each
+      // quadratic is emitted as its exact cubic (the engine path parser
+      // accepts C, not Q).
+      var d = 'M ' + p(points[0].x, points[0].y);
+      var cur = points[0];
+      var quadTo = function (cp, ep) {
+        var c1 = { x: cur.x + (2 / 3) * (cp.x - cur.x),
+                   y: cur.y + (2 / 3) * (cp.y - cur.y) };
+        var c2 = { x: ep.x + (2 / 3) * (cp.x - ep.x),
+                   y: ep.y + (2 / 3) * (cp.y - ep.y) };
+        d += ' C ' + p(c1.x, c1.y) + ' ' + p(c2.x, c2.y) + ' ' + p(ep.x, ep.y);
+        cur = ep;
+      };
+      for (var qi = 1; qi < points.length - 2; qi++) {
+        var q0 = points[qi], q1 = points[qi + 1];
+        quadTo(q0, { x: (q0.x + q1.x) / 2, y: (q0.y + q1.y) / 2 });
+      }
+      quadTo(points[points.length - 2], points[points.length - 1]);
+      return d;
     }
     if (!rounded || points.length < 3) {
       var d = 'M ' + p(points[0].x, points[0].y);
@@ -3363,8 +3481,8 @@
       // support textContent extraction reliably headlessly).
       s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
            .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
-           .replace(/&#(\d+);/g, function(_, n) { return String.fromCharCode(+n); })
-           .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCharCode(parseInt(h, 16)); });
+           .replace(/&#(\d+);/g, function(_, n) { return String.fromCodePoint(+n); })
+           .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCodePoint(parseInt(h, 16)); });
       s = s.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     }
     return s;
@@ -3423,6 +3541,27 @@
     return points[points.length - 1];
   }
 
+  // Direction of the segment containing arc-length fraction t.
+  function segmentAt(points, t) {
+    var total = 0, i;
+    for (i = 1; i < points.length; i++) {
+      var ddx = points[i].x - points[i - 1].x;
+      var ddy = points[i].y - points[i - 1].y;
+      total += Math.sqrt(ddx * ddx + ddy * ddy);
+    }
+    var target = Math.max(0, Math.min(1, t)) * total, walked = 0;
+    for (i = 1; i < points.length; i++) {
+      var sx = points[i].x - points[i - 1].x;
+      var sy = points[i].y - points[i - 1].y;
+      var seg = Math.sqrt(sx * sx + sy * sy);
+      if (walked + seg >= target || i === points.length - 1) {
+        return { dx: sx, dy: sy, len: seg };
+      }
+      walked += seg;
+    }
+    return { dx: 0, dy: 0, len: 0 };
+  }
+
   // Point at fraction t in [0,1] of a polyline's arc length.
   function polylinePointAt(points, t) {
     if (!points || points.length === 0) return { x: 0, y: 0 };
@@ -3466,6 +3605,17 @@
     var pt = polylinePointAt(pst.absolutePoints, t);
     var offx = geo.offset && Number.isFinite(geo.offset.x) ? geo.offset.x : 0;
     var offy = geo.offset && Number.isFinite(geo.offset.y) ? geo.offset.y : 0;
+    // mxGraphView.getPoint: relative geometry.y is the PERPENDICULAR
+    // offset from the edge at that arc position (dragging a label off the
+    // line stores it here) -- dropping it printed the label ON the line.
+    var gy = (geo.relative && Number.isFinite(geo.y)) ? geo.y : 0;
+    if (gy !== 0 && pst.absolutePoints.length >= 2) {
+      var seg = segmentAt(pst.absolutePoints, t);
+      if (seg.len > 0) {
+        offx += (seg.dy / seg.len) * gy;
+        offy -= (seg.dx / seg.len) * gy;
+      }
+    }
     var cxw = (pt.x + offx - origin.x) / scale;
     var cyw = (pt.y + offy - origin.y) / scale;
     var fs = number(style.fontSize, 12);
@@ -4978,6 +5128,13 @@
     if (style.edgeStyle === 'isometricEdgeStyle' || style.edgeStyle === 'isometricVConnector') {
       notices.push(degradation('ExporterUnsupportedShape',
         'isometric edge routing not replicated — exported as a straight connector', cell.id));
+    }
+    // Line jumps (jumpStyle=arc/gap/sharp at edge crossings) are drawn by
+    // the editor but not re-derived headless: the printed edges cross as
+    // plain lines. Loud, never silent (C1).
+    if (style.jumpStyle != null && String(style.jumpStyle) !== 'none') {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'jumpStyle=' + style.jumpStyle + ' line jumps are not rendered — crossings print as plain lines', cell.id));
     }
     // perimeterSpacing (+ source/targetPerimeterSpacing) creates a gap between
     // the shape edge and the connector endpoints (drawio grows the perimeter by

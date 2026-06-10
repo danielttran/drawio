@@ -1214,23 +1214,36 @@ test('label: plain shape honors labelPosition / verticalLabelPosition (label out
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" value="LBL" style="${style}" parent="1"><mxGeometry x="250" y="180" width="80" height="50" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
-  const labelBox = (contract) => {
+  // The bake anchors each page by its own INK extent (an outside label
+  // shifts the whole content), so label and shape must be compared WITHIN
+  // one bake: shape box = the rect path node's first M point + extent.
+  const boxes = (contract) => {
+    let label = null;
+    let shape = null;
     for (const n of contract.document.pages[0].paint) {
-      if (n.kind === 'svg' && /LBL/.test(Buffer.from(n.source, 'base64').toString('utf8'))) return n.box;
+      if (n.kind === 'svg' && /LBL/.test(Buffer.from(n.source, 'base64').toString('utf8'))) label = n.box;
+      if (n.kind === 'path' && /^M /.test(n.d || '')) {
+        const nums = (n.d.match(/[-+]?\d*\.?\d+/g) || []).map(Number);
+        const xs = nums.filter((_, i) => i % 2 === 0);
+        const ys = nums.filter((_, i) => i % 2 === 1);
+        shape = { x: Math.min(...xs), y: Math.min(...ys),
+          w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+      }
     }
-    return null;
+    return { label, shape };
   };
-  // Establish the shape box from the centered (default) case.
-  const center = labelBox((await bake(mk('rounded=0;'), { keepPx: true })).contract);
-  assert.ok(center, 'centered label present');
-  const right = labelBox((await bake(mk('rounded=0;labelPosition=right;align=left;'), { keepPx: true })).contract);
-  assert.ok(right && right.x >= center.x + center.w - 0.5, `labelPosition=right not outside shape (x=${right && right.x}, shapeRight=${center.x + center.w})`);
-  const left = labelBox((await bake(mk('rounded=0;labelPosition=left;align=right;'), { keepPx: true })).contract);
-  assert.ok(left && left.x + left.w <= center.x + 0.5, `labelPosition=left not outside shape (x=${left && left.x})`);
-  const bottom = labelBox((await bake(mk('rounded=0;verticalLabelPosition=bottom;verticalAlign=top;'), { keepPx: true })).contract);
-  assert.ok(bottom && bottom.y >= center.y + center.h - 0.5, `verticalLabelPosition=bottom not below shape (y=${bottom && bottom.y})`);
-  const top = labelBox((await bake(mk('rounded=0;verticalLabelPosition=top;verticalAlign=bottom;'), { keepPx: true })).contract);
-  assert.ok(top && top.y + top.h <= center.y + 0.5, `verticalLabelPosition=top not above shape (y=${top && top.y})`);
+  const right = boxes((await bake(mk('rounded=0;labelPosition=right;align=left;'), { keepPx: true })).contract);
+  assert.ok(right.label && right.shape && right.label.x >= right.shape.x + right.shape.w - 0.5,
+    `labelPosition=right not outside shape (x=${right.label && right.label.x}, shapeRight=${right.shape && (right.shape.x + right.shape.w)})`);
+  const left = boxes((await bake(mk('rounded=0;labelPosition=left;align=right;'), { keepPx: true })).contract);
+  assert.ok(left.label && left.shape && left.label.x + left.label.w <= left.shape.x + 0.5,
+    `labelPosition=left not outside shape (labelRight=${left.label && (left.label.x + left.label.w)}, shapeX=${left.shape && left.shape.x})`);
+  const bottom = boxes((await bake(mk('rounded=0;verticalLabelPosition=bottom;verticalAlign=top;'), { keepPx: true })).contract);
+  assert.ok(bottom.label && bottom.shape && bottom.label.y >= bottom.shape.y + bottom.shape.h - 0.5,
+    `verticalLabelPosition=bottom not below shape (y=${bottom.label && bottom.label.y})`);
+  const top = boxes((await bake(mk('rounded=0;verticalLabelPosition=top;verticalAlign=bottom;'), { keepPx: true })).contract);
+  assert.ok(top.label && top.shape && top.label.y + top.label.h <= top.shape.y + 0.5,
+    `verticalLabelPosition=top not above shape (labelBottom=${top.label && (top.label.y + top.label.h)}, shapeY=${top.shape && top.shape.y})`);
 });
 
 test('edge: child-label cells (multi-label edges) are positioned along the edge', async () => {
@@ -2273,4 +2286,244 @@ test('text fidelity: a tall inline image never overflows above the line top', as
   // y is relative to the content group's top; the image must sit at or below it,
   // never negative (which would overlap the line above).
   assert.ok(parseFloat(m[1]) >= 0, `image y must be >= 0, got ${m[1]}`);
+});
+
+// --- audit: parser/exporter fidelity regressions (routing, bounds, text) ---
+// Each test pins a fixed silent divergence found in the end-to-end WYSIWYG
+// audit. Routing values are checked against drawio's own mxEdgeStyle
+// algorithms (which the bake now runs verbatim via mx-edge-router.mjs).
+
+test('audit: elbowEdgeStyle default is SideToSide (horizontal-first), not mid-Y', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="240" y="160" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B" style="edgeStyle=elbowEdgeStyle;rounded=0;"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /M 80 /.test(n.d));
+  assert.ok(edge, 'edge path present');
+  // SideToSide routes through mid-X (160): exits source EAST at y=20,
+  // vertical leg at x=160, enters target WEST at y=180. The old hand-rolled
+  // router produced the inverted TopToBottom (mid-Y 100) elbow.
+  assert.match(edge.d, /M 80 20 L 160 20 L 160 180 L 240 180/,
+    `expected drawio SideToSide route, got ${edge.d}`);
+});
+
+test('audit: stale sourcePoint on a CONNECTED edge does not disable routing', async () => {
+  const mk = (extra) => `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="240" y="160" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B" style="edgeStyle=elbowEdgeStyle;"><mxGeometry relative="1" as="geometry">${extra}</mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const clean = await bake(mk(''), { keepPx: true });
+  const stale = await bake(mk('<mxPoint x="999" y="999" as="sourcePoint"/>'), { keepPx: true });
+  const route = (r) => r.contract.document.pages[0].paint.find((n) => n.kind === 'path' && /^M 80 /.test(n.d || ''));
+  assert.ok(route(clean) && route(stale), 'both edges routed');
+  assert.equal(route(stale).d, route(clean).d,
+    'stale literal sourcePoint must not change the route of a connected edge');
+});
+
+test('audit: floating edge from an ellipse starts on the ellipse arc, not the bbox side', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="ellipse;"><mxGeometry x="0" y="0" width="80" height="80" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="200" y="200" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  // The edge is the only OPEN path (shape outlines close with Z).
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.stroke && !/Z/i.test(n.d || ''));
+  assert.ok(edge, 'edge present');
+  const m = /^M ([\d.]+) ([\d.]+)/.exec(edge.d);
+  const sx = parseFloat(m[1]), sy = parseFloat(m[2]);
+  // mxPerimeter.EllipsePerimeter toward (240,220): the 45-degree point on
+  // the circle is ~(68.3, 68.3) -- NOT the bbox east pole (80, 40).
+  const dx = sx - 40, dy = sy - 40;
+  const r = Math.sqrt(dx * dx + dy * dy);
+  assert.ok(Math.abs(r - 40) < 1.5, `start point must sit ON the ellipse (r=${r}, got ${sx},${sy})`);
+  assert.ok(sy > 55, `start must be on the lower-right arc toward the target (y=${sy})`);
+});
+
+test('audit: exitX/exitY honors the terminal rotation (mxGraph.getConnectionPoint)', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;rotation=90;"><mxGeometry x="0" y="0" width="120" height="40" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="300" y="300" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B" style="exitX=1;exitY=0.5;"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.stroke && !/Z/i.test(n.d || ''));
+  const m = /^M ([\d.-]+) ([\d.-]+)/.exec(edge.d);
+  const sx = parseFloat(m[1]), sy = parseFloat(m[2]);
+  // Unrotated mid-right is (120,20); rotated 90 about the center (60,20)
+  // the attachment lands at MODEL (60,80) -- the rotated shape's bottom
+  // center. A's rotated AABB is x in [40,80], y in [-40,80], so the
+  // content origin is (40,-40) and the expected CONTENT point is (20,120).
+  // The old fraction-on-the-unrotated-box attached at (120,20) instead.
+  assert.ok(Math.abs(sx - 20) < 1.5 && Math.abs(sy - 120) < 1.5,
+    `rotated exit point must be the shape bottom-center (got ${sx},${sy})`);
+});
+
+test('audit: edge to a child of a collapsed group attaches to the group', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="G" vertex="1" parent="1" style="group" collapsed="1"><mxGeometry x="200" y="0" width="80" height="30" as="geometry"><mxRectangle x="200" y="0" width="80" height="30" as="alternateBounds"/></mxGeometry></mxCell>
+    <mxCell id="C" vertex="1" parent="G" style="rounded=0;"><mxGeometry x="10" y="50" width="60" height="30" as="geometry"/></mxCell>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="0" y="0" width="80" height="30" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="C"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.stroke && !/Z/i.test(n.d || ''));
+  assert.ok(edge, 'edge present');
+  const nums = (edge.d.match(/[-\d.]+/g) || []).map(Number);
+  const endX = nums[nums.length - 2], endY = nums[nums.length - 1];
+  // Must land on the collapsed GROUP's box (y in [0,30], x ~200), not the
+  // hidden child's stale geometry at (210,50)+.
+  assert.ok(endY <= 31 && endX >= 195 && endX <= 285,
+    `edge must attach to the collapsed group perimeter, got (${endX},${endY})`);
+});
+
+test('audit: corrupt <diagram> page refuses the whole bake (no silent partial)', async () => {
+  const xml = '<mxfile><diagram name="ok"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram>' +
+    '<diagram name="bad">!!!not-base64!!!</diagram></mxfile>';
+  await assert.rejects(() => bake(xml), /could not be decoded/,
+    'a 2-page file with one corrupt page must refuse, not print one page');
+});
+
+test('audit: double-encoded entities and astral chars decode faithfully', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="a &amp;amp;lt; b &#128512;" style="rounded=0;" parent="1"><mxGeometry x="10" y="10" width="180" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const svg = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const dec = Buffer.from(svg.source, 'base64').toString('utf8');
+  // The cell VALUE after ONE xml decode is "a &amp;lt; b ..." -- the editor
+  // shows that literal text; in the baked SVG it appears XML-escaped again.
+  assert.ok(dec.includes('a &amp;amp;lt; b'),
+    'literal "&amp;lt;" survives (the old decoder double-decoded it to "<")');
+  assert.ok(dec.includes('\u{1F600}'), 'astral entity decodes via fromCodePoint');
+});
+
+test('audit: dragged edge label prints at its stored position, not the midpoint', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="0" y="100" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="400" y="100" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B" value="lbl"><mxGeometry x="-0.8" y="15" relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const paint = contract.document.pages[0].paint;
+  const svg = paint.find((n) =>
+    n.kind === 'svg' && /lbl/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(svg, 'edge label present');
+  const edge = paint.find((n) => n.kind === 'path' && n.stroke && !/Z/i.test(n.d || ''));
+  const em = /^M ([\d.-]+) ([\d.-]+)/.exec(edge.d);
+  const ex = parseFloat(em[1]), ey = parseFloat(em[2]);
+  const cx = svg.box.x + svg.box.w / 2;
+  const cy = svg.box.y + svg.box.h / 2;
+  // Edge runs horizontally, length 320. gx=-0.8 -> dist=(-0.4+0.5)*320 = 32
+  // from the start; positive gy displaces perpendicular UP for a rightward
+  // edge (mxGraphView.getPoint: y -= ny*gy). Compare relative to the edge's
+  // own drawn start so the content-origin shift cancels.
+  assert.ok(Math.abs((cx - ex) - 32) < 3, `label sits 32px along the edge (got ${cx - ex})`);
+  assert.ok(Math.abs((cy - ey) + 15) < 3, `label sits 15px above the edge (got ${cy - ey})`);
+});
+
+test('audit: curved=1 with 3+ points emits smooth cubics (mxPolyline.paintCurvedLine)', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="0" y="0" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="240" y="160" width="80" height="40" as="geometry"/></mxCell>
+    <mxCell id="E" edge="1" parent="1" source="A" target="B" style="curved=1;rounded=0;noEdgeStyle=1;"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="150" y="20"/></Array></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /C /.test(n.d || ''));
+  assert.ok(edge, 'curved edge emits cubic path');
+  assert.ok(!/ L /.test(edge.d.replace(/^M [\d. ]+/, '')),
+    `curved edge must be smooth cubics with no straight interior segments: ${edge.d}`);
+});
+
+test('audit: opacity and fillOpacity compose multiplicatively (mxSvgCanvas2D)', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ff0000;opacity=50;fillOpacity=50;" parent="1"><mxGeometry x="10" y="10" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill);
+  assert.ok(Math.abs(node.fill.alpha - 0.25) < 1e-6,
+    `fill alpha must be 0.5*0.5=0.25, got ${node.fill.alpha}`);
+});
+
+test('audit: gradientDirection=radial emits a real radialGradient', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ff0000;gradientColor=#0000ff;gradientDirection=radial;" parent="1"><mxGeometry x="10" y="10" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const svg = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const dec = Buffer.from(svg.source, 'base64').toString('utf8');
+  assert.match(dec, /<radialGradient/, 'radial gradient must not silently become linear');
+});
+
+test('audit: default-overflow label is NOT clipped to its box (overflow visible)', async () => {
+  const mk = (overflow) => `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="an extremely long unwrapped label text" style="rounded=0;${overflow}" parent="1"><mxGeometry x="120" y="50" width="60" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const vis = await bake(mk(''), { keepPx: true });
+  const visSvg = vis.contract.document.pages[0].paint.find((n) =>
+    n.kind === 'svg' && /extremely/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(visSvg.box.w > 100,
+    `default overflow grows the label viewport past the 60px box (w=${visSvg.box.w})`);
+  assert.ok(!/clipPath/.test(Buffer.from(visSvg.source, 'base64').toString('utf8')),
+    'no clip for overflow:visible');
+  const hid = await bake(mk('overflow=hidden;'), { keepPx: true });
+  const hidSvg = hid.contract.document.pages[0].paint.find((n) =>
+    n.kind === 'svg' && /extremely/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(Math.abs(hidSvg.box.w - 60) < 6, 'overflow=hidden keeps the box + clip');
+  assert.ok(/clipPath/.test(Buffer.from(hidSvg.source, 'base64').toString('utf8')),
+    'overflow=hidden clips');
+});
+
+test('audit: jumpStyle raises a loud notice (line jumps are not re-derived)', async () => {
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="E1" edge="1" parent="1" style="jumpStyle=arc;noEdgeStyle=1;"><mxGeometry relative="1" as="geometry"><mxPoint x="0" y="0" as="sourcePoint"/><mxPoint x="200" y="200" as="targetPoint"/></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.ok(notices.some((n) => /jumpStyle/.test(n.detail && n.detail.detail || '')),
+    'jumpStyle must be loudly noticed, never silently flattened');
+});
+
+test('audit: wrapped CJK label breaks between ideographs (no silent clipping)', async () => {
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="这是一个很长的中文标签文本应该自动换行显示" style="whiteSpace=wrap;rounded=0;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const svg = contract.document.pages[0].paint.find((n) =>
+    n.kind === 'svg' && /这是/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  const dec = Buffer.from(svg.source, 'base64').toString('utf8');
+  const lines = (dec.match(/<text/g) || []).length;
+  assert.ok(lines >= 2, `CJK label must wrap into multiple lines (got ${lines})`);
+});
+
+test('audit: ink-extent anchoring keeps outside-positioned labels on the page', async () => {
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Above" style="rounded=0;verticalLabelPosition=top;verticalAlign=bottom;" parent="1"><mxGeometry x="0" y="0" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const page = contract.document.pages[0];
+  for (const n of page.paint) {
+    if (n.box) {
+      assert.ok(n.box.y > -3, `no ink may anchor off the page top (box.y=${n.box.y})`);
+    }
+  }
 });

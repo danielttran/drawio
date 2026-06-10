@@ -41,7 +41,14 @@ function minimalValid() {
         paint: [
           // Per Appendix A, path nodes do NOT carry a JSON `box` — the
           // engine derives bounds from `d`. The validator must match.
-          { kind: 'path', d: 'M 0 0 L 10 10', stroke: { dash: null } },
+          // The stroke carries the FULL engine-required shape
+          // (contract_loader.cpp): a {dash:null}-only stroke was blessed by
+          // the old lax validator but rejected by the engine at print time.
+          { kind: 'path', d: 'M 0 0 L 10 10',
+            fill: null,
+            stroke: { paint: { type: 'solid', color: '#000000', alpha: 1 },
+                      width: 1, cap: 'butt', join: 'miter', miterLimit: 4,
+                      dash: null } },
           {
             kind: 'text',
             box: { x: 5, y: 5, w: 80, h: 20 },

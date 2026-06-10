@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve, basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import { bake } from './bake.mjs';
+import { bake, noticeSeverity } from './bake.mjs';
 
 const execFileP = promisify(execFile);
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -245,7 +245,11 @@ export async function renderArtifact({ inputFile, dpi = 300, outPng, lib }) {
   const xml = await readFile(inputFile, 'utf8');
   const srcHash = createHash('sha256').update(xml).digest('hex');
   const r = await bake(xml, { keepPx: true });
-  const blockingNotices = (r.notices || []).filter((n) => n.severity !== 'info');
+  // Blocking = the dialog's 'degradation' severity (ack required). Exporter
+  // notices carry no `severity` field -- the old filter compared a missing
+  // property, so info/silent kinds wrongly failed the gate.
+  const blockingNotices = (r.notices || []).filter(
+    (n) => noticeSeverity(n.kind) === 'degradation');
 
   const tmp = await mkdtemp(join(tmpdir(), 'np-artifact-'));
   try {

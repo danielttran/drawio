@@ -176,6 +176,41 @@ private:
     max_y_ = std::max(max_y_, point.y);
   }
 
+  // Include the EXACT extent of one cubic segment: endpoints plus the
+  // curve's axis extrema (roots of B'(t) per axis), never the control hull.
+  void include_cubic_extent(Point p0, Point c1, Point c2, Point p3) {
+    include(p0);
+    include(p3);
+    const auto point_at = [&](double t) {
+      const double mt = 1.0 - t;
+      return Point{
+        mt * mt * mt * p0.x + 3.0 * mt * mt * t * c1.x +
+            3.0 * mt * t * t * c2.x + t * t * t * p3.x,
+        mt * mt * mt * p0.y + 3.0 * mt * mt * t * c1.y +
+            3.0 * mt * t * t * c2.y + t * t * t * p3.y};
+    };
+    const auto axis_roots = [&](double a0, double a1, double a2, double a3) {
+      // B'(t)/3 = (a1-a0) + 2(a2-2a1+a0)t + (a3-3a2+3a1-a0)t^2
+      const double a = a3 - 3.0 * a2 + 3.0 * a1 - a0;
+      const double b = 2.0 * (a2 - 2.0 * a1 + a0);
+      const double c = a1 - a0;
+      const auto eval_at = [&](double t) {
+        if (t > 0.0 && t < 1.0) include(point_at(t));
+      };
+      if (std::abs(a) < 1e-12) {
+        if (std::abs(b) > 1e-12) eval_at(-c / b);
+        return;
+      }
+      const double disc = b * b - 4.0 * a * c;
+      if (disc < 0.0) return;
+      const double sq = std::sqrt(disc);
+      eval_at((-b + sq) / (2.0 * a));
+      eval_at((-b - sq) / (2.0 * a));
+    };
+    axis_roots(p0.x, c1.x, c2.x, p3.x);
+    axis_roots(p0.y, c1.y, c2.y, p3.y);
+  }
+
   void normalize_and_store(char command, const std::vector<double>& values) {
     if (command == 'M') {
       current_ = Point{values[0], values[1]};
@@ -206,10 +241,15 @@ private:
     }
 
     if (command == 'C') {
-      include(Point{values[0], values[1]});
-      include(Point{values[2], values[3]});
+      // EXACT cubic extent (not the control-point hull): the hull
+      // over-estimates by up to ~30% of the control offset, which fired
+      // spurious HardwareMarginClip notices for curve-bulgy shapes (cloud,
+      // ellipse-ish paths) sitting flush at a page edge.
+      const Point start = current_;
+      const Point c1{values[0], values[1]};
+      const Point c2{values[2], values[3]};
       current_ = Point{values[4], values[5]};
-      include(current_);
+      include_cubic_extent(start, c1, c2, current_);
       path_.commands.push_back(PathCommand{PathCommandKind::CubicTo, values});
       return;
     }
@@ -233,10 +273,10 @@ private:
         include(current_);
       } else {
         include(start);
+        Point seg_start = start;
         for (const auto& c : cubics) {
-          include(c.c1);
-          include(c.c2);
-          include(c.end);
+          include_cubic_extent(seg_start, c.c1, c.c2, c.end);
+          seg_start = c.end;
         }
       }
       path_.commands.push_back(PathCommand{PathCommandKind::ArcTo, values});

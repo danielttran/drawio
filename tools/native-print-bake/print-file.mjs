@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bake } from './bake.mjs';
+import { bake, noticeSeverity } from './bake.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ENGINE_EXE = resolve(__dir, '../../src/main/native-print-engine/build/Debug/print_engine_host.exe');
@@ -122,7 +122,9 @@ async function runPrintJob(contract, printerName, stockName) {
 }
 
 async function main() {
-  const [, , inputPath, printerName, stockName = 'A4'] = process.argv;
+  const force = process.argv.includes('--force');
+  const args = process.argv.filter((a) => a !== '--force');
+  const [, , inputPath, printerName, stockName = 'A4'] = args;
 
   if (!inputPath || !printerName) {
     console.error('Usage: node print-file.mjs <input.drawio> <printer_name> [stock_name]');
@@ -145,6 +147,15 @@ async function main() {
     console.log(`[cli] Baked successfully. Notices produced: ${baked.notices.length}`);
     for (const n of baked.notices) {
       console.warn(`  [Notice: ${n.kind}] ${n.detail && n.detail.detail || ''}`);
+    }
+    // D5: an unattended print must not proceed past degradation-severity
+    // notices (the in-app dialog requires an explicit acknowledgment for
+    // each); --force is that acknowledgment for the CLI.
+    const blocking = baked.notices.filter((n) => noticeSeverity(n.kind) === 'degradation');
+    if (blocking.length > 0 && !force) {
+      console.error(`Error: ${blocking.length} degradation notice(s) -- output would ` +
+        'diverge from the editor. Re-run with --force to acknowledge and print anyway.');
+      process.exit(3);
     }
   } catch (e) {
     console.error(`Error: Bake failed: ${e.message}`);

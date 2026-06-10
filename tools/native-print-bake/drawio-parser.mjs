@@ -5,6 +5,10 @@
 // Pure Node.js (no jsdom, no browser); uses node:zlib for decompression.
 
 import { inflateRawSync } from 'node:zlib';
+import {
+  isRoutedEdgeStyle, isOrthogonalStyle, makeTerminalState, routeEdge,
+  perimeterPoint, fixedConnectionPoint
+} from './mx-edge-router.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,11 +18,15 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 // --- attribute parsing ---
 
 function decodeEntities(s) {
+  // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
+  // "<"), and numeric references need fromCodePoint (fromCharCode corrupts
+  // astral code points like emoji to private-use garbage).
   return s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, '&');
 }
 
 // Parse XML attribute string (key="value" pairs) → plain object.
@@ -190,10 +198,20 @@ function extractAllModels(xml) {
   const diagRe = /<diagram([^>]*)>([\s\S]*?)<\/diagram>/gi;
   const results = [];
   let m;
+  let diagramIndex = 0;
   while ((m = diagRe.exec(xml)) !== null) {
     const diagAttrs = parseAttrs(m[1]);
     const decoded = decodeDiagramBlock(m[2]);
+    if (!decoded && m[2].trim() !== '') {
+      // A page that exists but cannot be decoded must REFUSE the whole
+      // bake: silently printing the other pages is a partial document --
+      // the worst C1 outcome for an unattended print.
+      throw new Error('drawio page ' + (diagramIndex + 1) +
+        (diagAttrs.name ? ' ("' + diagAttrs.name + '")' : '') +
+        ' could not be decoded (corrupt base64/deflate content)');
+    }
     if (decoded) results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
+    diagramIndex++;
   }
   if (results.length > 0) return results;
 
@@ -352,8 +370,30 @@ function absoluteBox(cell, cells) {
   };
 }
 
-function terminalPoint(edge, cells, terminalId, isSource, toward) {
-  const terminal = terminalId ? cells[terminalId] : null;
+// mxGraphView.getVisibleTerminal: an edge whose terminal sits inside a
+// collapsed ancestor attaches to that ancestor (the child is hidden), not
+// to the hidden child's stale geometry.
+function resolveVisibleTerminal(terminalId, cells) {
+  let cell = terminalId ? cells[terminalId] : null;
+  if (!cell) return null;
+  const chain = [];
+  let cur = cell;
+  while (cur) { chain.push(cur); cur = cur.parent != null ? cells[cur.parent] : null; }
+  // The OUTERMOST collapsed ancestor above the terminal is the visible one.
+  for (let i = chain.length - 1; i > 0; i--) {
+    if (chain[i].collapsed) return chain[i];
+  }
+  return cell;
+}
+
+// String-safe style flag: parseStyle stores numerics as numbers, so a
+// === '1' comparison silently never matched (mxUtils.getValue semantics).
+function styleFlag(style, key) {
+  return style != null && style[key] != null && String(style[key]) === '1';
+}
+
+function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
+  const terminal = resolveVisibleTerminal(terminalId, cells);
   const box = absoluteBox(terminal, cells);
   if (!box) return null;
   const style = edge.style || {};
@@ -364,46 +404,25 @@ function terminalPoint(edge, cells, terminalId, isSource, toward) {
     const py = parseFloat(style[pyKey] ?? 0.5);
     const dx = parseFloat(style[isSource ? 'exitDx' : 'entryDx'] || 0) || 0;
     const dy = parseFloat(style[isSource ? 'exitDy' : 'entryDy'] || 0) || 0;
-    return { x: box.x + box.width * px + dx, y: box.y + box.height * py + dy };
+    // mxGraph.getConnectionPoint: the fraction applies to the direction-
+    // normalized bounds, then flip mirroring and the vertex rotation --
+    // the bare fraction-on-the-box silently attached edges to the wrong
+    // side of rotated/flipped/redirected terminals.
+    return fixedConnectionPoint(box, terminal && terminal.resolvedStyle
+      ? terminal.resolvedStyle : (terminal && terminal.style) || {}, px, py, dx, dy);
   }
 
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
   if (!toward) return { x: cx, y: cy };
-
-  const dx = toward.x - cx;
-  const dy = toward.y - cy;
-  if (Math.abs(dx) > Math.abs(dy)) {
-    return { x: dx >= 0 ? box.x + box.width : box.x, y: cy };
-  }
-  return { x: cx, y: dy >= 0 ? box.y + box.height : box.y };
-}
-
-// Port of mxEdgeStyle.EntityRelation: the ER edge exits/enters horizontally
-// from the side centres (offset by `segment`, default 30). Without this the bake
-// routed entity-relation edges as a straight diagonal — a silent divergence.
-function entityRelationRoute(s, t, style) {
-  const sp = parseFloat(style && style.segment);
-  const seg = Number.isFinite(sp) ? sp : 30;
-  const isSourceLeft = (t.x + t.width) < s.x;
-  const isTargetLeft = (s.x + s.width) < t.x;
-  const x0 = isSourceLeft ? s.x : s.x + s.width;
-  const y0 = s.y + s.height / 2;
-  const xe = isTargetLeft ? t.x : t.x + t.width;
-  const ye = t.y + t.height / 2;
-  const dep = { x: x0 + (isSourceLeft ? -seg : seg), y: y0 };
-  const arr = { x: xe + (isTargetLeft ? -seg : seg), y: ye };
-  const mid = [];
-  if (isSourceLeft === isTargetLeft) {
-    const x = isSourceLeft ? Math.min(x0, xe) - seg : Math.max(x0, xe) + seg;
-    mid.push({ x, y: y0 }, { x, y: ye });
-  } else if ((dep.x < arr.x) === isSourceLeft) {
-    const midY = y0 + (ye - y0) / 2;
-    mid.push(dep, { x: dep.x, y: midY }, { x: arr.x, y: midY }, arr);
-  } else {
-    mid.push(dep, arr);
-  }
-  return [{ x: x0, y: y0 }, ...mid, { x: xe, y: ye }];
+  // Real perimeter intersection (rectangle/ellipse/rhombus/triangle/...),
+  // mirroring mxGraphView.getPerimeterPoint -- the old side-midpoint made
+  // printed edges visibly detach from non-rectangular shapes.
+  const tStyle = terminal && terminal.resolvedStyle
+    ? terminal.resolvedStyle : (terminal && terminal.style) || {};
+  const pt = perimeterPoint(box, tStyle, toward, !!orthogonal);
+  if (pt) return pt;
+  return { x: cx, y: cy };
 }
 
 // Self-loop (source == target, no waypoints): drawio's mxEdgeStyle.Loop routes
@@ -426,9 +445,14 @@ function edgePoints(cell, cells) {
   const g = cell.geometry;
   const { ax, ay } = absolutePos(cell, cells);
   const waypoints = (g.points || []).map((pt) => ({ x: pt.x + ax, y: pt.y + ay }));
-  const hasLiteralTerminals = !!(g.sourcePoint || g.targetPoint);
-  const sourceBox = absoluteBox(cells[cell.source], cells);
-  const targetBox = absoluteBox(cells[cell.target], cells);
+  const style = cell.style || {};
+  const noEdgeStyle = styleFlag(style, 'noEdgeStyle');
+  const styleName = !noEdgeStyle && style.edgeStyle != null ? String(style.edgeStyle) : null;
+
+  const srcCell = resolveVisibleTerminal(cell.source, cells);
+  const tgtCell = resolveVisibleTerminal(cell.target, cells);
+  const sourceBox = absoluteBox(srcCell, cells);
+  const targetBox = absoluteBox(tgtCell, cells);
   const sourceCenter = sourceBox
     ? { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 }
     : null;
@@ -441,42 +465,65 @@ function edgePoints(cell, cells) {
     return selfLoopRoute(sourceBox);
   }
 
+  // Literal terminal points apply ONLY to an endpoint whose cell ref is
+  // missing (mxGraphView.getFixedTerminalPoint). drawio routinely leaves a
+  // stale sourcePoint/targetPoint on connected edges; treating it as
+  // authoritative silently disabled edge-style routing.
+  const literalSrc = (!srcCell && g.sourcePoint)
+    ? { x: g.sourcePoint.x + ax, y: g.sourcePoint.y + ay } : null;
+  const literalTgt = (!tgtCell && g.targetPoint)
+    ? { x: g.targetPoint.x + ax, y: g.targetPoint.y + ay } : null;
+
+  const orth = styleName ? isOrthogonalStyle(styleName, style) : false;
+  const hasExit = style.exitX != null || style.exitY != null;
+  const hasEntry = style.entryX != null || style.entryY != null;
+  const fixedSrc = literalSrc ||
+    (hasExit && sourceBox ? terminalPoint(cell, cells, cell.source, true, null, orth) : null);
+  const fixedTgt = literalTgt ||
+    (hasEntry && targetBox ? terminalPoint(cell, cells, cell.target, false, null, orth) : null);
+
+  if (styleName && isRoutedEdgeStyle(styleName) &&
+      (sourceBox || fixedSrc) && (targetBox || fixedTgt)) {
+    const srcStyle = srcCell
+      ? (srcCell.resolvedStyle || srcCell.style || {}) : {};
+    const tgtStyle = tgtCell
+      ? (tgtCell.resolvedStyle || tgtCell.style || {}) : {};
+    const sState = sourceBox ? makeTerminalState(sourceBox, srcStyle, srcCell) : null;
+    const tState = targetBox ? makeTerminalState(targetBox, tgtStyle, tgtCell) : null;
+    // EntityRelation never reads control hints (mxEdgeStyle.js).
+    const hints = styleName === 'entityRelationEdgeStyle' ? [] : waypoints;
+    const inner = routeEdge(styleName, style, sState, tState,
+      fixedSrc, fixedTgt, hints) || [];
+    const startToward = inner[0] || fixedTgt || targetCenter || fixedSrc;
+    const endToward = inner[inner.length - 1] || fixedSrc || sourceCenter || fixedTgt;
+    const start = fixedSrc ||
+      (startToward ? terminalPoint(cell, cells, cell.source, true, startToward, orth) : null);
+    const end = fixedTgt ||
+      (endToward ? terminalPoint(cell, cells, cell.target, false, endToward, orth) : null);
+    const pts = [];
+    if (start) pts.push(start);
+    for (const p of inner) pts.push(p);
+    if (end) pts.push(end);
+    const out = pts.filter((p, i) => i === 0 ||
+      Math.abs(p.x - pts[i - 1].x) > 0.01 || Math.abs(p.y - pts[i - 1].y) > 0.01);
+    if (out.length >= 2) return out;
+  }
+
   const out = waypoints.slice();
-  if (!cell.source && g.sourcePoint) out.unshift({ x: g.sourcePoint.x + ax, y: g.sourcePoint.y + ay });
-  if (!cell.target && g.targetPoint) out.push({ x: g.targetPoint.x + ax, y: g.targetPoint.y + ay });
-  const firstToward = out[0] || targetCenter;
+  if (literalSrc) out.unshift(literalSrc);
+  if (literalTgt) out.push(literalTgt);
+  const firstToward = out.length > (literalSrc ? 1 : 0) ? out[literalSrc ? 1 : 0] : (out[0] || targetCenter);
   const lastToward = out[out.length - 1] || sourceCenter;
-  const src = terminalPoint(cell, cells, cell.source, true, firstToward);
-  const tgt = terminalPoint(cell, cells, cell.target, false, lastToward);
-  if (waypoints.length === 0 && !hasLiteralTerminals && sourceBox && targetBox &&
-      cell.style?.edgeStyle === 'entityRelationEdgeStyle' && cell.style?.noEdgeStyle !== '1') {
-    return entityRelationRoute(sourceBox, targetBox, cell.style);
-  }
-  if (waypoints.length === 0 && !hasLiteralTerminals && src && tgt &&
-      (cell.style?.edgeStyle === 'elbowEdgeStyle' ||
-       cell.style?.edgeStyle === 'orthogonalEdgeStyle' ||
-       cell.style?.edgeStyle === 'segmentEdgeStyle') &&
-      cell.style?.noEdgeStyle !== '1') {
-    if (cell.style?.elbow === 'horizontal') {
-      const midX = (src.x + tgt.x) / 2;
-      return [src, { x: midX, y: src.y }, { x: midX, y: tgt.y }, tgt];
-    }
-    const midY = (src.y + tgt.y) / 2;
-    return [src, { x: src.x, y: midY }, { x: tgt.x, y: midY }, tgt];
-  }
+  const src = literalSrc ? null
+    : terminalPoint(cell, cells, cell.source, true, firstToward, false);
+  const tgt = literalTgt ? null
+    : terminalPoint(cell, cells, cell.target, false, lastToward, false);
   if (src) out.unshift(src);
   if (tgt) out.push(tgt);
 
-  if (out.length === 0 && sourceCenter && targetCenter) {
-    const start = terminalPoint(cell, cells, cell.source, true, targetCenter) || sourceCenter;
-    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter) || targetCenter;
-    if ((cell.style?.edgeStyle === 'elbowEdgeStyle' ||
-         cell.style?.edgeStyle === 'orthogonalEdgeStyle' ||
-         cell.style?.edgeStyle === 'segmentEdgeStyle') &&
-        cell.style?.noEdgeStyle !== '1') {
-      const midY = (start.y + end.y) / 2;
-      return [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
-    }
+  if (out.length < 2 && sourceCenter && targetCenter) {
+    const start = terminalPoint(cell, cells, cell.source, true, targetCenter, false) || sourceCenter;
+    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter, false) || targetCenter;
     return [start, end];
   }
 
@@ -486,25 +533,120 @@ function edgePoints(cell, cells) {
 // Compute bounding box of all vertex/edge geometry using absolute positions.
 function computeBounds(cells) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x, y) => {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  };
   for (const cell of Object.values(cells)) {
     if (!cell.geometry) continue;
     const g = cell.geometry;
     if (cell.vertex && g.width > 0 && g.height > 0) {
       const { ax, ay } = absolutePos(cell, cells);
-      minX = Math.min(minX, ax);
-      minY = Math.min(minY, ay);
-      maxX = Math.max(maxX, ax + g.width);
-      maxY = Math.max(maxY, ay + g.height);
-    } else if (cell.edge && g.points) {
-      const { ax, ay } = absolutePos(cell, cells);
-      for (const pt of g.points) {
-        minX = Math.min(minX, pt.x + ax); minY = Math.min(minY, pt.y + ay);
-        maxX = Math.max(maxX, pt.x + ax); maxY = Math.max(maxY, pt.y + ay);
+      // Rotation grows the on-screen AABB (mxGraphView.getBoundingBox);
+      // ignoring it anchored content too high/left and pushed rotated
+      // shapes' real ink off the printed page.
+      const rotation = cell.style ? parseFloat(cell.style.rotation) || 0 : 0;
+      if (rotation !== 0) {
+        const cx = ax + g.width / 2;
+        const cy = ay + g.height / 2;
+        const rad = rotation * (Math.PI / 180);
+        const cos = Math.cos(rad), sin = Math.sin(rad);
+        for (const [px, py] of [[ax, ay], [ax + g.width, ay],
+                                [ax + g.width, ay + g.height], [ax, ay + g.height]]) {
+          const dx = px - cx, dy = py - cy;
+          include(dx * cos - dy * sin + cx, dy * cos + dx * sin + cy);
+        }
+      } else {
+        include(ax, ay);
+        include(ax + g.width, ay + g.height);
+      }
+      // verticalLabelPosition / labelPosition place the label OUTSIDE the
+      // shape (drawio getGraphBounds includes the label's bounding box).
+      // Without this a top-positioned label above a shape at the content
+      // edge printed off-page.
+      const st = cell.style || {};
+      if (cell.value != null && String(cell.value) !== '') {
+        const fs = parseFloat(st.fontSize) || 12;
+        const text = String(cell.value).replace(/<[^>]+>/g, '');
+        const lines = text.split(/\n|<br\s*\/?>/i).length;
+        const lblH = Math.max(fs * 1.4, lines * fs * 1.25);
+        const lblW = Math.min(Math.max(g.width, text.length * fs * 0.65), text.length * fs * 0.7 + 8);
+        const vlp = st.verticalLabelPosition;
+        const lp = st.labelPosition;
+        if (vlp === 'top') include(ax, ay - lblH);
+        else if (vlp === 'bottom') include(ax, ay + g.height + lblH);
+        if (lp === 'left') include(ax - lblW, ay);
+        else if (lp === 'right') include(ax + g.width + lblW, ay);
+      }
+    } else if (cell.edge) {
+      // The real routed polyline (incl. literal dangling endpoints and
+      // router-inserted bends) defines the edge's extent -- raw waypoints
+      // alone missed dangling edges entirely (wrong fallback paper size).
+      // Arrow-class edge shapes (shape=arrow/link/wedge...) paint a band of
+      // width/startWidth/endWidth AROUND the route; without that halo the
+      // band's outer ink fell outside the computed bounds and the page.
+      const st = cell.style || {};
+      const halo = Math.max(
+        parseFloat(st.width) || 0,
+        parseFloat(st.startWidth) || 0,
+        parseFloat(st.endWidth) || 0,
+        parseFloat(st.strokeWidth) || 1) / 2;
+      try {
+        for (const pt of edgePoints(cell, cells)) {
+          include(pt.x - halo, pt.y - halo);
+          include(pt.x + halo, pt.y + halo);
+        }
+      } catch {
+        const { ax, ay } = absolutePos(cell, cells);
+        for (const pt of (g.points || [])) include(pt.x + ax, pt.y + ay);
       }
     }
   }
   if (!isFinite(minX)) return { x: 0, y: 0, width: 100, height: 100 };
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+
+// Port of mxGraphView.getPoint for relative edge geometry: walk the
+// routed polyline to fraction (gx/2 + 0.5) of its arc length, then offset
+// perpendicular by gy and add the absolute geometry offset.
+function edgeLabelPosition(points, g) {
+  let total = 0;
+  const segs = [];
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i - 1].x;
+    const dy = points[i].y - points[i - 1].y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    segs.push(len);
+    total += len;
+  }
+  const gx = (parseFloat(g.x) || 0) / 2;
+  const gy = parseFloat(g.y) || 0;
+  const ox = g.offset ? g.offset.x : 0;
+  const oy = g.offset ? g.offset.y : 0;
+  if (total <= 0) {
+    const mid = points[Math.floor(points.length / 2)];
+    return { x: mid.x + ox, y: mid.y + oy };
+  }
+  const dist = Math.round((gx + 0.5) * total);
+  let segment = segs[0];
+  let length = 0;
+  let index = 1;
+  while (dist >= Math.round(length + segment) && index < points.length - 1) {
+    length += segment;
+    segment = segs[index++];
+  }
+  const factor = segment === 0 ? 0 : (dist - length) / segment;
+  const p0 = points[index - 1];
+  const pe = points[index];
+  const dx = pe.x - p0.x;
+  const dy = pe.y - p0.y;
+  const nx = segment === 0 ? 0 : dy / segment;
+  const ny = segment === 0 ? 0 : dx / segment;
+  return {
+    x: p0.x + dx * factor + nx * gy + ox,
+    y: p0.y + dy * factor - (ny * gy - oy)
+  };
 }
 
 // Build a source cell state compatible with exporter's buildResult().
@@ -523,10 +665,19 @@ function cellToState(cell, cells) {
     // references instead of literal mxPoint entries.
     const points = edgePoints(cell, cells);
     if (points.length < 2) return null;
-    return {
+    const state = {
       x: 0, y: 0, width: 0, height: 0,
       absolutePoints: points
     };
+    // mxGraphView.getPoint: the edge's own label position. relative
+    // geometry.x in [-1,1] is the arc-length position, geometry.y the
+    // PERPENDICULAR offset, geometry.offset an absolute shift. Dropping
+    // these printed every dragged edge label at the polyline midpoint
+    // (plus its labelBackground box) -- silently in the wrong place.
+    if (g.relative && (g.x || g.y || g.offset)) {
+      state.absoluteOffset = edgeLabelPosition(points, g);
+    }
+    return state;
   }
   return null;
 }
@@ -610,7 +761,7 @@ export function buildGraph(cells, paper) {
     }),
     getCellStyle: (cell) => (cell && cell.resolvedStyle) ? cloneStyle(cell.resolvedStyle) : {},
     getLabel:     (cell) => (cell && cell.value != null ? String(cell.value) : ''),
-    isHtmlLabel:  (cell) => !!(cell && cell.style && cell.style.html === '1'),
+    isHtmlLabel:  (cell) => !!(cell && cell.style && String(cell.style.html) === '1'),
     nativePrintOptions: null
   };
 }

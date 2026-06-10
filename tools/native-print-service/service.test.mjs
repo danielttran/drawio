@@ -207,7 +207,12 @@ test('POST /print with drawio source bakes and returns 200', async () => {
   }
 });
 
-test('D5: engine notices → 422 job refused', async () => {
+test('engine notices: job is NOT falsely refused after printing; notices reported', async () => {
+  // Op::Print physically prints before returning notices, so a 422
+  // "refused" here was a lie (the sheet was already out) and made
+  // retrying clients print duplicates. The printed job must be reported
+  // honestly with its notices; degradation-severity kinds are surfaced
+  // separately for the caller's judgement.
   const { svc, port } = await makeService();
   try {
     const res = await fetch(`http://127.0.0.1:${port}/print`, {
@@ -218,9 +223,13 @@ test('D5: engine notices → 422 job refused', async () => {
         stockId: 'stock-a4'
       })
     });
-    assert.equal(res.status, 422);
+    assert.equal(res.status, 200);
     const body = res.json();
-    assert.equal(body.code, 'PRINT_NOTICES');
+    assert.ok(body.jobId, 'printed job id reported');
+    assert.equal(body.notices.length, 1);
+    assert.equal(body.notices[0].kind, 'StubbedSvgArtwork');
+    assert.equal(body.degradations.length, 1,
+      'StubbedSvgArtwork is degradation severity and surfaced as such');
   } finally {
     await svc.stop();
   }
