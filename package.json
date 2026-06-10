@@ -1,0 +1,21 @@
+{
+  "name": "drawio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local development environment for draw.io",
+  "scripts": {
+    "dev": "vite src/main/webapp --host localhost --port 3000 --open",
+    "test:nativeprint-dev-config": "node -e \"import('./src/main/webapp/vite.config.mjs').then(()=>console.log('vite config ok')).catch(e=>{console.error(e);process.exit(1)})\"",
+    "test:nativeprint-exporter": "node --test src/main/webapp/plugins/nativeprint/exporter.test.mjs",
+    "test:nativeprint-validate": "node --test tools/native-print-validate-contract.test.mjs",
+    "test:nativeprint-bake": "node --test tools/native-print-bake/bake.test.mjs",
+    "test:nativeprint-service": "node --test tools/native-print-service/service.test.mjs",
+    "test:nativeprint-render-gate": "node --test tools/native-print-bake/render-artifact.test.mjs",
+    "build:nativeprint-rasterizer": "bash tools/native-print-bake/native-engine-render/build.sh",
+    "audit:nativeprint-production": "node tools/native-print-bake/production-audit.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0",
+    "vite": "^8.0.14"
+  }
+}

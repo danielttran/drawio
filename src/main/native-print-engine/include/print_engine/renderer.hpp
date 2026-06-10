@@ -1,0 +1,97 @@
+#pragma once
+
+#include "print_engine/contract.hpp"
+#include "print_engine/errors.hpp"
+#include "print_engine/geometry.hpp"
+#include "print_engine/path.hpp"
+#include "print_engine/result.hpp"
+
+#include <string>
+#include <map>
+#include <vector>
+
+namespace print_engine {
+
+struct RenderTarget {
+  double dpi = 96.0;
+  double contract_units_per_inch = 96.0;
+};
+
+enum class EmittedKind {
+  StartDocument,
+  StartTile,
+  Clip,
+  Path,
+  Text,
+  Image,
+  Svg,
+  Barcode,
+  EndTile,
+  EndDocument
+};
+
+struct EmittedCommand {
+  EmittedKind kind;
+  Rect contract_box;
+  Rect device_box;
+  std::vector<PathCommand> path_commands;
+  std::string label;
+  std::string style_signature;
+  std::optional<Paint> fill;
+  std::optional<StrokeStyle> stroke;
+  Rgba text_color;
+  std::string image_data;
+  std::string image_format;
+  std::string image_aspect;
+  // Opaque embedded-SVG artwork bytes, ferried verbatim to the host sink.
+  // The engine never parses or rasterizes these (INV-1).
+  std::string svg_source;
+  bool flip_h = false;
+  bool flip_v = false;
+  std::string font_family;
+  double font_size_px = 0.0;
+  int font_weight = 400;
+  bool font_italic = false;
+  bool font_underline = false;
+  bool font_strikethrough = false;
+  std::vector<RichParagraph> rich_paragraphs;
+  // Text-layout policy. §2 measure-at-the-sink: the engine forwards these
+  // verbatim and performs NO wrapping/fitting/positioning; draw_trace() does
+  // real layout with device font metrics so preview == print (INV-5).
+  std::string align_h;
+  std::string align_v;
+  std::string wrap;
+  std::string overflow;
+  double shrink_floor_px = 0.0;
+  bool degradation_notice = false;
+  int raster_width_px = 0;
+  int raster_height_px = 0;
+};
+
+struct RenderTrace {
+  std::vector<EmittedCommand> commands;
+  std::vector<DegradationNotice> notices;
+};
+
+using RenderResult = Result<RenderTrace, ContractError>;
+
+[[nodiscard]] Transform make_world_transform(const RenderTarget& target, const TileSummary& tile);
+[[nodiscard]] RenderResult render_to_trace(const BakedDocument& document, const RenderTarget& target);
+[[nodiscard]] RenderResult render_to_trace(
+  const BakedDocument& document,
+  const RenderTarget& target,
+  const std::map<std::string, std::string>& merge_values,
+  bool design_time_preview);
+[[nodiscard]] RenderResult render_print_trace(
+  const BakedDocument& document,
+  const RenderTarget& target,
+  const std::map<std::string, std::string>& merge_values);
+[[nodiscard]] RenderResult render_operator_preview_trace(
+  const BakedDocument& document,
+  const RenderTarget& target,
+  const std::map<std::string, std::string>& merge_values);
+[[nodiscard]] RenderResult render_design_preview_trace(
+  const BakedDocument& document,
+  const RenderTarget& target);
+
+} // namespace print_engine

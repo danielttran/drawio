@@ -1,0 +1,55 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z">
+  <diagram id="compound-styles" name="Compound Styles">
+    <mxGraphModel pageWidth="1960" pageHeight="600">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="m01" vertex="1" value="Dir N+FH" style="shape=mxgraph.flowchart.data;fillColor=#dae8fc;strokeColor=#6c8ebf;direction=north;flipH=1;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="100" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m02" vertex="1" value="Dir S+FV" style="shape=mxgraph.flowchart.data;fillColor=#dae8fc;strokeColor=#6c8ebf;direction=south;flipV=1;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="320" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m03" vertex="1" value="Rot 135" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=135;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="540" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m04" vertex="1" value="Rot -90" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=-90;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="760" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m05" vertex="1" value="Lbl Left" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;labelPosition=left;align=right;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="980" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m06" vertex="1" value="Lbl Top" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalLabelPosition=top;verticalAlign=bottom;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1200" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m07" vertex="1" value="Wide 200x50" style="shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1420" y="100" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="m08" vertex="1" value="Tall 50x200" style="shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1640" y="100" width="50" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="m09" vertex="1" value="FH+FV+W" style="shape=mxgraph.flowchart.data;fillColor=#dae8fc;strokeColor=#6c8ebf;flipH=1;flipV=1;direction=west;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="100" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m10" vertex="1" value="Rot+Grad" style="shape=mxgraph.basic.6_point_star;fillColor=#ffcc00;gradientColor=#ff8000;strokeColor=#d60000;rotation=45;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="320" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m11" vertex="1" value="Thick+Dash" style="shape=mxgraph.flowchart.card;fillColor=#dae8fc;strokeColor=#0050ef;strokeWidth=5;dashed=1;rotation=20;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="540" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m12" vertex="1" value="Opacity 30" style="shape=mxgraph.flowchart.process;fillColor=#0000ff;strokeColor=#ff0000;opacity=30;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="760" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m13" vertex="1" value="Rot 270" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;rotation=270;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="980" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m14" vertex="1" value="Dir W+FH" style="shape=mxgraph.flowchart.data;fillColor=#dae8fc;strokeColor=#6c8ebf;direction=west;flipH=1;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1200" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="m15" vertex="1" value="AWS S3 Rot" style="shape=mxgraph.aws4.s3;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;rotation=30;fontFamily=Arial;fontSize=11;" parent="1">
+          <mxGeometry x="1420" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

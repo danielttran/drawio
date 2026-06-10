@@ -1,0 +1,26 @@
+[package]
+name = "svg-rasterizer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "resvg-backed cdylib implementing the hand-owned svg_rasterizer_abi.h. Built separately from CMake; dropped next to print_engine_host.exe."
+
+[lib]
+# cdylib only: this is a runtime-loaded backend behind the C ABI, never linked.
+crate-type = ["cdylib"]
+
+[dependencies]
+# resvg re-exports usvg + tiny_skia; keep the dep surface to exactly this one
+# crate so an upstream fix is a single version bump + DLL rebuild (no C++).
+resvg = "0.47"
+# ttf-parser: glyph advance + face metrics for spe_text_measure (D3).
+# Must stay in sync with the version resvg 0.47 pulls transitively.
+ttf-parser = "0.25"
+
+[profile.release]
+# Unwinding is caught at every export via catch_unwind so a Rust panic can
+# never cross the C ABI (UB). Keep unwind (NOT abort) so catch_unwind works.
+panic = "unwind"
+opt-level = 3
+lto = true
+codegen-units = 1

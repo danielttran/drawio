@@ -1,21 +1,23 @@
-# VSDX Import/Export Module
+# VSDX Import Module
 
 ## Overview
 
-This folder implements complete **VSDX (Microsoft Visio 2013+ XML)** file format support for draw.io. VSDX files are ZIP archives containing XML documents following the Open Packaging Conventions (OPC) standard.
+This folder implements **VSDX (Microsoft Visio 2013+ XML) import** for
+draw.io. VSDX files are ZIP archives containing XML documents following
+the Open Packaging Conventions (OPC) standard.
 
-**4 files, ~893 KB total, ~15,600 lines of code.**
+**2 source files (+ this doc).** Export support previously lived
+alongside (`VsdxExport.js`, `mxVsdxCanvas2D.js`) but was removed; see
+git history for the deletion commit.
 
-| File | Lines | Size | Purpose |
-|------|-------|------|---------|
-| `importer.js` | 13,208 | 782 KB | VSDX/VSSX → draw.io import (JSweet-generated from Java) |
-| `VsdxExport.js` | 993 | 73 KB | draw.io → VSDX export |
-| `mxVsdxCanvas2D.js` | 1,153 | 30 KB | Canvas adapter capturing shape rendering as VSDX geometry |
-| `bmpDecoder.js` | 287 | 9 KB | BMP image format decoder for embedded images |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `importer.js` | 13,208 | VSDX/VSSX → draw.io import (JSweet-generated from Java) |
+| `bmpDecoder.js` | 287 | BMP image format decoder for embedded images |
 
 ---
 
-## Architecture
+## Architecture (Import only)
 
 ```
 ┌─────────────────────── IMPORT ───────────────────────┐
@@ -42,26 +44,6 @@ This folder implements complete **VSDX (Microsoft Visio 2013+ XML)** file format
 │                   │                                   │
 │                   ▼                                   │
 │              importPage() → mxGraph model → XML       │
-│                                                       │
-└───────────────────────────────────────────────────────┘
-
-┌─────────────────────── EXPORT ───────────────────────┐
-│                                                       │
-│  mxGraph  →  VsdxExport.exportCurrentDiagrams()       │
-│                   │                                   │
-│                   ├── createVsdxSkeleton() (ZIP init)  │
-│                   │                                   │
-│                   ▼                                   │
-│              convertMxModel2Page()                    │
-│                   ├── convertMxCell2Shape() per cell   │
-│                   │     ├── createShape() (vertices)   │
-│                   │     ├── createEdge() (connectors)  │
-│                   │     └── mxVsdxCanvas2D (rendering) │
-│                   ├── applyMxCellStyle()              │
-│                   └── addPagesXML() + addImagesRels() │
-│                   │                                   │
-│                   ▼                                   │
-│              JSZip.generateAsync() → .vsdx download   │
 │                                                       │
 └───────────────────────────────────────────────────────┘
 ```
@@ -201,105 +183,6 @@ com.mxgraph.io.vsdx.theme.*        — Theme/color classes (OoxmlColor, etc.)
 
 ---
 
-### VsdxExport.js
-
-**Pattern**: Closure-based module. Constructor `VsdxExport(editorUi)` defines all functions as closures with shared state.
-
-#### Functions (all internal closures)
-
-| Function | Purpose |
-|----------|---------|
-| `exportCurrentDiagrams(currentPageOnly)` | Main entry point: collects pages, builds ZIP, triggers download |
-| `createVsdxSkeleton(zip, pageCount)` | Creates complete static VSDX directory structure and template files |
-| `getCellVsdxId(cellId)` | Maps mxGraph cell IDs → sequential VSDX shape IDs |
-| `getGraphAttributes(graph)` | Extracts page properties (dimensions, grid, scale) |
-| `applyMxCellStyle(state, shape, xmlDoc)` | Converts mxGraph styles to VSDX Cell elements (fill, line, font, text) |
-| `createShape(id, geo, layerIndex, xmlDoc, parentHeight, isChild)` | Creates VSDX Shape element with XForm geometry |
-| `createEdge(cell, layerIndex, graph, xmlDoc, parentHeight, isChild)` | Creates edge Shape with connector master and waypoints |
-| `convertMxCell2Shape(cell, layerIndex, graph, xmlDoc, parentHeight, parentGeo, isChild)` | Main dispatcher: routes to createShape/createEdge, handles groups |
-| `convertMxModel2Page(graph, modelAttrib)` | Converts entire mxGraph to PageContents XML |
-| `addPagesXML(zip, pages, pageLayers, modelsAttr)` | Creates pages.xml and pages.xml.rels in ZIP |
-| `addImagesRels(zip, pIndex)` | Creates relationship files for embedded images |
-| `writeXmlDoc2Zip(zip, name, xmlDoc, noHeader)` | Serializes XML document into ZIP file entry |
-| `createCellElem(name, val, xmlDoc, formula)` | Creates VSDX `<Cell>` element |
-| `createCellElemScaled(name, val, xmlDoc, formula)` | Creates `<Cell>` with CONVERSION_FACTOR scaling |
-| `createRow(type, index, x, y, xmlDoc)` | Creates geometry `<Row>` element |
-| `getStyleColor(color)` | Normalizes color to VSDX format |
-| `getArrowType(arrow, isFilled)` | Maps draw.io arrow name to VSDX arrow ID |
-| `getArrowSize(size)` | Maps draw.io arrow size to VSDX arrow size value |
-| `collectLayers(graph, diagramName)` | Extracts layer definitions from graph |
-| `exportPage(page)` | Exports a single page (called in sequence) |
-
-#### Constants
-
-```javascript
-CONVERSION_FACTOR = 40 * 2.54  // = 101.6 (screen coordinates per cm × cm per inch)
-PAGES_TYPE = "http://schemas.microsoft.com/visio/2010/relationships/page"
-RELS_XMLNS = "http://schemas.openxmlformats.org/package/2006/relationships"
-XMLNS = "http://schemas.microsoft.com/office/visio/2012/main"
-XMLNS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-// Arrow type mapping: "drawioType|filled" → VSDX arrow ID
-ARROWS_MAP = {
-    "none|1": 0, "none|0": 0,
-    "open|1": 1, "open|0": 1,
-    "block|1": 4, "block|0": 14,
-    "classic|1": 5, "classic|0": 17,
-    "oval|1": 10, "oval|0": 20,
-    "diamond|1": 11, "diamond|0": 22,
-    "blockThin|1": 2, "blockThin|0": 15,
-    "dash|1": 23, "dash|0": 23,
-    "ERone|1": 24, "ERmandOne|1": 25,
-    "ERmany|1": 27, "ERoneToMany|1": 28,
-    "ERzeroToMany|1": 29, "ERzeroToOne|1": 30,
-    "openAsync|1": 9, "openAsync|0": 9
-}
-```
-
----
-
-### mxVsdxCanvas2D.js
-
-**Inheritance**: `mxAbstractCanvas2D` → `mxVsdxCanvas2D` (via `mxUtils.extend`)
-
-Intercepts mxGraph shape rendering calls and converts them to VSDX geometry XML instead of drawing to screen.
-
-#### Methods
-
-| Method | Signature | Purpose |
-|--------|-----------|---------|
-| `init(zip)` | `(JSZip)` | Initialize for new VSDX file |
-| `onFilesLoaded()` | `()` | Hook called after pending files finish loading |
-| `newShape(shape, cellState, xmlDoc)` | `(XMLElement, mxCellState, XMLDocument)` | Start capturing geometry for a vertex |
-| `newEdge(shape, cellState, xmlDoc)` | `(XMLElement, mxCellState, XMLDocument)` | Start capturing geometry for an edge |
-| `endShape()` | `()` | Finalize current shape (flush foreign data) |
-| `newPage()` | `()` | Reset image list for new page |
-| `getShapeType()` | → `string` | Returns captured shape type |
-| `getShapeGeo()` | → `XMLElement` | Returns captured geometry section |
-| `createGeoSec()` | `()` | Creates new Geometry Section element |
-| `createElt(name)` | `(string)` → `XMLElement` | Creates namespaced XML element |
-| `createCellElemScaled(name, val, formula)` | `(string, number, string?)` | Creates Cell with CONVERSION_FACTOR scaling |
-| `createCellElem(name, val, formula)` | `(string, number, string?)` | Creates Cell element |
-| `createRowScaled(type, ix, x, y, ...)` | `(string, number, ...)` | Creates geometry Row with scaled coordinates |
-| `createRowRel(type, ix, x, y, ...)` | `(string, number, ...)` | Creates relative geometry Row |
-| `begin()` | `()` | Start new path |
-| `rect(x, y, w, h)` | `(number × 4)` | Rectangle via MoveTo/LineTo sequence |
-| `roundrect(x, y, w, h, dx, dy)` | `(number × 6)` | Rounded rectangle with ArcTo corners |
-| `ellipse(x, y, w, h)` | `(number × 4)` | Ellipse geometry row |
-| `moveTo(x, y)` | `(number × 2)` | MoveTo geometry row |
-| `lineTo(x, y)` | `(number × 2)` | LineTo geometry row |
-| `quadTo(x1, y1, x2, y2)` | `(number × 4)` | Quadratic Bezier → RelQuadBezTo |
-| `curveTo(x1, y1, x2, y2, x3, y3)` | `(number × 6)` | Cubic Bezier → RelCubBezTo |
-| `close()` | `()` | Close path (implicit LineTo back to start) |
-| `image(x, y, w, h, src, aspect, flipH, flipV)` | `(number × 4, string, boolean × 3)` | Embed image: handles SVG→PNG, BMP→PNG conversion |
-| `text(x, y, w, h, str, align, valign, wrap, format, overflow, clip, rotation, dir)` | `(number × 4, string, ...)` | Text with HTML parsing → VSDX Paragraph/Character/Text sections |
-| `convertSvg2Png(svgData, w, h, isBase64, callback)` | `(string, number × 2, boolean, Function)` | Renders SVG on canvas, exports PNG |
-| `addForeignData(type, index)` | `(string, number)` | Creates ForeignData element for embedded images |
-| `rotate(theta, flipH, flipV, cx, cy)` | `(number, boolean × 2, number × 2)` | Captures rotation state |
-| `stroke()` / `fill()` / `fillAndStroke()` | `()` | No-ops (geometry captured via path methods) |
-
----
-
 ### bmpDecoder.js
 
 Standalone BMP image format decoder. No dependencies on other module files.
@@ -398,33 +281,6 @@ Wrap all <diagram> elements in:
 
 ---
 
-## Export Flow (draw.io → VSDX)
-
-```
-VsdxExport(editorUi).exportCurrentDiagrams(currentPageOnly)
-  │
-  ├── Collect pages to export
-  ├── createVsdxSkeleton(zip, pageCount)      // Template VSDX structure
-  │
-  ├── For each page:
-  │     ├── getGraphAttributes(graph)          // Page dimensions, grid, scale
-  │     ├── collectLayers(graph)               // Layer definitions
-  │     ├── convertMxModel2Page(graph, attrs)
-  │     │     ├── Get all cells from model
-  │     │     ├── For each cell:
-  │     │     │     convertMxCell2Shape(cell, ...)
-  │     │     │       ├── Vertex: render via mxVsdxCanvas2D → createShape()
-  │     │     │       ├── Edge: createEdge() with arrow mapping
-  │     │     │       └── Group: recursive processing
-  │     │     └── Build PageContents XML tree
-  │     └── addImagesRels(zip, pageIndex)
-  │
-  ├── addPagesXML(zip, pages, layers, attrs)   // pages.xml + relationships
-  └── JSZip.generateAsync({type: "blob"})      // → .vsdx download
-```
-
----
-
 ## VSDX File Format (as understood by this code)
 
 A VSDX file is a ZIP archive with this structure:
@@ -473,7 +329,7 @@ visio/
 
 ---
 
-## Style Property Mapping
+## Style Property Mapping (VSDX → draw.io)
 
 ### Fill
 | VSDX | draw.io |
@@ -563,7 +419,7 @@ Master shapes provide template geometry and styling. Instance shapes inherit fro
 - **DOMPurify**: HTML sanitization (optional, for text processing)
 
 ### Browser APIs
-- Canvas 2D Context (SVG → PNG rendering)
+- Canvas 2D Context (BMP → canvas → JPEG via BmpDecoder)
 - XMLHttpRequest (image fetching, EMF conversion)
 - DOMParser / mxUtils.parseXml (XML parsing)
 - FileReader (Blob → base64 for EMF conversion)
@@ -584,16 +440,6 @@ Master shapes provide template geometry and styling. Instance shapes inherit fro
 - **Charset**: Full charset support is incomplete; UTF-16LE has a basic decoder, other encodings may fail.
 - **Extremely large txtPinX/Y values**: Can cause browser hangs during import.
 - **HTML `</li>` tag placement**: May appear after font/formatting tags instead of before them.
-
-### Export Limitations
-- **SVG shapes**: Converted to raster PNG rather than native Visio vector shapes.
-- **Gradient fills**: Approximated as solid colors.
-- **Image deduplication**: Not implemented — each image creates a separate media file.
-- **Shape clipping**: Overflow handling may differ from mxGraph rendering.
-- **Text position**: Approximate for rotated labels.
-- **Connector arrows**: Limited arrow type mappings (see ARROWS_MAP).
-- **Deep group nesting**: May cause geometry inaccuracies.
-- **Image crop accuracy**: Minor width/height differences possible.
 
 ### BMP Decoder
 - **RGB565 16-bit**: Not fully implemented.
@@ -623,14 +469,4 @@ parentsMap = { ShapePageId(pageId, edgeId): mxCell }
 
 // Layer names indexed by position
 layerNames = ["Layer1", "Layer2", ...]
-```
-
----
-
-## Key Data Structures (Export)
-
-```javascript
-// Cell ID → sequential VSDX shape ID mapping
-idsMap = { "mxCellId": 1, "mxCellId2": 2, ... }
-idsCounter = 1  // next available ID
 ```

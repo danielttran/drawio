@@ -1,0 +1,41 @@
+# Native Print — agent guardrails (read before changing anything here)
+
+These are **hard business requirements** from the project owner. They are
+settled. Do not propose, design, or implement anything that violates them,
+and do not ask to revisit them. Full text + rationale:
+`docs/CLAUDE.md` → "Native Print — NON-NEGOTIABLE CONSTRAINTS".
+
+1. **WYSIWYG is mandatory.** Faithful render OR a loud notice — never a
+   silent divergence/approximation.
+
+2. **No browser, ever — not even headless.** Forbidden for the guarantee,
+   verification, or tests: headless Chromium, Playwright, Puppeteer,
+   Selenium, Electron, `jsdom`, and in-app pixel oracles (canvas
+   `getImageData`, rasterizing `getSvg()`, screenshot diff). No pixel
+   comparison oracle is possible under this rule — do not add one. A
+   browser-based self-check was already built and **reverted**; do not
+   recreate it.
+   - **Owner carve-out (2026-05-24):** canvas (`drawImage` + `toDataURL`)
+     MAY be used to **embed external image artwork** so it prints WYSIWYG
+     (`embedExternalImages` / `imgElementToPngDataUri`) — NOT to build a
+     verification/pixel oracle. See `docs/CLAUDE.md` §2.
+
+3. **Guarantee by construction, verified browser-free.** The bake is
+   **headless-only**: render every object faithfully from its stencil/style
+   geometry (or emit a loud notice), with zero browser/live-DOM dependency.
+   There is no live-DOM transcription path — the old browser-only
+   `harvestShape`/`svgCellNode` strategy was removed; the headless
+   re-derivation *is* the WYSIWYG guarantee. Enforce with structural
+   invariants in the existing `node --test` (exporter) and `ctest` (engine)
+   harnesses.
+
+4. **Frozen engine/contract boundary.** Don't bypass the engine; contract
+   schema changes need an explicit owner decision (escalate, don't infer).
+
+5. **No silent heuristic fallbacks** (`shapePath`, `plainLabel` flattening,
+   `edgeLabelBox`) — last-resort approximations only, loudly noticed
+   wherever they would diverge from drawio.
+
+If a task seems to need a browser to "prove" WYSIWYG: strengthen the
+faithful headless render and its structural invariants — do not add a
+browser.

@@ -1,0 +1,167 @@
+# Native Print Engine CI.
+#
+# Gates the C++20 engine, the Win32 host, the Rust SVG-rasterizer shim, and the
+# Node-side exporter test suite. Run on PR and on push to the print branches.
+#
+# Linux job: portable engine library + tests + the exporter Node suite. This is
+# the cross-platform regression net for the engine contract / loader / proto /
+# renderer / wysiwyg-parity invariants. Cannot exercise GDI+ (host path).
+#
+# Windows job: full host build (real win32_services.cpp linked), engine tests,
+# the SVG ABI fake-shim swap acceptance test, and the exporter Node suite.
+#
+# Rust job: builds the resvg-backed cdylib that implements svg_rasterizer_abi.h
+# (separate cargo project under host/svg-rasterizer/). Built independently of
+# CMake so an upstream bump is a single rebuild + DLL drop (no C++ touch).
+
+name: Native Print Engine CI
+
+on:
+  push:
+    branches:
+      - print
+      - 'claude/**'
+  pull_request:
+    branches:
+      - print
+      - dev
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  engine-linux:
+    name: Engine library + tests (Linux, no host)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fonts (deterministic glyph coverage for SVG corpus)
+        # ubuntu-latest images do NOT ship Arial; the SVG corpus test asks
+        # resvg to render <text font-family="Arial">, and resvg silently
+        # renders unknown fonts as blank (zero opaque pixels), which the
+        # corpus test correctly flags as a silent-blank C1 violation. We
+        # install fonts-liberation so "Arial" resolves to Liberation Sans
+        # (its metric-compatible open clone) -- making both the test and
+        # the future drawio-on-Linux print path deterministic.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build SVG rasterizer cdylib (resvg)
+        # Build first so the engine-side cross-platform pixel-determinism
+        # golden actually exercises the real cdylib via dlopen instead of
+        # SKIPping. The Rust shim is the source of truth for "preview ==
+        # print pixels" determinism (INV-5) for embedded SVG artwork.
+        working-directory: src/main/native-print-engine/host/svg-rasterizer
+        run: cargo build --release
+      - name: Configure
+        run: |
+          cmake -S src/main/native-print-engine \
+                -B src/main/native-print-engine/build \
+                -DBUILD_TESTING=ON \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DSVG_RASTERIZER_LIB="$PWD/src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so"
+      - name: Build
+        run: cmake --build src/main/native-print-engine/build -j
+      - name: Test (ctest)
+        run: ctest --test-dir src/main/native-print-engine/build --output-on-failure
+      - name: Architecture invariant (INV-1) check
+        # The architecture_tests case scans include/ + src/ for banned tokens.
+        # Re-running it as its own step makes the failure mode obvious in CI logs.
+        run: ctest --test-dir src/main/native-print-engine/build -R "INV-1" --output-on-failure
+      - name: SVG pixel-determinism golden (cross-platform, via dlopen)
+        # Re-runs the cross-platform pixel-golden tests as their own step so
+        # the failure (SVG drift between two consecutive renders -> INV-5
+        # break) is obvious in CI logs.
+        run: ctest --test-dir src/main/native-print-engine/build -R "SVG rasterizer cdylib" --output-on-failure
+
+  engine-windows:
+    name: Engine + Win32 host + SVG ABI swap test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (MSVC, strict /W4 /WX)
+        shell: pwsh
+        run: |
+          cmake -S src/main/native-print-engine `
+                -B src/main/native-print-engine/build `
+                -DBUILD_TESTING=ON `
+                -A x64
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build src/main/native-print-engine/build --config Release -j
+      - name: Test (ctest, Release)
+        shell: pwsh
+        run: ctest --test-dir src/main/native-print-engine/build -C Release --output-on-failure
+      - name: Upload host exe + fake shim (for downstream golden harness)
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-print-host-win64
+          path: |
+            src/main/native-print-engine/build/Release/print_engine_host.exe
+            src/main/native-print-engine/build/Release/fake_svg_rasterizer.dll
+          if-no-files-found: ignore
+
+  svg-rasterizer-shim:
+    name: SVG rasterizer cdylib (resvg, cross-platform)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo build (release, cdylib)
+        working-directory: src/main/native-print-engine/host/svg-rasterizer
+        run: cargo build --release
+      - name: Verify ABI exports
+        # The hand-owned ABI's four symbols must always be exported.
+        # Linux: nm. Windows: dumpbin via VS Developer PowerShell.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            nm -D --defined-only src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so \
+              | grep -E " (spe_svg_abi_version|spe_svg_backend_id|spe_svg_measure|spe_svg_render)$" \
+              | wc -l | grep -q '^4$'
+          else
+            # Windows: extract exports from the .dll using llvm-readobj (preinstalled).
+            EXPORTS=$(llvm-readobj --coff-exports \
+              src/main/native-print-engine/host/svg-rasterizer/target/release/svg_rasterizer.dll \
+              || true)
+            for sym in spe_svg_abi_version spe_svg_backend_id spe_svg_measure spe_svg_render; do
+              echo "$EXPORTS" | grep -q "Name: $sym" || { echo "missing export: $sym"; exit 1; }
+            done
+          fi
+      - name: Upload built cdylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: svg-rasterizer-${{ matrix.os }}
+          path: |
+            src/main/native-print-engine/host/svg-rasterizer/target/release/*.dll
+            src/main/native-print-engine/host/svg-rasterizer/target/release/*.so
+          if-no-files-found: error
+
+  exporter-node:
+    name: Exporter (Node --test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm ci || npm install
+      - name: Run exporter tests
+        run: npm run test:nativeprint-exporter
+      - name: Run contract self-check (no-browser validator)
+        # The C5 manual-validation runbook calls this script as a hard
+        # precondition; CI runs its self-tests so a broken validator
+        # never blesses a broken contract.
+        run: npm run test:nativeprint-validate

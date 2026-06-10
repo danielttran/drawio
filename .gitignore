@@ -50,3 +50,19 @@ src/main/webapp/WEB-INF/lib/protobuf-java-*.jar
 src/main/webapp/WEB-INF/lib/protobuf-java-util-*.jar
 src/main/webapp/WEB-INF/lib/re2j-*.jar
 src/main/webapp/WEB-INF/lib/threetenbp-*.jar
+.claude/
+
+# Native print visual test scratch output. Keep the render helpers in
+# tools/native-print-bake/*.mjs trackable; ignore only generated artifacts.
+/preview_page1.png
+/render_final.png
+/render_full.png
+/renders/
+/tools/native-print-bake/*.png
+/tools/native-print-bake/codex-*.contract.json
+/tools/native-print-bake/test-contract*.json
+# Compiled native-engine-render rasterize CLI (built via build:nativeprint-rasterizer)
+/tools/native-print-bake/native-engine-render/rasterize
+/tools/native-print-bake/native-engine-render/*.o
+# Generated verification artifacts (always regenerate from current .drawio source)
+*.artifact-*.png

@@ -1,0 +1,50 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Master Test AWS">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="0" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1960" pageHeight="600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Row 0: AWS shapes w01-w08 (100x100 px, fixed-aspect) -->
+        <mxCell id="w01" value="Lambda" style="shape=mxgraph.aws4.lambda;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w02" value="S3" style="shape=mxgraph.aws4.s3;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w03" value="EC2" style="shape=mxgraph.aws4.ec2;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w04" value="RDS" style="shape=mxgraph.aws4.rds;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w05" value="DynamoDB" style="shape=mxgraph.aws4.dynamodb;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="980" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w06" value="SQS" style="shape=mxgraph.aws4.sqs;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w07" value="SNS" style="shape=mxgraph.aws4.sns;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=-15;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w08" value="CloudWatch" style="shape=mxgraph.aws4.cloudwatch;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="100" width="100" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 1: AWS shapes w09-w12 (100x100 px, fixed-aspect) -->
+        <mxCell id="w09" value="API GW" style="shape=mxgraph.aws4.api_gateway;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w10" value="General" style="shape=mxgraph.aws4.general;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w11" value="VPC" style="shape=mxgraph.aws4.vpc;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="w12" value="Route 53" style="shape=mxgraph.aws4.route_53;fillColor=#232F3E;strokeColor=#ffffff;fontColor=#ffffff;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=30;" vertex="1" parent="1">
+          <mxGeometry x="760" y="300" width="100" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

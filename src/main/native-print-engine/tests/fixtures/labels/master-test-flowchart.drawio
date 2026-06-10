@@ -1,0 +1,88 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Master Test Flowchart">
+    <mxGraphModel dx="1422" dy="762" grid="0" gridSize="10" guides="0" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="1960" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Row 0: Flowchart shapes f01-f08 -->
+        <mxCell id="f01" value="Start" style="shape=mxgraph.flowchart.start_1;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f02" value="Start 2" style="shape=mxgraph.flowchart.start_2;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f03" value="Process" style="shape=mxgraph.flowchart.process;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f04" value="Decision" style="shape=mxgraph.flowchart.decision;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=15;" vertex="1" parent="1">
+          <mxGeometry x="760" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f05" value="Data" style="shape=mxgraph.flowchart.data;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f06" value="Predefined" style="shape=mxgraph.flowchart.predefined_process;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f07" value="Stored Data" style="shape=mxgraph.flowchart.stored_data;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=-15;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f08" value="Int Storage" style="shape=mxgraph.flowchart.internal_storage;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="100" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 1: Flowchart shapes f09-f16 -->
+        <mxCell id="f09" value="Seq Data" style="shape=mxgraph.flowchart.sequential_data;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f10" value="Direct Data" style="shape=mxgraph.flowchart.direct_data;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=20;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f11" value="Manual In" style="shape=mxgraph.flowchart.manual_input;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f12" value="Manual Op" style="shape=mxgraph.flowchart.manual_operation;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f13" value="Card" style="shape=mxgraph.flowchart.card;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=30;" vertex="1" parent="1">
+          <mxGeometry x="980" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f14" value="Tape" style="shape=mxgraph.flowchart.paper_tape;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f15" value="Terminator" style="shape=mxgraph.flowchart.terminator;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f16" value="Sum Func" style="shape=mxgraph.flowchart.summing_function;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="300" width="120" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 2: Flowchart shapes f17-f24 -->
+        <mxCell id="f17" value="Or" style="shape=mxgraph.flowchart.or;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f18" value="Collate" style="shape=mxgraph.flowchart.collate;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="320" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f19" value="Sort" style="shape=mxgraph.flowchart.sort;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;rotation=-20;" vertex="1" parent="1">
+          <mxGeometry x="540" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f20" value="Preparation" style="shape=mxgraph.flowchart.preparation;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f21" value="Merge/Store" style="shape=mxgraph.flowchart.merge_or_storage;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f22" value="Delay" style="shape=mxgraph.flowchart.delay;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f23" value="Display" style="shape=mxgraph.flowchart.display;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="f24" value="Annotation" style="shape=mxgraph.flowchart.annotation_1;fillColor=#dae8fc;strokeColor=#6c8ebf;whiteSpace=wrap;fontFamily=Arial;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="500" width="120" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

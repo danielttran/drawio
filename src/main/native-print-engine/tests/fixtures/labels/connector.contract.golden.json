@@ -1,0 +1,164 @@
+{
+  "schema": {
+    "major": 1,
+    "minor": 1
+  },
+  "document": {
+    "units": "um",
+    "pages": [
+      {
+        "id": "page-1",
+        "size": {
+          "w": 79375,
+          "h": 39687.5
+        },
+        "tiles": [
+          {
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "size": {
+              "w": 79375,
+              "h": 39687.5
+            }
+          }
+        ],
+        "paint": [
+          {
+            "kind": "path",
+            "d": "M 0 11906.25 L 15875 11906.25 L 15875 22489.583333 L 0 22489.583333 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#dae8fc",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#6c8ebf",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 0,
+              "y": 11906.25,
+              "w": 15875,
+              "h": 10583.333333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MCIgaGVpZ2h0PSI0MCI+PGRlZnM+PGNsaXBQYXRoIGlkPSJ0eHQyIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNjAiIGhlaWdodD0iNDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0MikiPjx0ZXh0IHg9IjMwIiB5PSIxMi42OCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTIiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5BPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "path",
+            "d": "M 52916.666667 11906.25 L 68791.666667 11906.25 L 68791.666667 22489.583333 L 52916.666667 22489.583333 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#d5e8d4",
+              "alpha": 1
+            },
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#82b366",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 52916.666667,
+              "y": 11906.25,
+              "w": 15875,
+              "h": 10583.333333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MCIgaGVpZ2h0PSI0MCI+PGRlZnM+PGNsaXBQYXRoIGlkPSJ0eHQzIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNjAiIGhlaWdodD0iNDAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0MykiPjx0ZXh0IHg9IjMwIiB5PSIxMi42OCIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTIiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5CPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "path",
+            "d": "M 15875 17197.916667 L 52916.666667 17197.916667",
+            "fill": null,
+            "stroke": {
+              "paint": {
+                "type": "solid",
+                "color": "#000000",
+                "alpha": 1
+              },
+              "width": 264.583333,
+              "cap": "butt",
+              "join": "miter",
+              "miterLimit": 10,
+              "dash": null
+            }
+          },
+          {
+            "kind": "path",
+            "d": "M 52916.666667 17197.916667 L 51064.583333 18031.354167 L 51064.583333 16364.479167 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#000000",
+              "alpha": 1
+            },
+            "stroke": null
+          },
+          {
+            "kind": "path",
+            "d": "M 26828.75 15160.625 L 41962.916667 15160.625 L 41962.916667 19235.208333 L 26828.75 19235.208333 Z",
+            "fill": {
+              "type": "solid",
+              "color": "#ffffff",
+              "alpha": 1
+            },
+            "stroke": null
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 26828.75,
+              "y": 15160.625,
+              "w": 15134.166667,
+              "h": 4074.583333
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1Ny4yIiBoZWlnaHQ9IjE1LjQiPjxkZWZzPjxjbGlwUGF0aCBpZD0idHh0NCI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjU3LjIiIGhlaWdodD0iMTUuNCIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCN0eHQ0KSI+PHRleHQgeD0iMjguNiIgeT0iMC45OSIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5jb25uZWN0czwvdGV4dD48L2c+PC9zdmc+",
+            "aspect": "preserve"
+          },
+          {
+            "kind": "path",
+            "d": "M 23812.5 0 L 44979.166667 0 L 44979.166667 7937.5 L 23812.5 7937.5 Z",
+            "fill": null,
+            "stroke": null
+          },
+          {
+            "kind": "svg",
+            "box": {
+              "x": 23812.5,
+              "y": 0,
+              "w": 21166.666667,
+              "h": 7937.5
+            },
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4MCIgaGVpZ2h0PSIzMCI+PGRlZnM+PGNsaXBQYXRoIGlkPSJ0eHQ1Ij48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iODAiIGhlaWdodD0iMzAiLz48L2NsaXBQYXRoPjwvZGVmcz48ZyBjbGlwLXBhdGg9InVybCgjdHh0NSkiPjx0ZXh0IHg9IjQwIiB5PSI3LjY4IiBmb250LWZhbWlseT0iSGVsdmV0aWNhLCBBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMiIgZm9udC13ZWlnaHQ9IjQwMCIgZmlsbD0iIzAwMDAwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPkxhYmVsPC90ZXh0PjwvZz48L3N2Zz4=",
+            "aspect": "preserve"
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "bakePath": "native-print"
+  }
+}

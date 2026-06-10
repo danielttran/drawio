@@ -1,0 +1,31 @@
+<mxfile host="bake-test" modified="2026-05-25T00:00:00.000Z" version="24.0.0">
+  <diagram id="diag-1" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="300" pageHeight="200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="g1" value="" style="group;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="10" y="10" width="130" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="2" value="Group child A" style="rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="g1">
+          <mxGeometry x="0" y="0" width="60" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="3" value="Group child B" style="rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="g1">
+          <mxGeometry x="70" y="10" width="60" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="4" value="Group child C" style="ellipse;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1">
+          <mxGeometry x="20" y="45" width="80" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="5" value="Outside group" style="rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="160" y="30" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="6" value="Front (top z-order)" style="rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="7" value="Back (bottom z-order)" style="rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="60" y="140" width="100" height="40" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
