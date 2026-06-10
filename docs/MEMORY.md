@@ -957,3 +957,59 @@ is no longer an A/B `mode` flag; do not reintroduce "Path A/B" terminology.
 **Green on this box:** exporter `node --test` 148 pass / 1 skip (engine-binary
 test, no .exe on this box) / 0 fail; production `bake.test` 152/152. `exporter.js`
 6392 → 4861 lines. No change to production output (bake.test unchanged proves it).
+
+## UPDATE 2026-06-10 — end-to-end WYSIWYG audit (branch claude/drawio-print-wysiwyg-audit-4l8pqb)
+
+**Goal:** audit native print + C++ engine end-to-end; fix until 2 consecutive
+clean rounds. Round 1 found and fixed ~30 verified defects across EVERY layer.
+Full matrix green after each commit (exporter 194, bake 169, service 17,
+validate 17, ctest 182, render gate, production audit, engine sweeps).
+
+**Round-1 highlights (each with regression tests):**
+- Rasterizer (5caa8ef): generic font aliases pinned to ABSENT design fonts →
+  ALL text silently blank off-Windows; now first-installed metric-compatible
+  fallback (Arial→Helvetica→Liberation/Arimo→DejaVu→Free).
+- Exporter (cfc2de2): wrapped CJK printed as ONE clipped line → Unicode-aware
+  break units + fullwidth glyph widths (kinsoku-aware).
+- Engine (f9efd19): unit-blind page-escape tolerance (spurious
+  HardwareMarginClip on um bakes); arc bbox end±r wrong both directions (now
+  exact cubic/arc extrema); std::stod exceptions escaped the parser catch →
+  process death (now from_chars, locale-safe); SchemaMinorAhead only on
+  GetContractFields (now also Print/RenderPreview); require_int UB cast;
+  dup-key last-wins (JSON.parse parity); stable_sort stops; maxLen code points.
+- Win32 host (aafac7a): text_to_svg bypass did NOT COMPILE (broken Windows
+  build at tip of print) and discarded wrap/overflow/align_v/decorations/rich
+  runs → removed (GDI+ sink is the §2 reference); PHYSICALOFFSETX/Y never
+  compensated (whole page shifted, bottom/right strip lost, INV-5 break);
+  anisotropic LOGPIXELSY ignored; GDI+ dash = pen-width multiples (dashes
+  printed ∝ width²) → ÷width; EmittedKind::Clip never implemented (tile-seam
+  duplication in preview); EndDoc + band-blit status unchecked; radial
+  PathGradientBrush stops inverted (0=boundary); DEVMODE orientation derived
+  from aspect double-rotated wide stocks (now identity portrait); base64
+  mid-'=' garbage byte; 24-stock cap removed.
+- Parser/exporter (ca6a6fb): edge routing now runs drawio's REAL mxEdgeStyle
+  via vm sandbox (tools/native-print-bake/mx-edge-router.mjs — evaluates
+  mxEdgeStyle.js/mxPerimeter.js/mxConstants.js verbatim; C2-clean, no DOM):
+  OrthConnector/Segment/Elbow(SideToSide default)/EntityRelation + real
+  perimeters + rotation/flip/direction-aware fixed points + collapsed-ancestor
+  promotion. Stale sourcePoint no longer kills routing. Numeric-style string
+  compares fixed. Corrupt <diagram> page = loud refusal. Entities decode &amp;
+  LAST + fromCodePoint. Edge labels honor relative geometry (getPoint port:
+  positive gy is perpendicular UP for a rightward edge). opacity×fillOpacity
+  multiplicative. curved=1 = paintCurvedLine quads for ANY point count.
+  Labels clip ONLY on overflow=hidden/fill; default grows the viewport by
+  measured overhang (overflow visible, as the editor shows). radial gradient
+  real. jumpStyle = loud notice.
+- Anchoring: bake.mjs INK-EXTENT two-pass — measures emitted paint (boxes +
+  path mins, arcs by endpoints) and shifts the anchor so painted halos
+  (wedge bands, outside labels, rotation slop) stay on the paper. All 19
+  fixtures: ZERO HardwareMarginClip.
+- Pipeline: px-to-um scales dash; render-artifact + service + print-file gate
+  on noticeSeverity 'degradation' (service no longer falsely "refuses" jobs
+  AFTER printing → no duplicate prints; preflight wired via
+  NATIVE_PRINT_FONTS, loud when disabled); validator mirrors the C++ loader.
+
+**Conventions to keep:** goldens are regenerated whenever routing/bounds
+change (bake CLI loop); the wedge/label classes are covered by the ink pass —
+do NOT re-add per-feature bound guessing; multipage page-2 overhang is the
+owner-ruled edge-clip case when it appears.
