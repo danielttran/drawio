@@ -725,8 +725,13 @@
           var bk = blocks[bj];
           var words = bk.text.split(/\s+/).filter(function (w) { return w !== ''; });
           for (var wi = 0; wi < words.length; wi++) {
-            if (textWidthPx(words[wi], bk.size) > availW) {
-              return false;
+            // The unbreakable unit is the wrap unit, not the whole word: a
+            // CJK run can break between any two ideographs.
+            var units = splitBreakable(words[wi]);
+            for (var ui = 0; ui < units.length; ui++) {
+              if (textWidthPx(units[ui], bk.size) > availW) {
+                return false;
+              }
             }
           }
         }
@@ -1245,8 +1250,66 @@
   // Arial/Helvetica metrics. A single average factor wraps narrow-letter text
   // (lorem ipsum, "this note") far too early; per-class widths reproduce the
   // browser's line breaks closely without bundling a full AFM table.
+  // East-Asian fullwidth glyphs (CJK ideographs, kana, Hangul, fullwidth
+  // forms). Browsers give these a break opportunity between ANY two of them
+  // under white-space:normal (standard Unicode line breaking, independent of
+  // word-wrap), and they advance ~1.0 em -- both must be mirrored here or a
+  // wrapped CJK label bakes as ONE clipped line (silent content loss).
+  function isWideBreakChar(ch) {
+    var c = ch.charCodeAt(0);
+    return (c >= 0x1100 && c <= 0x115F) ||  // Hangul Jamo
+           (c >= 0x2E80 && c <= 0x303E) ||  // CJK radicals, Kangxi, CJK punct
+           (c >= 0x3041 && c <= 0x33FF) ||  // kana, CJK symbols/compat
+           (c >= 0x3400 && c <= 0x4DBF) ||  // CJK ext A
+           (c >= 0x4E00 && c <= 0x9FFF) ||  // CJK unified
+           (c >= 0xA000 && c <= 0xA4CF) ||  // Yi
+           (c >= 0xAC00 && c <= 0xD7A3) ||  // Hangul syllables
+           (c >= 0xF900 && c <= 0xFAFF) ||  // CJK compat ideographs
+           (c >= 0xFE30 && c <= 0xFE4F) ||  // CJK compat forms
+           (c >= 0xFF00 && c <= 0xFF60) ||  // fullwidth forms
+           (c >= 0xFFE0 && c <= 0xFFE6);    // fullwidth signs
+  }
+  // Basic kinsoku: a line must not START with a closing mark nor END with an
+  // opening bracket (matches browser CJK line breaking).
+  var CJK_CLOSING = '、。，．：；？！）' +
+    '」』】〉》〕ー々・｡｣､';
+  var CJK_OPENING = '（「『【〈《〔｢';
+  // Split one whitespace-free word into unbreakable units: runs of non-wide
+  // chars stay one unit; each wide char is its own unit (with kinsoku gluing).
+  // Adjacent units join with NO space. Latin-only words return [word].
+  function splitBreakable(word) {
+    var units = [];
+    var cur = '';
+    for (var i = 0; i < word.length; i++) {
+      var ch = word.charAt(i);
+      if (isWideBreakChar(ch)) {
+        if (CJK_OPENING.indexOf(ch) >= 0) {
+          cur += ch;                                  // opener glues forward
+          continue;
+        }
+        if (cur !== '' && (CJK_CLOSING.indexOf(ch) >= 0 ||
+            CJK_OPENING.indexOf(word.charAt(i - 1)) >= 0)) {
+          units.push(cur + ch); cur = '';             // closer glues backward
+          continue;
+        }
+        if (cur !== '') { units.push(cur); cur = ''; }
+        units.push(ch);
+      } else {
+        // closing mark may not start a line: keep it on the wide char before
+        if (cur === '' && units.length && CJK_CLOSING.indexOf(ch) >= 0 &&
+            isWideBreakChar(word.charAt(i - 1) || '')) {
+          units[units.length - 1] += ch;
+          continue;
+        }
+        cur += ch;
+      }
+    }
+    if (cur !== '') units.push(cur);
+    return units.length ? units : [word];
+  }
   function glyphEmWidth(ch) {
     if (ch === ' ') return 0.28;
+    if (isWideBreakChar(ch)) return 1.0; // fullwidth advance
     if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
     if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
     if ('mMW'.indexOf(ch) >= 0) return 0.87;
@@ -1269,11 +1332,25 @@
     rawLines.forEach(function (raw) {
       var words = raw.split(/\s+/).filter(function (w) { return w !== ''; });
       if (!words.length) { lines.push(''); return; }
-      var line = '';
+      // Each token = an unbreakable unit; `sp` = preceded by a space when it
+      // stays on the same line. Wide (CJK) units inside a word break with no
+      // joiner, exactly like browser line breaking under white-space:normal.
+      var tokens = [];
       words.forEach(function (word) {
-        if (!line) { line = word; return; }
-        if (textWidthPx(line + ' ' + word, size) <= maxW) line += ' ' + word;
-        else { lines.push(line); line = word; }
+        splitBreakable(word).forEach(function (unit, ui) {
+          tokens.push({ text: unit, sp: ui === 0 });
+        });
+      });
+      var line = '', lineW = 0;
+      tokens.forEach(function (tk, ti) {
+        var sp = (tk.sp && ti > 0 && line !== '');
+        var tw = textWidthPx(tk.text, size);
+        var spW = sp ? glyphEmWidth(' ') * size : 0;
+        if (line !== '' && lineW + spW + tw > maxW) {
+          lines.push(line); line = tk.text; lineW = tw;
+        } else {
+          line += (sp ? ' ' : '') + tk.text; lineW += spW + tw;
+        }
       });
       if (line) lines.push(line);
     });
@@ -1704,7 +1781,12 @@
       var words = t.replace(/\s+/g, ' ').trim().split(' ').filter(function (w) { return w !== ''; });
       words.forEach(function (w, idx) {
         var sp = (idx === 0) ? (pendingSpace || lead) : true;
-        tokens.push({ text: w, st: fr.st, space: sp && tokens.length > 0 });
+        // Wide (CJK) sub-units of one word are separately wrappable with no
+        // joining space (browser CJK line breaking).
+        splitBreakable(w).forEach(function (unit, ui) {
+          tokens.push({ text: unit, st: fr.st,
+            space: ui === 0 && sp && tokens.length > 0 });
+        });
       });
       if (words.length) pendingSpace = trail;
       else if (lead || trail) pendingSpace = true;
