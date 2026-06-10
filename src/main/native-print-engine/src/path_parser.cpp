@@ -1,6 +1,7 @@
 #include "print_engine/path.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
@@ -104,10 +105,17 @@ private:
       return {};
     }
 
+    // from_chars, not strtod: locale-independent (strtod parses "10.5" as
+    // 10 under an LC_NUMERIC comma locale -- a silent geometry corruption
+    // if this library is ever embedded in a locale-initialized host).
     const char* start = input_.data() + pos_;
-    char* end = nullptr;
-    const double value = std::strtod(start, &end);
-    if (end == start || !std::isfinite(value)) {
+    const char* limit = input_.data() + input_.size();
+    // SVG numbers allow an explicit leading '+', which from_chars does not.
+    const char* numeric_start = (start < limit && *start == '+') ? start + 1
+                                                                 : start;
+    double value = 0.0;
+    const auto [end, ec] = std::from_chars(numeric_start, limit, value);
+    if (end == numeric_start || ec != std::errc() || !std::isfinite(value)) {
       return {};
     }
 
@@ -207,11 +215,30 @@ private:
     }
 
     if (command == 'A') {
-      const double rx = std::abs(values[0]);
-      const double ry = std::abs(values[1]);
+      // True arc extent: the ellipse is bounded by center +- r, and the
+      // center can sit up to r away from the END point, so the old
+      // `end +- r` box UNDER-estimated large-arc sweeps by up to r (real
+      // ink silently outside the box -> missed HardwareMarginClip and
+      // wrongly-clipped content) and over-estimated short arcs by up to 2r
+      // (spurious clip notices). Use the exact cubic expansion the
+      // renderer itself draws and take its control-point hull -- a tight
+      // conservative bound that can never under-estimate the drawn curve.
+      const Point start = current_;
       current_ = Point{values[5], values[6]};
-      include(Point{current_.x - rx, current_.y - ry});
-      include(Point{current_.x + rx, current_.y + ry});
+      const auto cubics = arc_to_cubic_beziers(start, values);
+      if (cubics.empty()) {
+        // Degenerate arc (zero radius / coincident endpoints): renders as
+        // a straight line to the endpoint.
+        include(start);
+        include(current_);
+      } else {
+        include(start);
+        for (const auto& c : cubics) {
+          include(c.c1);
+          include(c.c2);
+          include(c.end);
+        }
+      }
       path_.commands.push_back(PathCommand{PathCommandKind::ArcTo, values});
     }
   }

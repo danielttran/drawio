@@ -27,7 +27,28 @@ namespace {
 // fires the notice. Hoisted to namespace scope so the inner lambda can
 // reach it as a constant expression on every toolchain (MSVC strict mode
 // does not implicitly capture local constexpr non-integral types).
-constexpr double kPageEscapeTolerance = 4.0;
+//
+// UNIT-AWARE: the pad is applied by the producer in CSS px (96/inch), but
+// contracts arrive in any declared unit (production bakes use um, 25400/
+// inch). The tolerance must therefore be scaled into contract units, or a
+// um contract fires the spurious notice on EVERY print (4 um is ~0.16% of
+// the px slop) -- destroying the C1 signal value of HardwareMarginClip.
+constexpr double kPageEscapeTolerancePx = 4.0;
+constexpr double kCssPxPerInch = 96.0;
+
+
+// maxLen counts CHARACTERS (Unicode code points), matching the JS producer's
+// string.length-class semantics -- not UTF-8 bytes, which falsely rejected
+// multi-byte values near the limit.
+[[nodiscard]] std::size_t utf8_code_points(const std::string& s) {
+  std::size_t n = 0;
+  for (const unsigned char ch : s) {
+    if ((ch & 0xC0) != 0x80) {
+      ++n;
+    }
+  }
+  return n;
+}
 
 [[nodiscard]] std::string barcode_stub_label(const std::string& symbology, const std::string& value) {
   return std::string("BARCODE STUB \xE2\x80\x94 symbology=") + symbology + " value=" + value;
@@ -90,11 +111,13 @@ RenderResult render_to_trace(
     // NB: escaping an individual tile is normal multi-tile pagination and is
     // NOT clipped — only escaping the whole page is.
     const Rect page_rect{0.0, 0.0, page.width, page.height};
-    const auto escapes_page = [&page_rect](const Rect& b) {
-      return b.x < page_rect.x - kPageEscapeTolerance ||
-             b.y < page_rect.y - kPageEscapeTolerance ||
-             b.x + b.w > page_rect.x + page_rect.w + kPageEscapeTolerance ||
-             b.y + b.h > page_rect.y + page_rect.h + kPageEscapeTolerance;
+    const double escape_tolerance =
+        kPageEscapeTolerancePx * target.contract_units_per_inch / kCssPxPerInch;
+    const auto escapes_page = [&page_rect, escape_tolerance](const Rect& b) {
+      return b.x < page_rect.x - escape_tolerance ||
+             b.y < page_rect.y - escape_tolerance ||
+             b.x + b.w > page_rect.x + page_rect.w + escape_tolerance ||
+             b.y + b.h > page_rect.y + page_rect.h + escape_tolerance;
     };
     for (const auto& node : page.paint) {
       if (escapes_page(node.box)) {
@@ -145,7 +168,7 @@ RenderResult render_to_trace(
               value = found->second;
             }
             // Content-length guard is metric-independent → stays in the engine.
-            if (value.size() > static_cast<std::size_t>(node.merge_max_len)) {
+            if (utf8_code_points(value) > static_cast<std::size_t>(node.merge_max_len)) {
               return RenderResult::err(ContractError{
                 ContractErrorCode::MergeOverflowError,
                 node.merge_key,
@@ -204,7 +227,7 @@ RenderResult render_to_trace(
               }
               value = found->second;
             }
-            if (value.size() > static_cast<std::size_t>(node.merge_max_len)) {
+            if (utf8_code_points(value) > static_cast<std::size_t>(node.merge_max_len)) {
               return RenderResult::err(ContractError{
                 ContractErrorCode::MergeOverflowError,
                 node.merge_key,
