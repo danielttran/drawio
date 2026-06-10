@@ -90,6 +90,14 @@ using PrintJobResult = Result<PrintJobTrace, ContractError>;
   const DeviceCaps& caps,
   const TileSummary& tile);
 
+// True when any paint node that intersects this tile extends into the
+// device's non-printable margin (content the band blit cannot reach).
+[[nodiscard]] bool tile_content_hits_hardware_margin(
+  const NativePrintTarget& target,
+  const DeviceCaps& caps,
+  const PageSummary& page,
+  const TileSummary& tile);
+
 [[nodiscard]] NativeSurfaceResult render_to_native_surface_trace(
   const BakedDocument& document,
   const RenderTarget& target,
