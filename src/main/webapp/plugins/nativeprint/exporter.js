@@ -725,7 +725,7 @@
           rows.push({
             text: wrappedLines[li],
             size: b.size,
-            lineH: b.size * 1.22,
+            lineH: b.size * 1.2,   // mxConstants.LINE_HEIGHT
             gap: li === 0 ? b.gap : 0
           });
         }
@@ -1139,18 +1139,26 @@
       return '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
         rich.body + '</g>';
     }
-    return label !== '' ? textSvgStr(label, ox + w / 2, oy + h / 2, style) : '';
+    // HTML-style label without markup: still entity-encoded (browser innerHTML
+    // decodes &amp;/&nbsp;/… even with no tags) — decode before literal render.
+    var lit = isHtmlLabelStyle(style) ? decodeHtmlEntities(src) : label;
+    return lit !== '' ? textSvgStr(lit, ox + w / 2, oy + h / 2, style) : '';
   }
 
   function decodeHtmlEntities(s) {
+    // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
+    // "<" instead of the literal 4-char "&lt;"); numeric references need
+    // fromCodePoint (fromCharCode corrupts astral code points like emoji);
+    // &nbsp; is U+00A0 (NO-BREAK SPACE), not a plain collapsible space.
     return String(s == null ? '' : s)
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&#(\d+);/g, function(_, n) { return String.fromCharCode(+n); })
+      .replace(/&nbsp;/g, '\u00A0')
+      .replace(/&#(\d+);/g, function(_, n) { return String.fromCodePoint(+n); })
       .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) {
-        return String.fromCharCode(parseInt(h, 16));
-      });
+        return String.fromCodePoint(parseInt(h, 16));
+      })
+      .replace(/&amp;/g, '&');
   }
 
   function stripHtml(s) {
@@ -1221,8 +1229,13 @@
     var s = String(raw == null ? '' : raw);
     // `plain` (non-HTML label): the text is already literal/decoded — split on
     // newlines only, never interpret tags, so literal '<'/'>' survive verbatim.
+    // An HTML-style label WITHOUT element markup still carries HTML entities
+    // (drawio stores a typed '&' as &amp;amp;): browser innerHTML decodes them,
+    // so the headless path must too — otherwise "Tom &amp; Jerry" prints the
+    // entity text literally.
     if (plain || s.indexOf('<') < 0) {
-      return String(s).split('\n').map(function (line) {
+      var lit = plain ? String(s) : decodeHtmlEntities(s);
+      return lit.split('\n').map(function (line) {
         return { text: line, size: Math.max(1, number(style.fontSize, 12)),
           weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
           gap: 0 };
@@ -1332,7 +1345,7 @@
     return units.length ? units : [word];
   }
   function glyphEmWidth(ch) {
-    if (ch === ' ') return 0.28;
+    if (ch === ' ' || ch === '\u00A0') return 0.28; // NBSP advances like a space
     if (isWideBreakChar(ch)) return 1.0; // fullwidth advance
     if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
     if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
@@ -1354,7 +1367,8 @@
     var maxW = Math.max(1, width);
     var lines = [];
     rawLines.forEach(function (raw) {
-      var words = raw.split(/\s+/).filter(function (w) { return w !== ''; });
+      // U+00A0 (&nbsp;) is non-breaking: never a wrap opportunity.
+      var words = raw.split(/[\t\f\r ]+/).filter(function (w) { return w !== ''; });
       if (!words.length) { lines.push(''); return; }
       // Each token = an unbreakable unit; `sp` = preceded by a space when it
       // stays on the same line. Wide (CJK) units inside a word break with no
@@ -1391,7 +1405,7 @@
   // line model from the markup (browser-free) and lays it out into plain SVG
   // <text>/<rect>/<image>/<line> that any SVG rasterizer draws 1:1.
 
-  var LIST_INDENT_PX = 24;   // left indent added per nested list level
+  var LIST_INDENT_PX = 40;   // UA ul/ol padding-left (40px) per nesting level
   var richClipCounter = 0;       // stable per-exporter SVG clip ids for rich labels
   var CSS_NAMED_COLORS = {
     black: '#000000', white: '#ffffff', red: '#ff0000', lime: '#00ff00',
@@ -1554,9 +1568,57 @@
     footer: 1, figure: 1, figcaption: 1, dl: 1, dt: 1, dd: 1, address: 1,
     fieldset: 1, form: 1, main: 1, nav: 1, aside: 1
   };
+  // UA-stylesheet default vertical margins for block elements, in em of the
+  // ELEMENT's own font-size (heading margins use the heading's em). <div> has
+  // no UA margin (drawio's default line container — must stay zero).
+  var UA_BLOCK_MARGIN_EM = {
+    p: 1, blockquote: 1,
+    h1: 0.67, h2: 0.83, h3: 1, h4: 1.33, h5: 1.67, h6: 2.33
+  };
+
+  // CSS margin component -> px (em relative to the element font-size).
+  // Returns null when the value is absent/unparseable (caller keeps UA value).
+  function cssMarginPx(v, size) {
+    if (v == null) return null;
+    var s = String(v).trim().toLowerCase();
+    if (s === '') return null;
+    if (s === 'auto' || s === 'inherit' || s === 'initial' || s === 'unset') return 0;
+    var f = parseFloat(s);
+    if (!Number.isFinite(f)) return null;
+    if (s.indexOf('rem') >= 0) return f * 16;
+    if (s.indexOf('em') >= 0) return f * size;
+    if (s.indexOf('pt') >= 0) return f * 96 / 72;
+    if (s.indexOf('%') >= 0) return 0;   // % of container width — not modeled
+    return f;                            // px or bare number
+  }
+
+  // Vertical margins for one block element: UA default (overridable per call
+  // for nested lists) unless the inline style declares margin/margin-top/
+  // margin-bottom (drawio templates set margin:0 inline — that must win).
+  function blockVMargins(tag, el, size, uaEm) {
+    var ua = uaEm != null ? uaEm : (UA_BLOCK_MARGIN_EM[tag] || 0);
+    var mt = ua * size, mb = ua * size;
+    var inl = parseInlineStyle(el);
+    if (inl.margin) {
+      var vals = inl.margin.split(/\s+/);
+      var top = cssMarginPx(vals[0], size);
+      // shorthand: 1 value=all, 2=vert/horiz, 3=top/horiz/bottom, 4=t/r/b/l.
+      var bot = cssMarginPx(vals.length >= 3 ? vals[2] : vals[0], size);
+      if (top != null) mt = top;
+      if (bot != null) mb = bot;
+    }
+    var mtv = cssMarginPx(inl['margin-top'], size);
+    if (mtv != null) mt = mtv;
+    var mbv = cssMarginPx(inl['margin-bottom'], size);
+    if (mbv != null) mb = mbv;
+    return { mt: Math.max(0, mt), mb: Math.max(0, mb) };
+  }
+
   function headingPx(tag, baseSize) {
+    // UA stylesheet heading sizes in em of the base size. No floor: h5
+    // (0.83em) and h6 (0.67em) are SMALLER than the base size by design.
     var f = { h1: 2, h2: 1.5, h3: 1.17, h4: 1, h5: 0.83, h6: 0.67 };
-    return Math.max(baseSize, baseSize * (f[tag] || 1));
+    return baseSize * (f[tag] || 1);
   }
   function listStyleType(node) {
     var inl = parseInlineStyle(node);
@@ -1606,6 +1668,15 @@
     function emptyPara(align, indent, size) {
       return { kind: 'para', frags: [], align: align, indent: indent, baseSize: size };
     }
+    // Attach a block element's vertical margins to the first/last entry it
+    // produced. max() so a parent block's margin collapses with its first/last
+    // child's margin (CSS adjoining-margin collapse through nesting).
+    function attachVMargins(before, mt, mb) {
+      if (out.length <= before) return;
+      var first = out[before], last = out[out.length - 1];
+      if (mt > (first.mt || 0)) first.mt = mt;
+      if (mb > (last.mb || 0)) last.mb = mb;
+    }
     function process(node, st, align, indent, pre, listDepth) {
       var kids = node.childNodes || [];
       for (var i = 0; i < kids.length; i++) {
@@ -1613,7 +1684,9 @@
         if (ch.nodeType === 3) {
           var tv = ch.nodeValue;
           if (tv == null) continue;
-          if (!pre && tv.trim() === '') {
+          // ASCII-whitespace-only check: String.trim() also strips U+00A0, so
+          // an &nbsp;-only text node would be wrongly collapsed to one space.
+          if (!pre && tv.replace(/[\t\n\f\r ]+/g, '') === '') {
             if (cur && cur.frags.length) cur.frags.push({ type: 'text', text: ' ', st: st });
             continue;
           }
@@ -1672,19 +1745,30 @@
         }
         if (tag === 'ul' || tag === 'ol') {
           cur = null;
+          // UA: outer lists carry 1em vertical margins; NESTED lists have
+          // margin 0 (html.css). Inline margin overrides still win.
+          var lvm = blockVMargins(tag, ch, applyElStyle(st, ch).size,
+            listDepth > 0 ? 0 : 1);
+          var lBefore = out.length;
           processList(ch, st, align, indent, pre, listDepth, tag === 'ol');
+          attachVMargins(lBefore, lvm.mt, lvm.mb);
           continue;
         }
         if (RICH_BLOCK_TAGS[tag]) {
           cur = null;
           var bst = applyElStyle(st, ch);
           if (tag.charAt(0) === 'h' && tag.length === 2) { bst.weight = 700; bst.size = headingPx(tag, st.size); }
+          // UA vertical margins (p/h1-h6/blockquote) in the element's own em,
+          // overridden by inline margin styles (drawio emits margin:0 on its
+          // template paragraphs — those must stay flush).
+          var bvm = blockVMargins(tag, ch, bst.size);
           var bAlign = inlineAlign(ch) || align;
           var bIndent = indent + (tag === 'blockquote' ? LIST_INDENT_PX : 0);
           var bPre = pre || tag === 'pre';
           var before = out.length;
           process(ch, bst, bAlign, bIndent, bPre, listDepth);
           if (out.length === before) out.push(emptyPara(bAlign, bIndent, bst.size));
+          attachVMargins(before, bvm.mt, bvm.mb);
           cur = null;
           continue;
         }
@@ -1800,9 +1884,13 @@
         pendingSpace = false;
         return;
       }
-      var lead = /^\s/.test(t);
-      var trail = /\s$/.test(t);
-      var words = t.replace(/\s+/g, ' ').trim().split(' ').filter(function (w) { return w !== ''; });
+      // Only ASCII whitespace collapses/breaks in HTML; U+00A0 (&nbsp;) is a
+      // non-breaking, non-collapsible character that must stay inside its run
+      // (JS \s would wrongly match it).
+      var lead = /^[\t\n\f\r ]/.test(t);
+      var trail = /[\t\n\f\r ]$/.test(t);
+      var words = t.replace(/[\t\n\f\r ]+/g, ' ').replace(/^ +| +$/g, '')
+        .split(' ').filter(function (w) { return w !== ''; });
       words.forEach(function (w, idx) {
         var sp = (idx === 0) ? (pendingSpace || lead) : true;
         // Wide (CJK) sub-units of one word are separately wrappable with no
@@ -1822,8 +1910,12 @@
   function layoutBlocks(entries, width, wrap, defAlign) {
     var parts = [];
     var y = 0;
-    var minX = 0;
-    var maxX = 0;
+    // Tight horizontal extent of the laid-out ink (label space). Callers use
+    // it both for visible-overflow viewport growth (negative minX / maxX >
+    // width) and for the measured label-background box, so it must hug the
+    // text rather than being clamped to [0, 0].
+    var minX = Infinity;
+    var maxX = -Infinity;
     function extend(x0, x1) {
       if (x0 < minX) minX = x0;
       if (x1 > maxX) maxX = x1;
@@ -1920,6 +2012,7 @@
       parts.push('<line x1="0" y1="' + fmt(ry) + '" x2="' + fmt(width) +
         '" y2="' + fmt(ry) + '" stroke="' + (entry.color || '#000000') +
         '" stroke-width="1"/>');
+      extend(0, width);
       y += size * 1.2;
     }
     function emitForeign(entry) {
@@ -1936,6 +2029,7 @@
         '<defs><clipPath id="' + cid + '"><rect x="0" y="0" width="' + fmt(fw) +
         '" height="' + fmt(fh) + '"/></clipPath></defs>' + bg +
         '<g clip-path="url(#' + cid + ')">' + laid.svg + '</g></g>');
+      extend(entry.x || 0, (entry.x || 0) + fw);
       y = Math.max(y, (entry.y || 0) + fh);
     }
 
@@ -1947,6 +2041,7 @@
       if (ncols === 0) return;
       var colW = width / ncols;
       var cellPad = 3;
+      extend(0, width);
       var y0 = y;
       rows.forEach(function (row) {
         var rowH = 0;
@@ -1977,13 +2072,26 @@
       });
       void y0;
     }
+    // UA/inline block margins: adjacent vertical margins collapse (max of the
+    // two); the first/last child's margin stays inside the label container
+    // (inline-block contains its children's margins), so it counts toward the
+    // total height — that shifts centered labels exactly like the browser.
+    var pendingMb = 0;
+    var firstEntry = true;
     entries.forEach(function (entry) {
+      var mt = entry.mt || 0;
+      y += firstEntry ? mt : Math.max(pendingMb, mt);
+      firstEntry = false;
       if (entry.kind === 'rule') emitRule(entry);
       else if (entry.kind === 'table') emitTable(entry);
       else if (entry.kind === 'foreign') emitForeign(entry);
       else emitPara(entry);
+      pendingMb = entry.mb || 0;
     });
-    return { svg: parts.join(''), height: y, minX: minX, maxX: maxX };
+    y += pendingMb;
+    return { svg: parts.join(''), height: y,
+      minX: Number.isFinite(minX) ? minX : 0,
+      maxX: Number.isFinite(maxX) ? maxX : 0 };
   }
 
   // Render an HTML label faithfully (headless) -> { body, height }.
@@ -2048,6 +2156,11 @@
     return { l: over.t, r: over.b, t: over.r, b: over.l };
   }
 
+  // Measured extent (CONTRACT coords) of the most recent textSvgNode layout.
+  // drawio paints labelBackgroundColor/labelBorderColor hugging the laid-out
+  // text, not the whole cell box — labelNodes() reads this to size the box.
+  var lastLabelExtent = null;
+
   function textSvgNode(graph, cell, style, box, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
     var src = raw != null ? raw : label;
@@ -2082,12 +2195,27 @@
     var rich = (labelIsHtml && String(src == null ? '' : src).indexOf('<') >= 0)
       ? renderRichLabel(src, style, { w: lw, h: lh }, resolved, notices, cell && cell.id)
       : null;
+    // Map a label-space rect to a CONTRACT-coords rect (identity when
+    // horizontal; the vertical -90° rotation maps label x → box -y and
+    // label y → box x). Used for the measured label-background extent.
+    function extentFromLabelSpace(x0, y0, x1, y1) {
+      var bx0, by0, bx1, by1;
+      if (vertical) { bx0 = y0; bx1 = y1; by0 = box.h - x1; by1 = box.h - x0; }
+      else { bx0 = x0; bx1 = x1; by0 = y0; by1 = y1; }
+      return { x: box.x + bx0, y: box.y + by0,
+        w: Math.max(0, bx1 - bx0), h: Math.max(0, by1 - by0) };
+    }
+    lastLabelExtent = null;
+
     if (rich) {
       var richEls = '';
+      // mxText.getSpacing(ALIGN_MIDDLE): dy = (spacingTop - spacingBottom)/2 —
+      // asymmetric per-side spacing SHIFTS a middle label; it never re-anchors
+      // it. And drawio never clamps oy to 0: a label taller than its box
+      // centers regardless (spilling above AND below); bottom spills above.
+      var oy = v === 'middle' ? (lh - rich.height) / 2 + (pt - pb) / 2 :
+        v === 'bottom' ? lh - rich.height - pb : pt;
       if (rich.body !== '') {
-        var oy = v === 'middle' ? (lh - rich.height) / 2 :
-          v === 'bottom' ? lh - rich.height - pb : pt;
-        oy = Math.max(0, oy);
         var body = '<g transform="translate(' + fmt(pl) + ' ' + fmt(oy) + ')">' +
           rich.body + '</g>';
         if (vertical) {
@@ -2101,25 +2229,31 @@
       }
       var richClipped = style.overflow === 'hidden' || style.overflow === 'fill';
       // Label-space overflow: rows can overhang horizontally (minX<0 /
-      // maxX>contentW) and the paragraph stack can overhang the bottom.
-      var rOy = rich.body !== ''
-        ? Math.max(0, v === 'middle' ? (lh - rich.height) / 2 :
-            v === 'bottom' ? lh - rich.height - pb : pt)
-        : 0;
-      var labelOver = {
+      // maxX>contentW) and the paragraph stack can overhang the top (negative
+      // oy for too-tall middle/bottom labels) and/or the bottom.
+      var labelOver = rich.body !== '' ? {
         l: Math.max(0, -((rich.minX || 0) + pl)),
         r: Math.max(0, (rich.maxX || 0) + pl - lw),
-        t: 0,
-        b: Math.max(0, rOy + rich.height - lh)
-      };
+        t: Math.max(0, -oy),
+        b: Math.max(0, oy + rich.height - lh)
+      } : { l: 0, r: 0, t: 0, b: 0 };
+      if (rich.body !== '') {
+        lastLabelExtent = extentFromLabelSpace(pl + (rich.minX || 0), oy,
+          pl + (rich.maxX || 0), oy + rich.height);
+      }
       return labelSvgAssemble(box, richEls, clipId, richClipped, gOpacityAttr,
         rotateOverflow(labelOver, vertical));
     }
 
     // Non-HTML labels are literal text: render verbatim (no tag stripping), so
     // e.g. "List<String>" keeps its angle brackets exactly as drawio shows them.
+    // Layout happens in LABEL space (lw × lh): for horizontal=0 these are the
+    // box dimensions swapped, and the laid-out multi-row block is rotated as a
+    // whole — wrapping, per-row alignment, valign and gaps all survive,
+    // exactly like the rich path (previously the vertical branch collapsed
+    // everything to one centered line).
     var blocks = htmlTextBlocks(src, style, !labelIsHtml);
-    var usableW = Math.max(1, box.w - pl - pr);
+    var usableW = Math.max(1, lw - pl - pr);
     var rows = [];
     blocks.forEach(function (b) {
       if (b.rule) {
@@ -2128,17 +2262,20 @@
       }
       wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
-          lineH: b.size * 1.22, gap: b.gap, align: b.align,
+          lineH: b.size * 1.2, gap: b.gap, align: b.align,   // mxConstants.LINE_HEIGHT
           underline: !!b.underline });
       });
     });
-    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14, gap: 0 });
+    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14.4, gap: 0 });
     var totalH = rows.reduce(function (sum, r, i) {
       return sum + r.lineH + (i === 0 ? 0 : r.gap);
     }, 0);
-    var y = v === 'middle' ? (box.h - totalH) / 2 :
-      v === 'bottom' ? box.h - totalH - pb : pt;
-    y = Math.max(0, y);
+    // mxText.getSpacing(ALIGN_MIDDLE): dy = (spacingTop - spacingBottom)/2.
+    // No clamp to 0: a too-tall middle/bottom label spills ABOVE the box
+    // (drawio overflow=visible semantics); the viewport grows upward below.
+    var y = v === 'middle' ? (lh - totalH) / 2 + (pt - pb) / 2 :
+      v === 'bottom' ? lh - totalH - pb : pt;
+    var yTop = y;
     var decoration = [];
     if (fst & 4) decoration.push('underline');
     if (fst & 8) decoration.push('line-through');
@@ -2151,12 +2288,14 @@
         // its row band (≈ baseSize tall → ~half above / half below the line).
         var ry = ty + r.lineH / 2;
         return '<line x1="' + fmt(pl) + '" y1="' + fmt(ry) +
-          '" x2="' + fmt(box.w - pr) + '" y2="' + fmt(ry) +
+          '" x2="' + fmt(lw - pr) + '" y2="' + fmt(ry) +
           '" stroke="' + color + '" stroke-width="1"/>';
       }
       var rowH = alignH(r.align || h);
       var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
-      var x = rowH === 'right' ? box.w - pr : rowH === 'center' ? box.w / 2 : pl;
+      // mxText.getSpacing(ALIGN_CENTER): dx = (spacingLeft - spacingRight)/2.
+      var x = rowH === 'right' ? lw - pr :
+        rowH === 'center' ? lw / 2 + (pl - pr) / 2 : pl;
       var rowDec = decoration.slice();
       if (r.underline && rowDec.indexOf('underline') < 0) rowDec.push('underline');
       return '<text x="' + fmt(x) + '" y="' + fmt(ty) +
@@ -2169,48 +2308,39 @@
         '" dominant-baseline="text-before-edge" xml:space="preserve">' +
         escXml(r.text) + '</text>';
     }).join('');
+    var yEnd = y;
 
-    if (String(style.horizontal) === '0') {
-      var cx = box.w / 2, cy = box.h / 2;
-      textEls = '<g transform="rotate(-90 ' + fmt(cx) + ' ' + fmt(cy) + ')">' +
-        '<text x="' + fmt(cx) + '" y="' + fmt(cy) +
-        '" font-family="' + escXml(family) + ', Arial, sans-serif"' +
-        ' font-size="' + fmt(Math.max(1, number(style.fontSize, 12))) +
-        '" font-weight="' + (((fst & 1) ? 700 : 400)) + '"' +
-        ((fst & 2) ? ' font-style="italic"' : '') +
-        (decoration.length ? ' text-decoration="' + decoration.join(' ') + '"' : '') +
-        ' fill="' + color +
-        '" text-anchor="middle" dominant-baseline="central" xml:space="preserve">' +
-        escXml(String(label || stripHtml(raw))) + '</text></g>';
+    // Label-space text extent (rows are anchored, so widths come from the
+    // shared glyph metrics) — feeds both the visible-overflow viewport growth
+    // and the measured label-background box.
+    var exMinX = Infinity, exMaxX = -Infinity;
+    rows.forEach(function (r) {
+      if (r.rule) { exMinX = Math.min(exMinX, pl); exMaxX = Math.max(exMaxX, lw - pr); return; }
+      if (r.text == null) return;
+      var rw = textWidthPx(r.text, r.size) +
+        (letterSp ? letterSp * r.text.length : 0);
+      var rh2 = alignH(r.align || h);
+      var rx0 = rh2 === 'right' ? lw - pr - rw :
+        rh2 === 'center' ? lw / 2 + (pl - pr) / 2 - rw / 2 : pl;
+      exMinX = Math.min(exMinX, rx0);
+      exMaxX = Math.max(exMaxX, rx0 + rw);
+    });
+    if (!Number.isFinite(exMinX)) { exMinX = pl; exMaxX = pl; }
+    var plainOver = {
+      l: Math.max(0, -exMinX),
+      r: Math.max(0, exMaxX - lw),
+      t: Math.max(0, -yTop),
+      b: Math.max(0, yEnd - lh)
+    };
+    if (vertical) {
+      textEls = '<g transform="translate(' + fmt(box.w / 2) + ' ' + fmt(box.h / 2) +
+        ') rotate(-90) translate(' + fmt(-lw / 2) + ' ' + fmt(-lh / 2) + ')">' +
+        textEls + '</g>';
     }
-
+    lastLabelExtent = extentFromLabelSpace(exMinX, yTop, exMaxX, yEnd);
     var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill';
-    var plainOver = { l: 0, r: 0, t: 0, b: 0 };
-    if (String(style.horizontal) === '0') {
-      // Vertical single-line label, anchored at the box centre: a line
-      // longer than the box height overhangs symmetrically top/bottom.
-      var vW = textWidthPx(String(label || stripHtml(raw)),
-        Math.max(1, number(style.fontSize, 12)));
-      var vOver = Math.max(0, (vW - box.h) / 2);
-      plainOver = { l: 0, r: 0, t: vOver, b: vOver };
-    } else {
-      var yEnd = y;
-      plainOver.b = Math.max(0, yEnd - box.h);
-      rows.forEach(function (r) {
-        if (r.rule || r.text == null) return;
-        var rw = textWidthPx(r.text, r.size) +
-          (letterSp ? letterSp * r.text.length : 0);
-        var rh2 = alignH(r.align || h);
-        var rx0 = rh2 === 'right' ? box.w - pr - rw :
-          rh2 === 'center' ? (box.w - rw) / 2 : pl;
-        plainOver.l = Math.max(plainOver.l, -rx0);
-        plainOver.r = Math.max(plainOver.r, rx0 + rw - box.w);
-      });
-      plainOver.l = Math.max(0, plainOver.l);
-      plainOver.r = Math.max(0, plainOver.r);
-    }
     return labelSvgAssemble(box, textEls, clipId, plainClipped, gOpacityAttr,
-      plainOver);
+      rotateOverflow(plainOver, vertical));
   }
 
   function labelTextNode(graph, cell, state, style, box, label, notices, resolved) {
@@ -2219,6 +2349,23 @@
     // contract-schema change. (state is retained in the signature for call-site
     // stability but is not needed by the SVG label builder.)
     return textSvgNode(graph, cell, style, box, label, notices, resolved);
+  }
+
+  // Label background/border (labelBackgroundColor/labelBorderColor) + text,
+  // in paint order. drawio sizes the background rect to the laid-out text
+  // bounding box (mxSvgCanvas2D.addTextBackground / the HTML label div), NOT
+  // to the whole cell box — so the text node is built first and the measured
+  // extent drives the box. overflow=fill/width sizes the label to the whole
+  // box (mxGraph), so the background covers the full box there.
+  function labelNodes(graph, cell, state, style, box, label, notices, resolved) {
+    var textNode = labelTextNode(graph, cell, state, style, box, label, notices, resolved);
+    var out = [];
+    var extent = (style.overflow === 'fill' || style.overflow === 'width')
+      ? box : (lastLabelExtent || box);
+    var bg = labelBoxNode(style, extent);
+    if (bg) out.push(bg);
+    out.push(textNode);
+    return out;
   }
 
   function p(x, y) {
@@ -3693,11 +3840,9 @@
         .replace(/<(p|div|li|tr|h[1-6]|blockquote|pre)(\s[^>]*)?>/gi, '\n')
         .replace(/<[^>]+>/g, '');
       // Decode HTML entities without DOM dependency (shim innerHTML doesn't
-      // support textContent extraction reliably headlessly).
-      s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-           .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
-           .replace(/&#(\d+);/g, function(_, n) { return String.fromCodePoint(+n); })
-           .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) { return String.fromCodePoint(parseInt(h, 16)); });
+      // support textContent extraction reliably headlessly). &amp; decodes
+      // LAST so "&amp;lt;" yields the literal "&lt;", never "<".
+      s = decodeHtmlEntities(s);
       s = s.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
     }
     return s;
@@ -3726,9 +3871,13 @@
       x = mid.x;
       y = mid.y;
     }
+    // mxUtils.getAlignmentAsPoint: top → dy=0 (label hangs fully below the
+    // anchor), bottom → dy=-1 (fully above), middle → dy=-0.5.
+    var dyOff = style.verticalAlign === 'bottom' ? height + 2 :
+      style.verticalAlign === 'top' ? 0 : height / 2;
     return {
       x: (x - origin.x) / scale - width / 2,
-      y: (y - origin.y) / scale - (style.verticalAlign === 'bottom' ? height + 2 : height / 2),
+      y: (y - origin.y) / scale - dyOff,
       w: width,
       h: height
     };
@@ -3831,15 +3980,22 @@
         offy -= (seg.dx / seg.len) * gy;
       }
     }
-    var cxw = (pt.x + offx - origin.x) / scale;
-    var cyw = (pt.y + offy - origin.y) / scale;
+    // mxGraphView.getPoint: x = pt.x + (nx*gy + offsetX) * scale — offsets are
+    // MODEL units, so in contract (model) space they are added AFTER the
+    // view→model division, never divided by the scale themselves.
+    var cxw = (pt.x - origin.x) / scale + offx;
+    var cyw = (pt.y - origin.y) / scale + offy;
     var fs = number(style.fontSize, 12);
     var lw = Math.max(24, String(label).length * fs * 0.65);
     var lh = Math.max(fs * 1.4, String(label).split('\n').length * fs * 1.25);
-    var elBox = { x: cxw - lw / 2, y: cyw - lh / 2, w: lw, h: lh };
-    var bg = labelBoxNode(style, elBox);
-    if (bg) paint.push(bg);
-    paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, resolved));
+    // mxUtils.getAlignmentAsPoint: verticalAlign=top hangs the label fully
+    // BELOW the anchor (dy=0), bottom fully ABOVE (dy=-1), middle centers
+    // (dy=-0.5) — previously every valign was treated as middle.
+    var vA = alignV(style.verticalAlign || 'middle');
+    var elY = vA === 'top' ? cyw : vA === 'bottom' ? cyw - lh : cyw - lh / 2;
+    var elBox = { x: cxw - lw / 2, y: elY, w: lw, h: lh };
+    labelNodes(graph, cell, state, style, elBox, label, notices, resolved)
+      .forEach(function (n) { paint.push(n); });
     return true;
   }
 
@@ -4617,9 +4773,8 @@
           fill: null, stroke: strokeOf(style) });
       }
       if (label !== '') {
-        var lblBxN = labelBoxNode(style, box);
-        if (lblBxN) paint.push(lblBxN);
-        paint.push(labelTextNode(graph, cell, state, style, box, label, notices, resolved));
+        labelNodes(graph, cell, state, style, box, label, notices, resolved)
+          .forEach(function (n) { paint.push(n); });
       }
       return;
     }
@@ -4750,9 +4905,8 @@
           var topH = Math.max(16, number(style.fontSize, 12) * 1.5);
           lb = { x: box.x, y: box.y - topH, w: box.w, h: topH };
         }
-        var ilb = labelBoxNode(style, lb);
-        if (ilb) paint.push(ilb);
-        paint.push(labelTextNode(graph, cell, state, style, lb, label, notices, resolved));
+        labelNodes(graph, cell, state, style, lb, label, notices, resolved)
+          .forEach(function (n) { paint.push(n); });
       }
       return;
     }
@@ -4874,9 +5028,8 @@
               } else if (vlposS === 'bottom') {
                 lblBoxS = { x: lblBoxS.x, y: box.y + box.h, w: lblBoxS.w, h: box.h };
               }
-              var slb = labelBoxNode(style, lblBoxS);
-              if (slb) paint.push(slb);
-              paint.push(labelTextNode(graph, cell, state, style, lblBoxS, label, notices, resolved));
+              labelNodes(graph, cell, state, style, lblBoxS, label, notices, resolved)
+                .forEach(function (n) { paint.push(n); });
             }
           }
           return;
@@ -4957,9 +5110,8 @@
               var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
             }
-            var blbBI = labelBoxNode(style, lblBoxBI);
-            if (blbBI) paint.push(blbBI);
-            paint.push(labelTextNode(graph, cell, state, style, lblBoxBI, label, notices, resolved));
+            labelNodes(graph, cell, state, style, lblBoxBI, label, notices, resolved)
+              .forEach(function (n) { paint.push(n); });
           }
         }
         return;
@@ -5087,9 +5239,8 @@
         if (label !== '') {
           var swLB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
                                     : { x: bx, y: by, w: swSz, h: bh });
-          var swLBn = labelBoxNode(style, swLB);
-          if (swLBn) paint.push(swLBn);
-          paint.push(labelTextNode(graph, cell, state, style, swLB, label, notices, resolved));
+          labelNodes(graph, cell, state, style, swLB, label, notices, resolved)
+            .forEach(function (n) { paint.push(n); });
         }
         return;
       }
@@ -5240,9 +5391,8 @@
       swimLabelBx = externalLabelBox(style, box);
     }
     if (label !== '') {
-      var vlb = labelBoxNode(style, swimLabelBx);
-      if (vlb) paint.push(vlb);
-      paint.push(labelTextNode(graph, cell, state, style, swimLabelBx, label, notices, resolved));
+      labelNodes(graph, cell, state, style, swimLabelBx, label, notices, resolved)
+        .forEach(function (n) { paint.push(n); });
     }
   }
 
@@ -5415,9 +5565,8 @@
         var wd2Label = plainLabel(graph, cell);
         if (wd2Label !== '') {
           var wd2Box = edgeLabelBox(state, style, origin, scale, wd2Label);
-          var wd2lb = labelBoxNode(style, wd2Box);
-          if (wd2lb) paint.push(wd2lb);
-          paint.push(labelTextNode(graph, cell, state, style, wd2Box, wd2Label, notices, resolved));
+          labelNodes(graph, cell, state, style, wd2Box, wd2Label, notices, resolved)
+            .forEach(function (n) { paint.push(n); });
         }
         return;
       }
@@ -5429,9 +5578,8 @@
         var faLabel = plainLabel(graph, cell);
         if (faLabel !== '') {
           var faBox = edgeLabelBox(state, style, origin, scale, faLabel);
-          var falb = labelBoxNode(style, faBox);
-          if (falb) paint.push(falb);
-          paint.push(labelTextNode(graph, cell, state, style, faBox, faLabel, notices, resolved));
+          labelNodes(graph, cell, state, style, faBox, faLabel, notices, resolved)
+            .forEach(function (n) { paint.push(n); });
         }
         return;
       }
@@ -5476,9 +5624,8 @@
     var label = plainLabel(graph, cell);
     if (label !== '') {
       var elBox = edgeLabelBox(state, style, origin, scale, label);
-      var elb = labelBoxNode(style, elBox);
-      if (elb) paint.push(elb);
-      paint.push(labelTextNode(graph, cell, state, style, elBox, label, notices, resolved));
+      labelNodes(graph, cell, state, style, elBox, label, notices, resolved)
+        .forEach(function (n) { paint.push(n); });
     }
   }
 

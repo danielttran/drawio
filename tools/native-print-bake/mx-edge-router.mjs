@@ -179,7 +179,12 @@ const STYLE_FN = {
   elbowEdgeStyle: 'ElbowConnector',
   entityRelationEdgeStyle: 'EntityRelation',
   sideToSideEdgeStyle: 'SideToSide',
-  topToBottomEdgeStyle: 'TopToBottom'
+  topToBottomEdgeStyle: 'TopToBottom',
+  // Self-loops: mxGraphView.getEdgeStyle routes source==target edges through
+  // graph.defaultLoopStyle = mxEdgeStyle.Loop (honors direction/segment and a
+  // single dragged hint) -- the synthetic token below is what the parser
+  // passes when isLoopStyleEnabled() holds.
+  loopEdgeStyle: 'Loop'
 };
 
 export function isRoutedEdgeStyle(name) {
@@ -270,11 +275,47 @@ export function perimeterPoint(box, style, next, orthogonal) {
   } else if (st.rhombus != null) {
     fnName = 'RhombusPerimeter';
   }
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  // mxGraphView.getFloatingTerminalPoint: a rotated terminal rotates `next`
+  // by -rotation about its centre, intersects the UNROTATED perimeter, then
+  // rotates the result back (+rotation); orthogonal projection applies only
+  // when rotation == 0. Ignoring this attached edges to the unrotated box --
+  // visibly detached from / buried in any rotated shape.
+  const rotation = parseFloat(st.rotation) || 0;
+  let target = { x: next.x, y: next.y };
+  if (rotation !== 0) {
+    target = rotatePointAbout(target, -rotation, cx, cy);
+  }
+  // mxGraphView.getPerimeterPoint: flipH/flipV (incl. legacy stencilFlipH/V)
+  // mirror `next` before and the result after -- matters for asymmetric
+  // perimeters (triangle, rhombus off-centre targets).
+  const flipH = String(st.flipH) === '1' || String(st.stencilFlipH) === '1';
+  const flipV = String(st.flipV) === '1' || String(st.stencilFlipV) === '1';
+  if (flipH) target.x = 2 * cx - target.x;
+  if (flipV) target.y = 2 * cy - target.y;
   const bounds = new sb.mxRectangle(box.x, box.y, box.width, box.height);
   const vertex = new sb.mxCellState(box.x, box.y, box.width, box.height, st);
   const pt = sb.mxPerimeter[fnName](
-    bounds, vertex, new sb.mxPoint(next.x, next.y), !!orthogonal);
-  return pt != null ? { x: pt.x, y: pt.y } : null;
+    bounds, vertex, new sb.mxPoint(target.x, target.y),
+    rotation === 0 && !!orthogonal);
+  if (pt == null) return null;
+  let out = { x: pt.x, y: pt.y };
+  if (flipH) out.x = 2 * cx - out.x;
+  if (flipV) out.y = 2 * cy - out.y;
+  if (rotation !== 0) {
+    out = rotatePointAbout(out, rotation, cx, cy);
+  }
+  return out;
+}
+
+function rotatePointAbout(pt, deg, cx, cy) {
+  const rad = deg * (Math.PI / 180);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = pt.x - cx;
+  const dy = pt.y - cy;
+  return { x: dx * cos - dy * sin + cx, y: dy * cos + dx * sin + cy };
 }
 
 // Fixed connection point, port of mxGraph.getConnectionPoint: honors the

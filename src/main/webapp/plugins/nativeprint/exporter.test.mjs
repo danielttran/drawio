@@ -1549,6 +1549,10 @@ test('real engine renders the complex exporter document (no silent reject)',
     for (const [, st] of SUPPORTED_SHAPES) {
       add({ ...st, fillColor: '#2a5d8f', strokeColor: '#102030' }, false, 'Node');
     }
+    // Unknown shape names exercise the loud bbox-fallback path; the engine
+    // must still render the document. (This test was skipped while the engine
+    // binary was absent, hiding that this list was never defined.)
+    const UNSUPPORTED = ['mxgraph.bogus.notreal', 'definitelyUnknownShape'];
     for (const shape of UNSUPPORTED) {
       add({ shape, fillColor: '#abcdef', strokeColor: '#123456' }, false, 'U');
     }
@@ -2514,9 +2518,167 @@ test('text style: vertical text (horizontal=0) rotates the label -90 in place', 
   const svg = decodeSvg(labelSvgNode(
     oneVertex({ shape: 'rectangle', fontColor: '#000000', horizontal: '0' }, 'Vert')
       .contract.document.pages[0].paint));
-  assert.match(svg, /rotate\(-90 /, 'vertical label is rotated -90 about the box centre');
-  assert.match(svg, /dominant-baseline="central"/, 'vertical label centres on its baseline');
+  // The laid-out row block is rotated -90 about the box centre (same form as
+  // the rich path): translate(cx cy) rotate(-90) translate(-lw/2 -lh/2).
+  assert.match(svg, /translate\(40 20\) rotate\(-90\) translate\(-20 -40\)/,
+    'vertical label is rotated -90 about the box centre');
   assert.ok(svg.includes('Vert'), 'text preserved');
+});
+
+// audit2(label-renderer): horizontal=0 plain labels keep their multi-line
+// row layout (previously collapsed to ONE centered line with raw newlines).
+test('text style: vertical multi-line plain label keeps every row (no one-line collapse)', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', horizontal: '0' },
+      'Line A\nLine B')
+      .contract.document.pages[0].paint));
+  const texts = [...svg.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]);
+  assert.deepEqual(texts, ['Line A', 'Line B'],
+    'each line stays its own row under rotation');
+  assert.match(svg, /rotate\(-90\)/, 'row block is rotated as a whole');
+});
+
+// audit3(label-renderer): regression tests for the verified label/text fixes.
+
+test('audit3: plain line height is 1.2em (mxConstants.LINE_HEIGHT), not 1.22', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'Hi')
+      .contract.document.pages[0].paint));
+  // middle valign in an 80x40 box: y = (40 - 12*1.2)/2 = 12.8 (1.22 gave 12.68)
+  assert.match(svg, /<text x="40" y="12\.8"/, 'row top uses lineH = fontSize*1.2');
+});
+
+test('audit3: html=1 label without markup is entity-decoded; non-HTML stays literal', () => {
+  const svgH = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', html: 1 }, 'Tom &amp; Jerry')
+      .contract.document.pages[0].paint));
+  // decoded once: "Tom & Jerry" -> XML-escaped back to &amp; in the SVG
+  assert.ok(svgH.includes('>Tom &amp; Jerry<'),
+    'HTML label decodes &amp; (browser innerHTML semantics)');
+  const svgP = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'Tom &amp; Jerry')
+      .contract.document.pages[0].paint));
+  assert.ok(svgP.includes('>Tom &amp;amp; Jerry<'),
+    'non-HTML label keeps the literal entity text');
+});
+
+test('audit3: "&amp;lt;" decodes to the literal 4-char "&lt;" (decode &amp; LAST)', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', html: 1 }, 'A &amp;lt; B')
+      .contract.document.pages[0].paint));
+  assert.ok(svg.includes('>A &amp;lt; B<'),
+    'single decode yields "A &lt; B", never the double-decoded "A < B"');
+});
+
+test('audit3: astral numeric references survive (fromCodePoint, emoji)', () => {
+  const svg = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', html: 1 }, '&#128512;')
+      .contract.document.pages[0].paint));
+  assert.ok(svg.includes('\u{1F600}'), 'U+1F600 emoji is preserved');
+});
+
+test('audit3: middle label taller than the box spills above AND below (no top clamp)', () => {
+  const r = oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'a\nb\nc\nd\ne');
+  const node = labelSvgNode(r.contract.document.pages[0].paint);
+  // totalH = 5*14.4 = 72 in a 40-high box: oy = (40-72)/2 = -16 — drawio
+  // centers regardless, so the viewport must grow upward by 16.
+  assert.ok(Math.abs(node.box.y - (-16)) < 0.01, `box.y grows upward (got ${node.box.y})`);
+  assert.ok(Math.abs(node.box.h - 72) < 0.01, `box.h covers the full stack (got ${node.box.h})`);
+});
+
+test('audit3: asymmetric spacing shifts center/middle labels (mxText.getSpacing)', () => {
+  // ALIGN_MIDDLE: dy = (spacingTop - spacingBottom)/2 = ((2+10)-2)/2 = +5
+  const svgT = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', spacingTop: '10' }, 'Hi')
+      .contract.document.pages[0].paint));
+  assert.match(svgT, /<text x="40" y="17\.8"/, 'middle label shifts down by (pt-pb)/2');
+  // ALIGN_CENTER: dx = (spacingLeft - spacingRight)/2 = ((2+20)-2)/2 = +10
+  const svgL = decodeSvg(labelSvgNode(
+    oneVertex({ shape: 'rectangle', fontColor: '#000000', spacingLeft: '20' }, 'Hi')
+      .contract.document.pages[0].paint));
+  assert.match(svgL, /<text x="50" y="12\.8"/, 'center label shifts right by (pl-pr)/2');
+});
+
+test('audit3: edge child label offset is model units (not divided by view scale)', () => {
+  // scale=2: edge from view (10,120) to (410,120) = model (0,50)..(200,50);
+  // child at t=0.5 -> model (100,50); offset (30,10) is MODEL units
+  // (mxGraphView.getPoint multiplies it by the scale) -> center (130,60).
+  const cells = {
+    E: { id: 'E', edge: true },
+    L: { id: 'L', vertex: true, parent: 'E',
+      geometry: { x: 0, y: 0, relative: true, offset: { x: 30, y: 10 } } }
+  };
+  const states = {
+    E: { x: 10, y: 120, width: 400, height: 0,
+      absolutePoints: [{ x: 10, y: 120 }, { x: 410, y: 120 }] },
+    L: { x: 0, y: 0, width: 8, height: 8 }
+  };
+  const styles = { E: { strokeColor: '#000000' }, L: { fontColor: '#000000' } };
+  const labels = { E: '', L: 'ML' };
+  const r = exporter.buildResult(graphFixture(cells, states, labels, styles, FIXED_BOUNDS, 2));
+  const node = r.contract.document.pages[0].paint.find(
+    (n) => n.kind === 'svg' && decodeSvg(n).includes('ML'));
+  assert.ok(node, 'edge child label baked');
+  assert.ok(Math.abs((node.box.x + node.box.w / 2) - 130) < 0.01,
+    `x center 130 expected, got ${node.box.x + node.box.w / 2}`);
+  assert.ok(Math.abs((node.box.y + node.box.h / 2) - 60) < 0.01,
+    `y center 60 expected, got ${node.box.y + node.box.h / 2}`);
+});
+
+test('audit3: edge child label verticalAlign top hangs below the anchor, bottom above', () => {
+  const mk = (valign) => {
+    const cells = {
+      E: { id: 'E', edge: true },
+      L: { id: 'L', vertex: true, parent: 'E',
+        geometry: { x: 0, y: 0, relative: true } }
+    };
+    const states = {
+      E: { x: 10, y: 120, width: 400, height: 0,
+        absolutePoints: [{ x: 10, y: 120 }, { x: 410, y: 120 }] },
+      L: { x: 0, y: 0, width: 8, height: 8 }
+    };
+    const styles = { E: { strokeColor: '#000000' },
+      L: { fontColor: '#000000', verticalAlign: valign } };
+    const r = exporter.buildResult(graphFixture(
+      cells, states, { E: '', L: 'ML' }, styles, FIXED_BOUNDS, 2));
+    return r.contract.document.pages[0].paint.find(
+      (n) => n.kind === 'svg' && decodeSvg(n).includes('ML'));
+  };
+  // anchor at model y=50; label box h = 16.8 (fs12*1.4)
+  assert.ok(Math.abs(mk('top').box.y - 50) < 0.01, 'top: dy=0, fully below the anchor');
+  assert.ok(Math.abs(mk('bottom').box.y - (50 - 16.8)) < 0.01, 'bottom: dy=-1, fully above');
+  assert.ok(Math.abs(mk('middle').box.y - (50 - 8.4)) < 0.01, 'middle: dy=-0.5');
+});
+
+test('audit3: edge OWN label verticalAlign=top hangs below the anchor (mxUtils.getAlignmentAsPoint)', () => {
+  const mk = (valign) => {
+    const cells = { E: { id: 'E', edge: true } };
+    const states = { E: { x: 10, y: 120, width: 400, height: 0,
+      absolutePoints: [{ x: 10, y: 120 }, { x: 410, y: 120 }],
+      absoluteOffset: { x: 210, y: 120 } } };
+    const styles = { E: { strokeColor: '#000000', verticalAlign: valign } };
+    const r = exporter.buildResult(graphFixture(
+      cells, states, { E: 'lab' }, styles, FIXED_BOUNDS, 2));
+    return r.contract.document.pages[0].paint.find(
+      (n) => n.kind === 'svg' && decodeSvg(n).includes('lab'));
+  };
+  // anchor at model (100,50); box h = 16.8
+  assert.ok(Math.abs(mk('top').box.y - 50) < 0.01, 'top label hangs below the anchor');
+  assert.ok(Math.abs(mk('middle').box.y - (50 - 8.4)) < 0.01, 'middle is centered (unchanged)');
+});
+
+test('audit3: labelBackgroundColor box hugs the measured text extent, not the cell box', () => {
+  const lp = oneVertex({ shape: 'rectangle', fontColor: '#000000',
+    labelBackgroundColor: '#ffff00' }, 'Hi').contract.document.pages[0].paint;
+  const bg = lp.find((n) => n.kind === 'path' && n.fill && n.fill.color === '#ffff00');
+  assert.ok(bg, 'label background box emitted');
+  const xs = [...bg.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const w = Math.max(...xs.map((p) => p[0])) - Math.min(...xs.map((p) => p[0]));
+  const h = Math.max(...xs.map((p) => p[1])) - Math.min(...xs.map((p) => p[1]));
+  // "Hi" at fs12 measures ~11.5px wide, 14.4 tall — nothing like the 80x40 cell.
+  assert.ok(w < 20, `bg width hugs the text (got ${w})`);
+  assert.ok(Math.abs(h - 14.4) < 0.01, `bg height = one line box (got ${h})`);
+  assert.ok(lp.indexOf(bg) < lp.indexOf(labelSvgNode(lp)), 'bg painted behind the text');
 });
 
 test('text style: verticalLabelPosition places the label outside the shape', () => {

@@ -2288,6 +2288,120 @@ test('text fidelity: a tall inline image never overflows above the line top', as
   assert.ok(parseFloat(m[1]) >= 0, `image y must be >= 0, got ${m[1]}`);
 });
 
+// ─── audit3: label/text renderer fixes (entities, UA margins, nbsp, h5/h6) ──
+
+test('audit3: shim decodes "&amp;lt;" to the literal "&lt;" once (decode &amp; LAST)', async () => {
+  const { svg, notices } = await bakeRichLabel('<b>x &amp;lt; y</b>');
+  assert.equal(notices.length, 0);
+  // one decode: the run text is the 4-char "&lt;", re-escaped in the SVG
+  assert.ok(richRuns(svg).some((r) => r.text === '&amp;lt;'),
+    'literal "&lt;" survives (no double decode to "<")');
+});
+
+test('audit3: astral numeric reference (emoji) survives the rich path', async () => {
+  const { svg, notices } = await bakeRichLabel('<b>&#128512;</b>');
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes('\u{1F600}'), 'U+1F600 preserved (fromCodePoint, not fromCharCode)');
+});
+
+test('audit3: &nbsp; is U+00A0 — does not collapse and is NOT a wrap opportunity', async () => {
+  // width 40 forces "aaaa bbbb" onto two rows…
+  const sp = await bakeRichLabel('<b>aaaa bbbb</b>', '', 40, 160);
+  const spRuns = richRuns(sp.svg);
+  assert.ok(new Set(spRuns.map((r) => r.y)).size >= 2, 'plain space wraps');
+  // …but the &nbsp; variant must stay one unbreakable run
+  const nb = await bakeRichLabel('<b>aaaa&nbsp;bbbb</b>', '', 40, 160);
+  const nbRuns = richRuns(nb.svg);
+  assert.equal(nbRuns.length, 1, 'nbsp keeps the words in one run');
+  assert.equal(nbRuns[0].text, 'aaaa bbbb', 'U+00A0 preserved in the run text');
+});
+
+test('audit3: h5/h6 are SMALLER than the base size (UA 0.83em/0.67em, no floor)', async () => {
+  const { svg, notices } = await bakeRichLabel('<h5>five</h5><h6>six</h6><p>body</p>', '', 240, 220);
+  assert.equal(notices.length, 0);
+  const body = findRun(svg, 'body');
+  assert.ok(Math.abs(findRun(svg, 'five').size - 0.83 * 12) < 0.01, 'h5 = 0.83em');
+  assert.ok(Math.abs(findRun(svg, 'six').size - 0.67 * 12) < 0.01, 'h6 = 0.67em');
+  assert.ok(findRun(svg, 'five').size < body.size && findRun(svg, 'six').size < body.size,
+    'h5/h6 shrink below the base size');
+});
+
+test('audit3: UA <p> margins — adjacent paragraphs collapse to one 1em gap', async () => {
+  const { svg, notices } = await bakeRichLabel('<p>one</p><p>two</p>', '', 240, 200);
+  assert.equal(notices.length, 0);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  // lineH 14.4 + collapsed max(12,12) margin = 26.4
+  assert.ok(Math.abs(d - 26.4) < 0.01, `1em collapsed margin between <p> (gap ${d})`);
+});
+
+test('audit3: inline margin:0 override wins over the UA <p> margin (drawio templates)', async () => {
+  const { svg } = await bakeRichLabel(
+    '<p style="margin: 0px;">one</p><p style="margin: 0px;">two</p>', '', 240, 200);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  assert.ok(Math.abs(d - 14.4) < 0.01, `margin:0 paragraphs stay flush (gap ${d})`);
+});
+
+test('audit3: <div> line containers have NO UA margin (drawio default lines)', async () => {
+  const { svg } = await bakeRichLabel('<div>one</div><div>two</div>', '', 240, 200);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  assert.ok(Math.abs(d - 14.4) < 0.01, `div lines stay flush (gap ${d})`);
+});
+
+test('audit3: heading UA margins use the HEADING’s em (h2 bottom = 0.83em of 18px)', async () => {
+  const { svg } = await bakeRichLabel('<h2>T</h2><p>b</p>', '', 240, 220);
+  const d = findRun(svg, 'b').y - findRun(svg, 'T').y;
+  // h2 line box: ascent 16.56, lineH 21.6; gap = max(h2 mb 0.83*18=14.94, p mt 12)
+  // baseline delta = (21.6 - 16.56) + 14.94 + 0.92*12 = 31.02
+  assert.ok(Math.abs(d - 31.02) < 0.05, `h2 margin-bottom in h2 em (delta ${d})`);
+});
+
+test('audit3: lists indent by the UA 40px padding-left and carry 1em vertical margins', async () => {
+  const { svg, notices } = await bakeRichLabel('<p>x</p><ul><li>item</li></ul>', 'align=left;', 320, 220);
+  assert.equal(notices.length, 0);
+  const bullet = richRuns(svg).find((r) => r.text === '•');
+  assert.ok(bullet, 'bullet emitted');
+  assert.ok(Math.abs(bullet.x - 40) < 0.01, `list padding-left = 40px (got ${bullet.x})`);
+  const d = bullet.y - findRun(svg, 'x').y;
+  // collapsed max(p mb 12, ul mt 12) = 12 + lineH 14.4
+  assert.ok(Math.abs(d - 26.4) < 0.01, `ul top margin 1em collapsed (gap ${d})`);
+});
+
+test('audit3: blockquote indents 40px with 1em vertical margins', async () => {
+  const { svg } = await bakeRichLabel('<blockquote>q</blockquote>', 'align=left;', 240, 200);
+  const q = findRun(svg, 'q');
+  assert.ok(Math.abs(q.x - 40) < 0.01, `blockquote margin-left 40px (got ${q.x})`);
+});
+
+test('audit3: middle HTML label taller than its box grows the viewport UPWARD', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>` +
+    `<mxCell id="0"/><mxCell id="1" parent="0"/>` +
+    `<mxCell id="2" vertex="1" value="${escHtmlAttr('<div>a</div>'.repeat(8))}" ` +
+    `style="whiteSpace=wrap;html=1;fontSize=12;" parent="1">` +
+    `<mxGeometry x="20" y="50" width="120" height="40" as="geometry"/>` +
+    `</mxCell></root></mxGraphModel>`;
+  const { contract } = await bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const node = paint.find((n) => n.kind === 'svg');
+  // The vertex body rect gives the cell box in contract units.
+  const body = paint.find((n) => n.kind === 'path' && /Z$/.test(n.d));
+  const ys = [...body.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[2]);
+  const cellTop = Math.min(...ys), cellBot = Math.max(...ys);
+  // 8 rows * 14.4 = 115.2 in a 40-high box: oy = -37.6 — the label stays
+  // CENTERED on the cell, spilling above and below equally.
+  assert.ok(node.box.y < cellTop, `viewport grows above the cell top (y=${node.box.y})`);
+  assert.ok(node.box.h > (cellBot - cellTop) * 2.5, `viewport holds the whole stack (h=${node.box.h})`);
+  assert.ok(Math.abs((node.box.y + node.box.h / 2) - (cellTop + cellBot) / 2) < (cellBot - cellTop) / 20,
+    'label remains centered on the cell');
+});
+
+test('audit3: html label without markup is entity-decoded end-to-end', async () => {
+  // XML attr &amp;amp; -> stored value "Tom &amp; Jerry" -> displayed "Tom & Jerry"
+  const { svg, notices } = await bakeRichLabel('Tom &amp; Jerry');
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes('>Tom &amp; Jerry<'),
+    'one decode: prints "Tom & Jerry", not the literal entity text');
+});
+
 // --- audit: parser/exporter fidelity regressions (routing, bounds, text) ---
 // Each test pins a fixed silent divergence found in the end-to-end WYSIWYG
 // audit. Routing values are checked against drawio's own mxEdgeStyle
@@ -2784,4 +2898,61 @@ test('audit2: flipH/flipV apply to builtinShapeSvg and swimlane branches', async
     'flipV swimlane header fill sits at the bottom (40..60)');
   const divider = lane.filter((n) => n.kind === 'path' && !n.fill).map((n) => n.d);
   assert.ok(divider.includes('M 0 40 L 100 40'), 'divider line at the flipped header boundary');
+});
+
+// ---- audit2 router fixes: self-loop via real mxEdgeStyle.Loop; rotated/flipped
+// floating perimeters (mxGraphView.getFloatingTerminalPoint/getPerimeterPoint).
+
+async function bakeEdgeProbe(vertexStyle, edgeStyle, opts) {
+  const o = opts || {};
+  const geo = o.geometry || { x: 100, y: 100, w: 80, h: 40 };
+  const target = o.target || null;
+  const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="${vertexStyle}" parent="1">
+      <mxGeometry x="${geo.x}" y="${geo.y}" width="${geo.w}" height="${geo.h}" as="geometry"/></mxCell>
+    ${target ? `<mxCell id="b" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="${target.x}" y="${target.y}" width="${target.w}" height="${target.h}" as="geometry"/></mxCell>` : ''}
+    <mxCell id="e" edge="1" style="${edgeStyle}" source="a" target="${target ? 'b' : 'a'}" parent="1">
+      <mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  // The edge polyline is the multi-point unfilled path.
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && !n.fill && (n.d.match(/L /g) || []).length >= 1);
+  return edge;
+}
+
+test('audit2: self-loop honors direction=north (loops over the TOP, mxEdgeStyle.Loop)', async () => {
+  const east = await bakeEdgeProbe('rounded=0;', 'direction=west;');
+  const north = await bakeEdgeProbe('rounded=0;', 'direction=north;');
+  // direction=west (drawio default): loop off the RIGHT side -> max x beyond the box.
+  const xs = [...east.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
+  assert.ok(Math.max(...xs) > 80, `west loop extends right of the shape, got max x ${Math.max(...xs)}`);
+  // direction=north: loop over the TOP -> min y above the box top (y=0 in anchored coords).
+  // The loop tops out 20 units above the box top (2*seg); with the ink-extent
+  // anchor the loop apex IS the content top (only the stroke halo above it).
+  const ys = [...north.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[2]);
+  assert.ok(Math.min(...ys) < 1, `north loop extends above the shape, got min y ${Math.min(...ys)}`);
+});
+
+test('audit2: self-loop honors segment= (loop depth scales)', async () => {
+  const near = await bakeEdgeProbe('rounded=0;', '');
+  const far = await bakeEdgeProbe('rounded=0;', 'segment=30;');
+  const maxX = (e) => Math.max(...[...e.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]));
+  assert.ok(maxX(far) > maxX(near) + 30,
+    `segment=30 loops farther out (${maxX(far)} vs ${maxX(near)})`);
+});
+
+test('audit2: floating edge attaches to the ROTATED perimeter of a rotated terminal', async () => {
+  // 80x20 box rotated 90: its ink occupies x in [cx-10, cx+10] = [130, 150].
+  // A floating edge from a target far to the right must attach at the rotated
+  // right ink edge x=150 (the unrotated box edge x=180 would be detached air).
+  const edge = await bakeEdgeProbe('rounded=0;rotation=90;', 'edgeStyle=none;',
+    { geometry: { x: 100, y: 100, w: 80, h: 20 }, target: { x: 400, y: 100, w: 40, h: 20 } });
+  const first = /M (-?[\d.]+) (-?[\d.]+)/.exec(edge.d);
+  // anchored coords: content min-x is the rotated vertex's ink left edge.
+  // The attach x must be ~50 units from content origin (130->150 span is 20 wide,
+  // rotated box center at 140; content min x = 130). Attach = 150-130 = 20.
+  assert.ok(Math.abs(+first[1] - 20) < 1.5,
+    `edge attaches at the rotated ink edge (expected ~20, got ${first[1]})`);
 });
