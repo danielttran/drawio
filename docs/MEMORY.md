@@ -1013,3 +1013,58 @@ validate 17, ctest 182, render gate, production audit, engine sweeps).
 change (bake CLI loop); the wedge/label classes are covered by the ink pass —
 do NOT re-add per-feature bound guessing; multipage page-2 overhang is the
 owner-ruled edge-clip case when it appears.
+
+## UPDATE 2026-06-11 — audit round 2 (branch claude/intelligent-euler-ckhd8b)
+
+**Goal (active):** end-to-end WYSIWYG audit; met when 2 CONSECUTIVE rounds find
+no bugs. Round 1 = PR #30 (~30 fixes). **Round 2 found ~46 verified findings**
+across 5 parallel audits (exporter shapes / labels / C++ engine / edges+stencils
+/ host+pipeline) — so the clean-round counter restarted; rounds 3+4 must both be
+clean.
+
+**Round-2 fixes (waves; each suite-green before commit):**
+- *Engine (f88d439):* JSON nesting-depth guard both parsers (was segfault);
+  proto.cpp numbers via from_chars full-token JSON grammar (was prefix-parse);
+  range-checked wire casts copies/dpi/proto version (was UB); read_merge refuses
+  non-string mergeData loudly (was silent "" blank); \uXXXX + surrogate pairs in
+  contract loader; RenderPreview honors aa:crisp like Print (INV-5).
+- *Win32 host (f88d439, code-reviewed only — no Windows box):* text
+  overflow:clip SetClip now CombineModeIntersect (was Replace → tile-seam text
+  dup); gradient stops: synthetic 0/1 boundary stops + SetInterpolationColors
+  always (was offsets ignored/pinned); render_preview threads PrintRenderOptions.
+- *Pipeline (f88d439):* validator requires schema.minor + accepts >=1 stop
+  (loader parity); broker preview returns bake notices to the dialog ack-gate,
+  print gates on degradation severity only; **production-audit INK GATE**
+  (SVG_RASTERIZER_LIB set → batched magenta/blue sheets through production
+  resvg, per-shape tile opacity; 86+8910 all inked. NOTE: white-fill logo
+  stencils render white-on-white — the sheet uses magenta fill so color-choice
+  invisibility is not flagged, only true zero-ink).
+- *Shapes (f88d439):* note/note2 (size 30, stroke fold, darkOpacity), process
+  fixedSize+rounded, cloud + actor exact mx silhouettes, doubleEllipse margin
+  key, singleArrow/doubleArrow exact (body was 2x thick), plus = rect + cross
+  strokes, cylinder2/3 absolute size + lid, isoCube2, corner/tee filled
+  polygons + crossbar end-bars, gradient fill-opacity on all svg paths,
+  rounded=1 faithful via roundedPoly on all ported polygon shapes (loud list
+  for the rest), flipH/V on builtin/note/swimlane branches.
+- *Labels (7b67d42):* entity decode for markup-less html=1 labels; &amp; LAST
+  (no double-decode); fromCodePoint; horizontal=0 keeps multi-row layout;
+  middle/bottom overflow spills above (viewport grows up); UA block margins
+  (p/h/blockquote/lists, collapsing, inline override) + 40px list indent;
+  line-height 1.2; h5/h6 shrink; NBSP non-breaking; asymmetric spacing
+  center/middle; edge label valign top/bottom; child-label offsets model units;
+  **labelBackgroundColor box hugs measured text extent** (was whole cell box).
+- *Routing (7b67d42, by orchestrator):* self-loops via REAL mxEdgeStyle.Loop
+  ('loopEdgeStyle' synthetic token in mx-edge-router STYLE_FN; drawio-parser
+  isLoopStyleEnabled precedence incl. orthogonalLoop); floating-edge perimeter
+  honors terminal rotation (rotate next -a, intersect, rotate +a; orth only at
+  a==0) and flipH/V (incl. stencilFlipH/V) in mx-edge-router perimeterPoint.
+- *Wave 3 in flight:* edge markers (endArrow=none phantom arrow via rawStyle
+  check; per-end endSize/startSize + (size+sw) sizing; line shortening behind
+  markers; exact mxMarker geometry incl. Thin/oval/circle/box) + stencil
+  renderer (gradient def lifecycle, <text> scaling/vertical, missing
+  strokewidth = 1*minScale, alpha=0 falsy bug, path rounded arcSize,
+  dashpattern minScale, include-shape direction once).
+
+**Build notes (this box):** do NOT use -DCMAKE_BUILD_TYPE=Release (GCC13
+std::variant maybe-uninitialized false positive under -O2 -Werror). ctest now
+195; exporter 206; bake 206+; goldens regenerated with explained diffs only.
