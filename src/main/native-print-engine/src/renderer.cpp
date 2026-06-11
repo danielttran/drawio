@@ -36,6 +36,21 @@ namespace {
 constexpr double kPageEscapeTolerancePx = 4.0;
 constexpr double kCssPxPerInch = 96.0;
 
+// Ceiling for contract-derived raster pixel dimensions. A huge-but-finite
+// contract box (e.g. w=1e30) survives every isfinite() guard, and
+// static_cast<int>(std::lround(...)) of an out-of-int-range double is
+// unspecified -- it silently produced 0/negative raster dims (the C1 silent-
+// corruption class). 100k px per side is far beyond any real label/page
+// raster; exceeding it is a typed, loud refusal naming the node.
+constexpr double kMaxRasterPx = 100000.0;
+
+[[nodiscard]] std::optional<int> checked_raster_px(double device_px) {
+  if (!std::isfinite(device_px) || std::fabs(device_px) > kMaxRasterPx) {
+    return std::nullopt;
+  }
+  return static_cast<int>(std::lround(device_px));
+}
+
 
 // maxLen counts CHARACTERS (Unicode code points), matching the JS producer's
 // string.length-class semantics -- not UTF-8 bytes, which falsely rejected
@@ -255,6 +270,16 @@ RenderResult render_to_trace(
 
         if (node.kind == PaintKind::Image || node.kind == PaintKind::Svg) {
           const Rect device_box = transform.apply(node.box);
+          const auto raster_w = checked_raster_px(device_box.w);
+          const auto raster_h = checked_raster_px(device_box.h);
+          if (!raster_w.has_value() || !raster_h.has_value()) {
+            return RenderResult::err(ContractError{
+              ContractErrorCode::ContractValueError,
+              page.id + (node.kind == PaintKind::Image ? " (image node)"
+                                                       : " (svg node)"),
+              "node raster size exceeds the 100000 px engine ceiling"
+            });
+          }
           // SVG nodes no longer emit an unconditional StubbedSvgArtwork
           // notice from the engine -- it was misleading once the host
           // wired up the resvg rasterizer (operator saw "STUBBED" even
@@ -284,8 +309,8 @@ RenderResult render_to_trace(
             .flip_h = node.kind == PaintKind::Image ? node.flip_h : false,
             .flip_v = node.kind == PaintKind::Image ? node.flip_v : false,
             .degradation_notice = node.kind == PaintKind::Svg,
-            .raster_width_px = static_cast<int>(std::lround(device_box.w)),
-            .raster_height_px = static_cast<int>(std::lround(device_box.h))
+            .raster_width_px = *raster_w,
+            .raster_height_px = *raster_h
           });
           continue;
         }

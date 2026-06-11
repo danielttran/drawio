@@ -200,7 +200,406 @@ test('lowercase relative path command exits 1 (paths must be absolute)', async (
   c.document.pages[0].paint[0].d = 'm 0 0 l 10 10';
   const r = await run(c);
   assert.equal(r.code, 1);
-  assert.match(r.stdout, /\.d: SVG path must start with an absolute M command/);
+  assert.match(r.stdout, /\.d: only absolute SVG path commands are supported/);
+});
+
+// --- path `d` grammar: mirror of path_parser.cpp (no false reds/greens) ---
+
+test('path d with exponent numbers passes (engine from_chars accepts 1e2)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'M 0 0 L 1e2 5E1 L 1.5e-1 .5';
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('path d with leading whitespace/commas passes (engine skips separators)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = '  ,\t M 0 0 L 10 10 ';
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('path d starting with a non-M command passes (engine accepts it)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'L 10 10 H 20 V 30 Z';
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('path d with leading + and trailing-dot numbers passes', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'M +5. 3 L 10 10';
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('path d with engine-unsupported Q command exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'M 0 0 Q 1 1 2 2';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: engine-unsupported path command "Q"/);
+});
+
+test('path d with missing command arguments exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'M 0 0 L 10';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: path command L has missing or malformed numeric argument/);
+});
+
+test('path d that is Z-only exits 1 (no positioned command)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'Z';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: path must contain at least one positioned command/);
+});
+
+test('empty path d exits 1 (no commands)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = '   ';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: path must contain at least one command/);
+});
+
+test('path d with trailing junk number-start exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].d = 'M 0 0 L 10 10 5';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.d: only absolute SVG path commands are supported/);
+});
+
+// --- solid paint alpha is REQUIRED (loader parse_paint require_number) ---
+
+test('solid paint without alpha exits 1 (engine requires alpha)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].fill = { type: 'solid', color: '#112233' };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /fill\.alpha: solid paint requires alpha/);
+});
+
+test('gradient stop with alpha:null exits 1 (present key must be a number)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].fill = {
+    type: 'linear',
+    stops: [{ offset: 0, color: '#112233', alpha: null }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /stops\[0\]\.alpha: alpha must be a number in \[0,1\] when present/);
+});
+
+// --- stroke.paint null reject (loader read_optional_stroke require_object) ---
+
+test('stroke with paint:null exits 1 (engine requires a paint object)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].stroke = {
+    paint: null, width: 1, cap: 'butt', join: 'miter', miterLimit: 4, dash: null
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /stroke\.paint: stroke requires a paint OBJECT/);
+});
+
+// --- font weight/italic/color (loader text branch) ---
+
+test('text font without weight exits 1 (engine require_int)', async () => {
+  const c = minimalValid();
+  delete c.document.pages[0].paint[1].font.weight;
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /font\.weight: engine requires an integer font weight/);
+});
+
+test('text font with non-integer weight exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].font.weight = 400.5;
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /font\.weight: engine requires an integer font weight/);
+});
+
+test('text font without italic exits 1 (engine require_bool)', async () => {
+  const c = minimalValid();
+  delete c.document.pages[0].paint[1].font.italic;
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /font\.italic: engine requires a boolean italic flag/);
+});
+
+test('text font without color exits 1 / bad hex exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].font.color = '#00f';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /font\.color: engine requires exactly #rrggbb/);
+});
+
+test('text font underline present but non-bool exits 1; absent passes', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].font.underline = 'yes';
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /font\.underline: must be a boolean when present/);
+
+  const c2 = minimalValid();
+  delete c2.document.pages[0].paint[1].font.underline;
+  delete c2.document.pages[0].paint[1].font.strikethrough;
+  const r2 = await run(c2);
+  assert.equal(r2.code, 0, r2.stdout);
+});
+
+// --- static/rich extraneous-key rejection (loader reject_key) ---
+
+test('static content carrying merge keys exits 1 (engine reject_key)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'static', lines: ['Hi'], wrap: 'word'
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.wrap: field is not allowed on static content/);
+});
+
+test('rich content carrying shrinkFloorPx exits 1 (engine reject_key)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'rich', shrinkFloorPx: 4,
+    paragraphs: [{ align: 'left', runs: [{ text: 'x', fontFamily: 'Arial',
+      sizePx: 10, weight: 400, italic: false, underline: false,
+      strikethrough: false, color: '#000000' }] }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.shrinkFloorPx: field is not allowed on rich content/);
+});
+
+// --- rich run/paragraph field validation (loader read_rich_paragraphs) ---
+
+test('rich run missing fontFamily exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'rich',
+    paragraphs: [{ align: 'left', runs: [{ text: 'x', sizePx: 10, weight: 400,
+      italic: false, underline: false, strikethrough: false, color: '#000000' }] }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /runs\[0\]\.fontFamily: must be a string/);
+});
+
+test('rich run missing underline exits 1 (run bools are REQUIRED)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'rich',
+    paragraphs: [{ align: 'left', runs: [{ text: 'x', fontFamily: 'Arial',
+      sizePx: 10, weight: 400, italic: false, strikethrough: false,
+      color: '#000000' }] }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /runs\[0\]\.underline: engine requires a boolean/);
+});
+
+test('rich paragraph with bogus align exits 1 (engine enum)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'rich',
+    paragraphs: [{ align: 'justify', runs: [{ text: 'x', fontFamily: 'Arial',
+      sizePx: 10, weight: 400, italic: false, underline: false,
+      strikethrough: false, color: '#000000' }] }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /paragraphs\[0\]\.align: must be left\|center\|right/);
+});
+
+test('rich paragraph with negative indentPx exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = {
+    type: 'rich',
+    paragraphs: [{ align: 'left', indentPx: -1, runs: [{ text: 'x',
+      fontFamily: 'Arial', sizePx: 10, weight: 400, italic: false,
+      underline: false, strikethrough: false, color: '#000000' }] }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /paragraphs\[0\]\.indentPx: must be a number >= 0/);
+});
+
+// --- merge content type/enum/range + shrinkFloorPx-iff-shrink ---
+
+function mergeContent(overrides) {
+  return Object.assign({
+    type: 'merge', key: 'K', sample: 'S', maxLen: 10,
+    wrap: 'none', overflow: 'reject'
+  }, overrides);
+}
+
+test('valid merge content passes', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = mergeContent();
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('merge content with non-string key exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = mergeContent({ key: 5 });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.key: merge content requires a string here/);
+});
+
+test('merge content with negative maxLen exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = mergeContent({ maxLen: -2 });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.maxLen: merge content requires a non-negative integer/);
+});
+
+test('merge content with unknown wrap/overflow enum exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = mergeContent({ wrap: 'char' });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.wrap: must be none\|word/);
+
+  const c2 = minimalValid();
+  c2.document.pages[0].paint[1].content = mergeContent({ overflow: 'grow' });
+  const r2 = await run(c2);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stdout, /content\.overflow: must be reject\|clip\|shrink/);
+});
+
+test('merge overflow:shrink requires shrinkFloorPx > 0', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content = mergeContent({ overflow: 'shrink' });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.shrinkFloorPx: overflow:"shrink" requires shrinkFloorPx > 0/);
+
+  const c2 = minimalValid();
+  c2.document.pages[0].paint[1].content =
+    mergeContent({ overflow: 'shrink', shrinkFloorPx: 6 });
+  const r2 = await run(c2);
+  assert.equal(r2.code, 0, r2.stdout);
+});
+
+test('merge with shrinkFloorPx but non-shrink overflow exits 1 (reject_key)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[1].content =
+    mergeContent({ overflow: 'clip', shrinkFloorPx: 6 });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /content\.shrinkFloorPx: only allowed with overflow:"shrink"/);
+});
+
+// --- image flipH/flipV + base64 shape (loader image branch) ---
+
+function validImage() {
+  return { kind: 'image', box: { x: 0, y: 0, w: 50, h: 50 },
+    format: 'png', data: 'iVBORw==', aspect: 'fill', flipH: false, flipV: false };
+}
+
+test('image with flipH/flipV bools passes', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push(validImage());
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('image missing flipH exits 1 (engine requires it)', async () => {
+  const c = minimalValid();
+  const img = validImage();
+  delete img.flipH;
+  c.document.pages[0].paint.push(img);
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.flipH: engine requires a boolean here/);
+});
+
+test('image data with bad base64 shape exits 1 (length % 4, mid-=)', async () => {
+  const c = minimalValid();
+  const img = validImage();
+  img.data = 'iVBOR';  // length not multiple of 4
+  c.document.pages[0].paint.push(img);
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.data: image data must be base64/);
+
+  const c2 = minimalValid();
+  const img2 = validImage();
+  img2.data = 'iV==AAAA';  // '=' mid-block
+  c2.document.pages[0].paint.push(img2);
+  const r2 = await run(c2);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stdout, /\.data: image data must be base64/);
+});
+
+test('svg source with bad base64 shape exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'svg', box: { x: 0, y: 0, w: 50, h: 50 },
+    source: 'PHN2Zz4!', aspect: 'fill'
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.source: svg source must be base64/);
+});
+
+// --- barcode value rules (loader barcode branch) ---
+
+test('barcode static value requires data string', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'barcode', box: { x: 0, y: 0, w: 50, h: 20 },
+    symbology: 'code128', value: { type: 'static' }
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.value\.data: barcode static value requires a string data field/);
+
+  const c2 = minimalValid();
+  c2.document.pages[0].paint.push({
+    kind: 'barcode', box: { x: 0, y: 0, w: 50, h: 20 },
+    symbology: 'code128', value: { type: 'static', data: '12345' }
+  });
+  const r2 = await run(c2);
+  assert.equal(r2.code, 0, r2.stdout);
+});
+
+test('barcode merge value requires key/sample/maxLen/errorOnUnencodable===true', async () => {
+  const valid = { type: 'merge', key: 'K', sample: 'S', maxLen: 20,
+    errorOnUnencodable: true };
+  const mk = (value) => {
+    const c = minimalValid();
+    c.document.pages[0].paint.push({
+      kind: 'barcode', box: { x: 0, y: 0, w: 50, h: 20 },
+      symbology: 'code128', value
+    });
+    return c;
+  };
+  assert.equal((await run(mk(valid))).code, 0);
+
+  const noKey = { ...valid }; delete noKey.key;
+  let r = await run(mk(noKey));
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.value\.key: barcode merge value requires a string/);
+
+  r = await run(mk({ ...valid, maxLen: 1.5 }));
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.value\.maxLen: barcode merge value requires a non-negative integer/);
+
+  r = await run(mk({ ...valid, errorOnUnencodable: false }));
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.value\.errorOnUnencodable: engine requires errorOnUnencodable === true/);
 });
 
 test('SVG node missing aspect exits 1', async () => {

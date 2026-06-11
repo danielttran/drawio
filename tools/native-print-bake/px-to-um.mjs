@@ -66,13 +66,28 @@ function scalePaintNode(node) {
       }
       if (n.content && n.content.type === 'rich' && Array.isArray(n.content.paragraphs)) {
         n.content = Object.assign({}, n.content, {
-          paragraphs: n.content.paragraphs.map((p) => Object.assign({}, p, {
-            runs: (p.runs || []).map((r) =>
-              typeof r.sizePx === 'number'
-                ? Object.assign({}, r, { sizePx: scaleN(r.sizePx) })
-                : r)
-          }))
+          paragraphs: n.content.paragraphs.map((p) => {
+            const np = Object.assign({}, p, {
+              runs: (p.runs || []).map((r) =>
+                typeof r.sizePx === 'number'
+                  ? Object.assign({}, r, { sizePx: scaleN(r.sizePx) })
+                  : r)
+            });
+            // indentPx is a length in contract units (loader/host scale it
+            // like any other px value); leaving it unscaled in a um contract
+            // shrinks the indent 264x.
+            if (typeof np.indentPx === 'number') np.indentPx = scaleN(np.indentPx);
+            return np;
+          })
         });
+      }
+      // merge-content shrinkFloorPx is a font-size floor in contract units;
+      // the engine compares it against the (scaled) sizePx, so it must scale
+      // with everything else or shrink-to-fit bottoms out 264x too early.
+      if (n.content && n.content.type === 'merge' &&
+          typeof n.content.shrinkFloorPx === 'number') {
+        n.content = Object.assign({}, n.content,
+          { shrinkFloorPx: scaleN(n.content.shrinkFloorPx) });
       }
       break;
     case 'image':

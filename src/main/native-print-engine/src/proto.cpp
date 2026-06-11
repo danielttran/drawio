@@ -28,8 +28,15 @@ std::uint32_t get_u32_le(const std::uint8_t* p) {
 // ---------------------------------------------------------------------------
 // Frame codec
 // ---------------------------------------------------------------------------
-std::vector<std::uint8_t> encode_frame(FrameType type, std::uint32_t stream_id,
-                                       const std::vector<std::uint8_t>& payload) {
+std::optional<std::vector<std::uint8_t>> encode_frame(
+    FrameType type, std::uint32_t stream_id,
+    const std::vector<std::uint8_t>& payload) {
+  // Refuse BEFORE emission: a frameLen > kMaxFrameLen (or one that wrapped
+  // uint32) would be flushed to the wire and kill the peer's decoder -- a
+  // transport-fatal corruption the sender must surface as a typed error.
+  if (payload.size() > kMaxFramePayload) {
+    return std::nullopt;
+  }
   // frameLen covers frameType(1) + streamId(4) + payload.
   const std::uint64_t frame_len =
       static_cast<std::uint64_t>(payload.size()) + 1u + 4u;
@@ -342,8 +349,19 @@ void number_to(std::string& out, double v) {
     out += buf.data();
     return;
   }
+  // Shortest representation that round-trips exactly: %.10g lost precision
+  // (near-DBL_MAX values re-parsed to a different double), while a flat
+  // %.17g is noisy for common values (0.1 -> "0.10000000000000001").
   std::array<char, 64> buf{};
-  std::snprintf(buf.data(), buf.size(), "%.10g", v);
+  for (int precision = 15; precision <= 17; ++precision) {
+    std::snprintf(buf.data(), buf.size(), "%.*g", precision, v);
+    double back = 0.0;
+    const char* end = buf.data() + std::strlen(buf.data());
+    const auto [ptr, ec] = std::from_chars(buf.data(), end, back);
+    if (ec == std::errc() && ptr == end && back == v) {
+      break;  // %.17g always round-trips, so the loop cannot fall through
+    }
+  }
   out += buf.data();
 }
 
@@ -453,6 +471,20 @@ struct Parser {
   bool parse_value(Json& out);
   bool parse_value_inner(Json& out);
 
+  bool read_hex4(unsigned int& cp) {
+    if (i + 4 > s.size()) return fail("bad \\u");
+    cp = 0;
+    for (int k = 0; k < 4; ++k) {
+      const char h = s[i++];
+      cp <<= 4;
+      if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+      else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+      else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+      else return fail("bad hex");
+    }
+    return true;
+  }
+
   bool parse_string(std::string& out) {
     if (i >= s.size() || s[i] != '"') return fail("expected string");
     ++i;
@@ -472,25 +504,49 @@ struct Parser {
           case 'r':  out.push_back('\r'); break;
           case 't':  out.push_back('\t'); break;
           case 'u': {
-            if (i + 4 > s.size()) return fail("bad \\u");
             unsigned int cp = 0;
-            for (int k = 0; k < 4; ++k) {
-              const char h = s[i++];
-              cp <<= 4;
-              if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
-              else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
-              else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
-              else return fail("bad hex");
+            if (!read_hex4(cp)) return false;
+            // JSON.stringify emits surrogate-pair \u escapes for any non-BMP
+            // character (e.g. emoji in mergeData values); they must combine
+            // into the supplementary code point, NOT be encoded as two
+            // 3-byte CESU-8 units (byte-invalid UTF-8 for the engine).
+            //
+            // Lone surrogates: JSON.parse accepts them but they have no
+            // valid UTF-8 encoding, so substitute U+FFFD (replacement
+            // character) -- visibly degraded, never byte-invalid, matching
+            // the contract loader's behaviour.
+            if (cp >= 0xD800 && cp <= 0xDBFF) {
+              if (i + 1 < s.size() && s[i] == '\\' && s[i + 1] == 'u') {
+                const std::size_t saved = i;
+                i += 2;
+                unsigned int low = 0;
+                if (!read_hex4(low)) return false;
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                  cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                } else {
+                  // Valid escape but not a low surrogate: leave it for the
+                  // main loop and replace the lone high surrogate.
+                  i = saved;
+                  cp = 0xFFFD;
+                }
+              } else {
+                cp = 0xFFFD;
+              }
+            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+              cp = 0xFFFD;  // lone low surrogate
             }
-            // Minimal UTF-8 encode of the BMP code point (control payloads are
-            // ASCII/UTF-8 small; surrogate pairs not used on this boundary).
             if (cp < 0x80) {
               out.push_back(static_cast<char>(cp));
             } else if (cp < 0x800) {
               out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
               out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else {
+            } else if (cp < 0x10000) {
               out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+              out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+              out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+              out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+              out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
               out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
               out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
             }
@@ -500,6 +556,12 @@ struct Parser {
             return fail("bad escape char");
         }
       } else {
+        // Raw (unescaped) control characters are invalid JSON (RFC 8259);
+        // JSON.parse rejects them and JSON.stringify always escapes them,
+        // so accepting them here only masked producer corruption.
+        if (static_cast<unsigned char>(c) < 0x20) {
+          return fail("raw control character in string");
+        }
         out.push_back(c);
       }
     }

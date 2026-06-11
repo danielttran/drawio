@@ -64,11 +64,16 @@ class FakeServices : public proto::EngineServices {
     return render_preview(doc, merge, dpi);
   }
 
+  std::size_t forced_png_size = 0;  // nonzero => synthesize a PNG this large
+
   Result<proto::PreviewOutput, ContractError> render_preview(
       const BakedDocument&, const std::map<std::string, std::string>&,
       double) override {
     proto::PreviewOutput out;
     out.png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};  // PNG magic
+    if (forced_png_size != 0) {
+      out.png.assign(forced_png_size, 0x00);
+    }
     out.width_px = 1200;
     out.height_px = 1800;
     DegradationNotice n;
@@ -490,4 +495,140 @@ TEST_CASE("non-string mergeData values are refused loudly, naming the key",
   om.set("mergeData", std::move(md3));
   auto orr = d.handle(om);
   CHECK(orr.control.get("result")->as_string() == "PrintResult");
+}
+
+namespace {
+
+// Two merge nodes sharing one key with DIFFERENT maxLen: the renderer
+// enforces each node's own limit, so the field's binding constraint is the
+// minimum across the nodes.
+std::string duplicate_key_contract() {
+  return
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[)"
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},"font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":"Sample","maxLen":10,"wrap":"word","overflow":"clip"}},)"
+    R"({"kind":"text","box":{"x":1,"y":20,"w":40,"h":10},"font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":"Sm","maxLen":2,"wrap":"word","overflow":"clip"}})"
+    R"(]}]}})";
+}
+
+}  // namespace
+
+TEST_CASE("GetContractFields reports the MINIMUM maxLen across nodes sharing"
+          " a merge key",
+          "[adapter][ops][hardening]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  Json m = req("GetContractFields");
+  m.set("contractRef", inline_ref(duplicate_key_contract()));
+  auto r = d.handle(m);
+  REQUIRE(r.control.get("result")->as_string() == "ContractFields");
+  const Json& fields = *r.control.get("fields");
+  REQUIRE(fields.items().size() == 1);
+  CHECK(fields.items()[0].get("key")->as_string() == "NAME");
+  // First-wins dedupe reported 10; a 3..10 char value then overflowed the
+  // maxLen=2 node at render time. The binding constraint is 2.
+  CHECK(fields.items()[0].get("maxLen")->as_number() == 2.0);
+}
+
+TEST_CASE("Print refuses non-string printerId / stockId loudly",
+          "[adapter][ops][hardening]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  const auto print_with = [&](const char* key, Json value) {
+    Json m = req("Print");
+    m.set("contractRef",
+          inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+    m.set("printerId", Json::str("printer-1"));
+    m.set("stockId", Json::str("stock-4x6"));
+    m.set(key, std::move(value));
+    return d.handle(m);
+  };
+
+  // Non-string values used to coerce to "" => silently routed to the
+  // default printer / default stock.
+  for (const char* key : {"printerId", "stockId"}) {
+    auto num = print_with(key, Json::number(7));
+    INFO("key: " << key);
+    CHECK(num.control.get("result")->as_string() == "Error");
+    CHECK(num.control.get("error")->as_string() == "ContractValidationError");
+    CHECK(num.control.get("detail")->as_string().find(key) !=
+          std::string::npos);
+    auto null_v = print_with(key, Json());
+    CHECK(null_v.control.get("result")->as_string() == "Error");
+  }
+
+  // Absent stays default (no error): both omitted is still a valid job.
+  Json m = req("Print");
+  m.set("contractRef",
+        inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  CHECK(d.handle(m).control.get("result")->as_string() == "PrintResult");
+}
+
+TEST_CASE("aa render option must be exactly \"on\" or \"crisp\"",
+          "[adapter][ops][hardening][aa]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  const auto print_with_aa = [&](Json aa) {
+    Json m = req("Print");
+    m.set("contractRef",
+          inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+    m.set("printerId", Json::str("printer-1"));
+    m.set("stockId", Json::str("stock-4x6"));
+    m.set("aa", std::move(aa));
+    return d.handle(m);
+  };
+
+  // Unknown strings and non-strings used to coerce to AA-on silently.
+  for (Json bad : {Json::str("CRISP"), Json::str("off"), Json::boolean(true),
+                   Json::number(1)}) {
+    auto r = print_with_aa(std::move(bad));
+    CHECK(r.control.get("result")->as_string() == "Error");
+    CHECK(r.control.get("error")->as_string() == "ContractValidationError");
+  }
+  // The two legal values still work.
+  auto on = print_with_aa(Json::str("on"));
+  CHECK(on.control.get("result")->as_string() == "PrintResult");
+  CHECK(svc.last_opts.edge_crisp == false);
+  auto crisp = print_with_aa(Json::str("crisp"));
+  CHECK(crisp.control.get("result")->as_string() == "PrintResult");
+  CHECK(svc.last_opts.edge_crisp == true);
+
+  // RenderPreview takes the same refusal path (INV-5 parity).
+  Json pm = req("RenderPreview");
+  pm.set("contractRef",
+         inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  pm.set("aa", Json::str("smooth"));
+  auto pr = d.handle(pm);
+  CHECK(pr.control.get("result")->as_string() == "Error");
+  CHECK(pr.control.get("error")->as_string() == "ContractValidationError");
+}
+
+TEST_CASE("RenderPreview refuses a preview image over the frame limit with a"
+          " typed error and the transport stays alive",
+          "[adapter][ops][hardening][frame]") {
+  FakeServices svc;
+  svc.forced_png_size = proto::kMaxFramePayload + 1;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  Json m = req("RenderPreview");
+  m.set("contractRef",
+        inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  auto r = d.handle(m);
+  // Typed Error control frame, no 0x02 frame the peer's decoder would die on.
+  CHECK(r.control.get("result")->as_string() == "Error");
+  CHECK(r.control.get("error")->as_string() == "EngineInternalError");
+  CHECK(r.control.get("detail")->as_string().find("frame limit") !=
+        std::string::npos);
+  CHECK_FALSE(r.has_binary);
+
+  // The session/transport is still usable afterwards.
+  svc.forced_png_size = 0;
+  CHECK(d.handle(req("Ping")).control.get("result")->as_string() == "Pong");
+  Json m2 = req("RenderPreview");
+  m2.set("contractRef",
+         inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  CHECK(d.handle(m2).control.get("result")->as_string() == "PreviewResult");
 }

@@ -1,5 +1,6 @@
 #include "print_engine/devmode.hpp"
 
+#include <cmath>
 #include <utility>
 
 namespace print_engine {
@@ -8,7 +9,10 @@ DevModeResult build_merged_dev_mode(
     const DevModeSnapshot& driver_default,
     double paper_width_mm,
     double paper_height_mm) {
-  if (paper_width_mm <= 0.0 || paper_height_mm <= 0.0) {
+  // isfinite first: NaN compares false to everything, so NaN/Inf paper
+  // dimensions sailed past a bare <=0 guard into the DEVMODE.
+  if (!std::isfinite(paper_width_mm) || !std::isfinite(paper_height_mm) ||
+      paper_width_mm <= 0.0 || paper_height_mm <= 0.0) {
     return DevModeResult::err(ContractError{
       ContractErrorCode::PrintDeviceError,
       "DEVMODE",

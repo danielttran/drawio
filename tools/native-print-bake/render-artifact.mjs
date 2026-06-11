@@ -300,6 +300,16 @@ export async function renderArtifact({ inputFile, dpi = 300, outPng, lib }) {
           const b = pathBBox(node.d); // path: arity-aware bbox from d
           bx = b.x; by = b.y; bw = b.w; bh = b.h;
         }
+        // Pad the mini canvas on every side: an axis-aligned hairline (e.g.
+        // a horizontal edge) has a zero-height geometric bbox, so an
+        // unpadded viewBox holds none of its STROKE ink and the check
+        // false-failed it as a silent blank. Half the stroke extends each
+        // side of the geometry; pad by at least the full stroke width (>= 2)
+        // so the rasterized line lands inside the canvas.
+        const strokeW = (node.kind === 'path' && node.stroke &&
+          typeof node.stroke.width === 'number') ? node.stroke.width : 0;
+        const pad = Math.max(strokeW, 2);
+        bx -= pad; by -= pad; bw += 2 * pad; bh += 2 * pad;
         bw = Math.max(1, bw); bh = Math.max(1, bh);
         const mini = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
           `width="${bw}" height="${bh}" viewBox="${bx} ${by} ${bw} ${bh}">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${inner}</svg>`;

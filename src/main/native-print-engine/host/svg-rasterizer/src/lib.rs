@@ -332,7 +332,7 @@ pub extern "C" fn spe_svg_render(
     svg_len: usize,
     target_w_px: u32,
     target_h_px: u32,
-    _dpi: f64,
+    dpi: f64,
     out_pixels: *mut u8,
     out_pixels_len: usize,
     err_buf: *mut c_char,
@@ -367,6 +367,13 @@ pub extern "C" fn spe_svg_render(
         }
 
         let mut opt = resvg::usvg::Options::default();
+        // The ABI declares dpi part of the determinism key; usvg uses it to
+        // resolve physical units (pt/mm/in) inside the SVG. Dropping it kept
+        // the parser pinned at 96 -- a latent INV-5 break the moment preview
+        // and print pass different values. Guard non-finite/non-positive.
+        if dpi.is_finite() && dpi > 0.0 {
+            opt.dpi = dpi as f32;
+        }
         // Reuse the initialized production font database for every SVG render.
         // Text is converted to glyph outlines during usvg parsing; missing
         // fonts remain an environment/preflight problem rather than a silent

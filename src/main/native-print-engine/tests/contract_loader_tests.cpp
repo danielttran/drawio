@@ -246,3 +246,48 @@ TEST_CASE("truncated \\u escape is a typed syntax error") {
   REQUIRE_FALSE(result);
   CHECK(result.error().code == ContractErrorCode::ContractSyntaxError);
 }
+
+TEST_CASE("contract numbers follow the strict JSON grammar (no leading zeros,"
+          " no bare dot/exponent)") {
+  // JSON.parse (the producer-side validator) rejects these shapes; the
+  // loader must read the same grammar or the two sides disagree on validity.
+  const auto with_x = [](const std::string& num) {
+    return
+      R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+      R"({"id":"page-1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":)"
+      + num +
+      R"(,"y":0},"size":{"w":100,"h":50}}],"paint":[]})"
+      R"(]}})";
+  };
+
+  for (const std::string bad : {"01", "1.", "1e", "1e+", "00", "-", ".5"}) {
+    INFO("number: " << bad);
+    const auto result = load_baked_contract(with_x(bad));
+    REQUIRE_FALSE(result);
+    CHECK(result.error().code == ContractErrorCode::ContractSyntaxError);
+  }
+
+  // Valid JSON numbers still load.
+  for (const std::string good : {"0", "-0.5e+2", "1e3", "0.25", "10"}) {
+    INFO("number: " << good);
+    CHECK(load_baked_contract(with_x(good)).has_value());
+  }
+}
+
+TEST_CASE("raw control characters inside contract strings are refused") {
+  // JSON.parse rejects unescaped chars < 0x20; JSON.stringify always escapes
+  // them, so bake output is unaffected by tightening.
+  const auto raw = load_baked_contract(
+    static_text_contract(std::string("a\x01") + "b"));
+  REQUIRE_FALSE(raw);
+  CHECK(raw.error().code == ContractErrorCode::ContractSyntaxError);
+
+  const auto newline = load_baked_contract(static_text_contract("a\nb"));
+  REQUIRE_FALSE(newline);
+  CHECK(newline.error().code == ContractErrorCode::ContractSyntaxError);
+
+  // The escaped forms remain valid producer output.
+  const auto escaped = load_baked_contract(static_text_contract(R"(a\nb)"));
+  REQUIRE(escaped);
+  CHECK(escaped.value().pages[0].paint[0].static_lines[0] == "a\nb");
+}

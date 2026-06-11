@@ -103,3 +103,46 @@ TEST_CASE("SVG TODO#2 phase 2: opaque svg source bytes are ferried to the sink "
   // Phase 2 keeps the loud stub until the rasterizer is wired (phase 5).
   CHECK(preview_svg.degradation_notice);
 }
+
+TEST_CASE("Phase 3 base64 accepts '=' only as trailing padding") {
+  // Mid-block '=' synthesized garbage bytes: "QQ=B" and "QQ==QQ==" were
+  // accepted and decoded to bytes the producer never encoded.
+  const auto pad_then_data = load_baked_contract(image_fixture("QQ=B"));
+  REQUIRE_FALSE(pad_then_data);
+  CHECK(pad_then_data.error().code == ContractErrorCode::ContractValueError);
+
+  const auto mid_stream_pad = load_baked_contract(image_fixture("QQ==QQ=="));
+  REQUIRE_FALSE(mid_stream_pad);
+  CHECK(mid_stream_pad.error().code == ContractErrorCode::ContractValueError);
+
+  // Legal trailing padding (1 and 2 pad chars) still decodes.
+  CHECK(load_baked_contract(image_fixture("QUJD")).has_value());   // no pad
+  CHECK(load_baked_contract(image_fixture("QUI=")).has_value());   // 1 pad
+  CHECK(load_baked_contract(image_fixture("QQ==")).has_value());   // 2 pads
+  CHECK(load_baked_contract(image_fixture("QUJDQQ==")).has_value());
+}
+
+TEST_CASE("huge finite contract boxes are a typed error, not a silent"
+          " raster-dimension overflow") {
+  // 1e12 contract px at 300 dpi is far outside int range: the old
+  // static_cast<int>(std::lround(...)) silently produced 0/negative raster
+  // dims. The engine must refuse loudly, naming the node.
+  const std::string json =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
+    R"({"kind":"image","box":{"x":0,"y":0,"w":1e12,"h":16},"format":"png","data":"QQ==","aspect":"preserve","flipH":false,"flipV":false})"
+    R"(]}]}})";
+  const auto loaded = load_baked_contract(json);
+  REQUIRE(loaded);
+
+  const auto rendered = render_to_trace(loaded.value(), RenderTarget{300.0, 96.0});
+  REQUIRE_FALSE(rendered);
+  CHECK(rendered.error().code == ContractErrorCode::ContractValueError);
+  CHECK(rendered.error().path.find("page-1") != std::string::npos);
+  CHECK(rendered.error().message.find("ceiling") != std::string::npos);
+
+  // Ordinary sizes still raster (guard refuses pathology, not real labels).
+  const auto ok = load_baked_contract(image_fixture());
+  REQUIRE(ok);
+  CHECK(render_to_trace(ok.value(), RenderTarget{300.0, 96.0}).has_value());
+}

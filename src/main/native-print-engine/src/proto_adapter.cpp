@@ -75,6 +75,41 @@ const char* contract_kind_to_wire(const PaintNodeSummary& node) {
   return node.barcode_value_type == BarcodeValueType::Merge ? "barcode" : "text";
 }
 
+// Optional string request field: absent => empty fallback; present but not a
+// string => typed refusal. as_string()'s "" fallback silently routed a
+// {"printerId":7} job to the default printer (the C1 coerce class).
+// (value is wrapped in std::optional so the Result's value and error types
+// stay distinct; absent maps to the empty-string default at the call site.)
+Result<std::optional<std::string>, std::string> read_optional_string(
+    const Json& request, const char* key) {
+  using R = Result<std::optional<std::string>, std::string>;
+  const Json* v = request.get(key);
+  if (v == nullptr) {
+    return R::ok(std::nullopt);
+  }
+  if (v->type() != Json::Type::String) {
+    return R::err(std::string(key) + " must be a string when present");
+  }
+  return R::ok(v->as_string());
+}
+
+// "aa" render option: absent => AA on; otherwise exactly "on" or "crisp".
+// The old as_string() fallback made {"aa":true} or {"aa":"CRISP"} silently
+// mean AA-on -- a thermal-head job rasterized antialiased without a word.
+Result<bool, std::string> read_aa_option(const Json& request) {
+  using R = Result<bool, std::string>;
+  const Json* aa = request.get("aa");
+  if (aa == nullptr) {
+    return R::ok(false);
+  }
+  if (aa->type() == Json::Type::String) {
+    const std::string v = aa->as_string();
+    if (v == "on") return R::ok(false);
+    if (v == "crisp") return R::ok(true);
+  }
+  return R::err("aa must be \"on\" or \"crisp\" when present");
+}
+
 }  // namespace
 
 Json notice_to_json(const DegradationNotice& n) {
@@ -283,24 +318,46 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
       sv.set("major", Json::number(doc.schema.major));
       sv.set("minor", Json::number(doc.schema.minor));
       r.control.set("schemaVersion", std::move(sv));
-      Json fields = Json::array();
-      std::map<std::string, bool> seen;
+      // Several nodes may bind the same merge key with different maxLen. The
+      // renderer enforces each node's OWN limit, so the binding constraint
+      // for the field is the MINIMUM across its nodes -- first-wins dedupe
+      // reported a maxLen the app could overflow on another node.
+      struct FieldInfo {
+        std::string kind;
+        int max_len = 0;
+        std::string sample;
+      };
+      std::vector<std::string> field_order;
+      std::map<std::string, FieldInfo> field_by_key;
       for (const auto& page : doc.pages) {
         for (const auto& node : page.paint) {
           const bool is_merge =
               node.text_content_type == TextContentType::Merge ||
               node.barcode_value_type == BarcodeValueType::Merge;
-          if (!is_merge || node.merge_key.empty() || seen[node.merge_key]) {
+          if (!is_merge || node.merge_key.empty()) {
             continue;
           }
-          seen[node.merge_key] = true;
-          Json f = Json::object();
-          f.set("key", Json::str(node.merge_key));
-          f.set("kind", Json::str(contract_kind_to_wire(node)));
-          f.set("maxLen", Json::number(node.merge_max_len));
-          f.set("sampleValue", Json::str(node.merge_sample));
-          fields.push_back(std::move(f));
+          const auto found = field_by_key.find(node.merge_key);
+          if (found == field_by_key.end()) {
+            field_order.push_back(node.merge_key);
+            field_by_key.emplace(
+                node.merge_key,
+                FieldInfo{contract_kind_to_wire(node), node.merge_max_len,
+                          node.merge_sample});
+          } else if (node.merge_max_len < found->second.max_len) {
+            found->second.max_len = node.merge_max_len;
+          }
         }
+      }
+      Json fields = Json::array();
+      for (const auto& key : field_order) {
+        const FieldInfo& info = field_by_key.at(key);
+        Json f = Json::object();
+        f.set("key", Json::str(key));
+        f.set("kind", Json::str(info.kind));
+        f.set("maxLen", Json::number(info.max_len));
+        f.set("sampleValue", Json::str(info.sample));
+        fields.push_back(std::move(f));
       }
       r.control.set("fields", std::move(fields));
       Json notices = Json::array();
@@ -350,9 +407,12 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
       // ("aa":"crisp"), or a crisp job previews antialiased while the paper
       // is gridfit/thresholded.
       PrintRenderOptions preview_opts;
-      if (const Json* aa = request.get("aa")) {
-        preview_opts.edge_crisp = (aa->as_string() == "crisp");
+      const auto aa = read_aa_option(request);
+      if (!aa.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           aa.error());
       }
+      preview_opts.edge_crisp = aa.value();
       auto out = services_.render_preview(loaded.value(), merge.value(), dpi,
                                           preview_opts);
       if (!out.has_value()) {
@@ -360,6 +420,12 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
                            out.error().message);
       }
       const PreviewOutput& po = out.value();
+      // Refuse BEFORE framing: a binary payload over the frame ceiling would
+      // encode a frame the peer's decoder kills the transport on.
+      if (po.png.size() > kMaxFramePayload) {
+        return error_reply(request, ProtoErrorKind::EngineInternalError,
+                           "preview image exceeds frame limit");
+      }
       DispatchResult r;
       r.has_binary = true;
       r.binary_stream_id = next_stream_id_++;
@@ -398,10 +464,16 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
         return error_reply(request, map_contract_error(loaded.error().code),
                            loaded.error().message);
       }
-      const std::string printer_id =
-          request.get("printerId") ? request.get("printerId")->as_string() : "";
-      const std::string stock_id =
-          request.get("stockId") ? request.get("stockId")->as_string() : "";
+      const auto printer_id = read_optional_string(request, "printerId");
+      if (!printer_id.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           printer_id.error());
+      }
+      const auto stock_id = read_optional_string(request, "stockId");
+      if (!stock_id.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           stock_id.error());
+      }
       int copies = 1;
       if (const Json* copies_field = request.get("copies")) {
         // >=1 and sanely bounded: an out-of-int-range double cast is UB and
@@ -414,9 +486,12 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
         copies = static_cast<int>(*checked);
       }
       PrintRenderOptions opts;
-      if (const Json* aa = request.get("aa")) {
-        opts.edge_crisp = (aa->as_string() == "crisp");
+      const auto aa = read_aa_option(request);
+      if (!aa.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           aa.error());
       }
+      opts.edge_crisp = aa.value();
       auto merge = read_merge(request);
       if (!merge.has_value()) {
         return error_reply(request, ProtoErrorKind::ContractValidationError,
@@ -425,7 +500,9 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
 
       print_in_flight_ = true;
       auto out = services_.print(loaded.value(), merge.value(),
-                                 printer_id, stock_id, copies, opts);
+                                 printer_id.value().value_or(""),
+                                 stock_id.value().value_or(""),
+                                 copies, opts);
       print_in_flight_ = false;
       if (!out.has_value()) {
         return error_reply(request, map_contract_error(out.error().code),
