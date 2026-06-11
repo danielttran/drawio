@@ -71,6 +71,18 @@ class EngineServices {
   virtual Result<PreviewOutput, ContractError> render_preview(
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge, double dpi) = 0;
+  // INV-5: preview must rasterize with the SAME per-job render options as
+  // print (e.g. edge_crisp), or a crisp job previews antialiased while the
+  // paper is gridfit/thresholded. Default implementation forwards to the
+  // legacy overload (options ignored) so existing implementations and test
+  // fakes keep compiling; real hosts override this one.
+  virtual Result<PreviewOutput, ContractError> render_preview(
+      const BakedDocument& doc,
+      const std::map<std::string, std::string>& merge, double dpi,
+      const PrintRenderOptions& opts) {
+    (void)opts;
+    return render_preview(doc, merge, dpi);
+  }
   virtual Result<PrintOutput, ContractError> print(
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge,

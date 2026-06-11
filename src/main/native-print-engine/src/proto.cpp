@@ -1,6 +1,7 @@
 #include "print_engine/proto.hpp"
 
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -393,9 +394,44 @@ void serialize_to(std::string& out, const Json& j) {
   }
 }
 
+// Recursion ceiling for the recursive-descent parser. Without it a payload of
+// ~1M nested '[' overflows the stack and kills the process instead of failing
+// with a typed parse error. 512 matches practical JSON.parse nesting limits;
+// real control payloads are a handful of levels deep.
+constexpr std::size_t kMaxNestingDepth = 512;
+
+// Strict JSON number grammar (RFC 8259): rejects what std::stod silently
+// prefix-parsed -- trailing garbage ("1-2", "1.2.3"), bare exponents ("1.5e"),
+// leading zeros ("01") and '+' prefixes.
+bool is_valid_json_number(std::string_view t) {
+  std::size_t k = 0;
+  if (k < t.size() && t[k] == '-') ++k;
+  if (k >= t.size()) return false;
+  if (t[k] == '0') {
+    ++k;
+  } else if (t[k] >= '1' && t[k] <= '9') {
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  } else {
+    return false;
+  }
+  if (k < t.size() && t[k] == '.') {
+    ++k;
+    if (k >= t.size() || t[k] < '0' || t[k] > '9') return false;
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  }
+  if (k < t.size() && (t[k] == 'e' || t[k] == 'E')) {
+    ++k;
+    if (k < t.size() && (t[k] == '+' || t[k] == '-')) ++k;
+    if (k >= t.size() || t[k] < '0' || t[k] > '9') return false;
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  }
+  return k == t.size();
+}
+
 struct Parser {
   std::string_view s;
   std::size_t i = 0;
+  std::size_t depth = 0;
   std::string err;
 
   void skip_ws() {
@@ -415,6 +451,7 @@ struct Parser {
   }
 
   bool parse_value(Json& out);
+  bool parse_value_inner(Json& out);
 
   bool parse_string(std::string& out) {
     if (i >= s.size() || s[i] != '"') return fail("expected string");
@@ -477,6 +514,14 @@ struct Parser {
 };
 
 bool Parser::parse_value(Json& out) {
+  if (depth >= kMaxNestingDepth) return fail("nesting depth exceeded");
+  ++depth;
+  const bool ok = parse_value_inner(out);
+  --depth;
+  return ok;
+}
+
+bool Parser::parse_value_inner(Json& out) {
   skip_ws();
   if (i >= s.size()) return fail("unexpected end");
   const char c = s[i];
@@ -537,12 +582,20 @@ bool Parser::parse_value(Json& out) {
             s[i] == 'E' || s[i] == '+' || s[i] == '-')) {
       ++i;
     }
-    const std::string token(s.substr(start, i - start));
-    try {
-      out = Json::number(std::stod(token));
-    } catch (...) {
+    const std::string_view token = s.substr(start, i - start);
+    // std::from_chars over the FULL token, NOT std::stod: stod parsed a
+    // prefix and ignored trailing garbage ("1-2" -> 1, "1.5e" -> 1.5) and is
+    // locale-sensitive. The grammar check additionally refuses non-JSON
+    // shapes from_chars would accept ("01", leading '+').
+    if (!is_valid_json_number(token)) return fail("bad number");
+    double parsed = 0.0;
+    const auto [ptr, ec] =
+        std::from_chars(token.data(), token.data() + token.size(), parsed);
+    if (ec != std::errc() || ptr != token.data() + token.size() ||
+        !std::isfinite(parsed)) {
       return fail("bad number");
     }
+    out = Json::number(parsed);
     return true;
   }
   return fail("unexpected token");

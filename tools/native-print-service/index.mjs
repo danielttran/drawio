@@ -8,7 +8,11 @@
 //   { kind: 'drawio', content: '<xml>' }   — baked on-demand (D1)
 //   { kind: 'contract', content: <obj> }   — pre-baked contract, used as-is
 //
-// Failure policy (D5): any degradation notice → job refused, HTTP 422.
+// Failure policy (D5): BAKE-time degradation-severity notices refuse the job
+// with HTTP 422 BEFORE anything is printed (info/silent notices never block).
+// Engine/device-time degradations are only known AFTER the sheet is physically
+// printed, so they cannot "refuse" anything: the job is reported honestly with
+// HTTP 200 carrying notices[] plus a degradations[] subset for the caller.
 // Font preflight (§3.5): missing face → HTTP 422 before engine call.
 // Job queue: one engine call at a time (engine is single-flight).
 // Auth: bearer token (configure via --token / env PRINT_SERVICE_TOKEN).
@@ -176,10 +180,6 @@ export class PrintService {
       if (err.code === 'MISSING_FONTS') {
         return jobRefused(res, 'MISSING_FONTS',
           `font preflight failed: ${err.missingFonts.join(', ')}`, []);
-      }
-      if (err.code === 'PRINT_NOTICES') {
-        return jobRefused(res, 'PRINT_NOTICES',
-          'D5: engine produced degradation notices; job refused', err.notices);
       }
       const statusCode = err.statusCode || 500;
       return sendJson(res, statusCode,

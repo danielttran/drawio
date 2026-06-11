@@ -1113,9 +1113,10 @@ test('edge: default connector renders its classic arrowhead (no silent drop on d
   const { contract, notices } = await bake(xml, { keepPx: true });
   assert.equal(notices.length, 0, `unexpected notice: ${notices.map((n) => n.kind).join('; ')}`);
   const paint = contract.document.pages[0].paint;
-  // a classic arrowhead is a closed, filled 3-vertex triangle path
+  // a classic arrowhead is a closed, filled triangle with a notched back
+  // (tip + 2 wing points + back notch = 3 L commands, mxMarker.js:74-84)
   const arrows = paint.filter((n) => n.kind === 'path' && n.fill &&
-    /^M [\d.]+ [\d.]+ L [\d.]+ [\d.]+ L [\d.]+ [\d.]+ Z$/.test(n.d || ''));
+    /^M [\d.]+ [\d.]+( L [\d.]+ [\d.]+){3} Z$/.test(n.d || ''));
   assert.ok(arrows.length >= 1, 'default edge must emit a filled classic arrowhead path');
   // and the connector line itself must have no zero-length duplicate segment
   const edge = paint.find((n) => n.kind === 'path' && n.fill == null && /^M [\d.]+ [\d.]+ L/.test(n.d || ''));
@@ -1144,17 +1145,20 @@ test('edge: arrowhead types render faithfully or are loudly noticed (no silent t
   };
   const segs = (d) => (d.match(/ L /g) || []).length;
 
-  // Faithful, no notice:
+  // Faithful, no notice. drawio default endFill is FILLED for every marker
+  // type (mxConnector.js:112-113, undefined != 0), so circle/oval/box fill.
   for (const [type, check] of [
     ['diamond', (m) => segs(m.d) === 3 && /Z$/.test(m.d) && m.fill],          // rhombus, filled
     ['oval',    (m) => /A /.test(m.d) && m.fill],                              // filled circle
-    ['circle',  (m) => /A /.test(m.d) && !m.fill && m.stroke],                // hollow circle
+    ['circle',  (m) => /A /.test(m.d) && m.fill && m.stroke],                 // filled circle (Shapes.js circleMarker)
     ['box',     (m) => segs(m.d) === 3 && /Z$/.test(m.d) && m.fill],          // square, filled
     ['open',    (m) => segs(m.d) === 2 && !/Z$/.test(m.d) && !m.fill],        // open V
     ['dash',    (m) => segs(m.d) === 1 && !/Z$/.test(m.d) && !m.fill && m.stroke], // 1 stroke
     ['cross',   (m) => segs(m.d) === 1 && !m.fill && m.stroke],               // last of 2 strokes
     ['ERone',   (m) => segs(m.d) === 1 && !m.fill && m.stroke],               // 1 perpendicular stroke
     ['ERmany',  (m) => segs(m.d) === 2 && !/Z$/.test(m.d) && !m.fill && m.stroke], // crow's foot
+    ['halfCircle', (m) => /C /.test(m.d) && !m.fill && m.stroke],             // two quadratics (as exact cubics)
+    ['async',   (m) => segs(m.d) === 2 && /Z$/.test(m.d) && m.fill],          // half arrowhead
   ]) {
     const { contract, notices } = await bake(mk(type), { keepPx: true });
     assert.equal(notices.length, 0, `${type}: unexpected notice ${notices.map((n) => n.kind).join(',')}`);
@@ -1162,8 +1166,8 @@ test('edge: arrowhead types render faithfully or are loudly noticed (no silent t
     assert.ok(m && check(m), `${type}: marker geometry not faithful (d=${m && m.d})`);
   }
 
-  // Unsupported -> loud notice (never silent):
-  for (const type of ['async', 'circlePlus', 'halfCircle']) {
+  // Unsupported/unregistered -> loud notice (never silent):
+  for (const type of ['manyOptional']) {
     const { notices } = await bake(mk(type), { keepPx: true });
     assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
       `${type}: must raise a loud notice rather than silently substitute`);
@@ -1935,7 +1939,11 @@ test('stencil: unresolved external <image> URL stays loud', async () => {
 });
 
 test('stencil: <path rounded="1"> renders as Bezier path (no notice)', async () => {
-  const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><close/></path></background><foreground><fillstroke/></foreground></shape>';
+  // mxStencil.js:664-721 semantics: rounding requires arcSize (absent → 0 =
+  // no rounding) and ONLY move/line children — segments auto-close when the
+  // first and last points coincide (an explicit <close/> would make drawio
+  // parse the path regularly, i.e. UNROUNDED).
+  const stencilXml = '<shape name="roundtest" w="50" h="50" aspect="variable"><background><path rounded="1" arcSize="8"><move x="0" y="0"/><line x="50" y="0"/><line x="50" y="50"/><line x="0" y="0"/></path></background><foreground><fillstroke/></foreground></shape>';
   const b64 = Buffer.from(stencilXml, 'utf8').toString('base64');
   const xml = makeStencilXml(`shape=stencil(${b64});fillColor=#dae8fc;`, '');
   const { contract, notices } = await bake(xml);
@@ -1944,8 +1952,9 @@ test('stencil: <path rounded="1"> renders as Bezier path (no notice)', async () 
   const svgNodes = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
   assert.ok(svgNodes.length >= 1, 'expected kind:svg node for rounded stencil path');
   const svgStr = Buffer.from(svgNodes[0].source, 'base64').toString('utf8');
-  // Bezier rounded path uses Q (quadratic) commands
+  // Bezier rounded path uses Q (quadratic) commands and the auto-close Z
   assert.ok(/Q /.test(svgStr), 'expected Q (quadratic Bezier) command in rounded path SVG');
+  assert.ok(/Z/.test(svgStr), 'expected auto-closed segment (first==last point)');
 });
 
 test('stencil: built-in hexagon shape produces no ExporterUnsupportedShape notice', async () => {
@@ -2288,6 +2297,120 @@ test('text fidelity: a tall inline image never overflows above the line top', as
   assert.ok(parseFloat(m[1]) >= 0, `image y must be >= 0, got ${m[1]}`);
 });
 
+// ─── audit3: label/text renderer fixes (entities, UA margins, nbsp, h5/h6) ──
+
+test('audit3: shim decodes "&amp;lt;" to the literal "&lt;" once (decode &amp; LAST)', async () => {
+  const { svg, notices } = await bakeRichLabel('<b>x &amp;lt; y</b>');
+  assert.equal(notices.length, 0);
+  // one decode: the run text is the 4-char "&lt;", re-escaped in the SVG
+  assert.ok(richRuns(svg).some((r) => r.text === '&amp;lt;'),
+    'literal "&lt;" survives (no double decode to "<")');
+});
+
+test('audit3: astral numeric reference (emoji) survives the rich path', async () => {
+  const { svg, notices } = await bakeRichLabel('<b>&#128512;</b>');
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes('\u{1F600}'), 'U+1F600 preserved (fromCodePoint, not fromCharCode)');
+});
+
+test('audit3: &nbsp; is U+00A0 — does not collapse and is NOT a wrap opportunity', async () => {
+  // width 40 forces "aaaa bbbb" onto two rows…
+  const sp = await bakeRichLabel('<b>aaaa bbbb</b>', '', 40, 160);
+  const spRuns = richRuns(sp.svg);
+  assert.ok(new Set(spRuns.map((r) => r.y)).size >= 2, 'plain space wraps');
+  // …but the &nbsp; variant must stay one unbreakable run
+  const nb = await bakeRichLabel('<b>aaaa&nbsp;bbbb</b>', '', 40, 160);
+  const nbRuns = richRuns(nb.svg);
+  assert.equal(nbRuns.length, 1, 'nbsp keeps the words in one run');
+  assert.equal(nbRuns[0].text, 'aaaa bbbb', 'U+00A0 preserved in the run text');
+});
+
+test('audit3: h5/h6 are SMALLER than the base size (UA 0.83em/0.67em, no floor)', async () => {
+  const { svg, notices } = await bakeRichLabel('<h5>five</h5><h6>six</h6><p>body</p>', '', 240, 220);
+  assert.equal(notices.length, 0);
+  const body = findRun(svg, 'body');
+  assert.ok(Math.abs(findRun(svg, 'five').size - 0.83 * 12) < 0.01, 'h5 = 0.83em');
+  assert.ok(Math.abs(findRun(svg, 'six').size - 0.67 * 12) < 0.01, 'h6 = 0.67em');
+  assert.ok(findRun(svg, 'five').size < body.size && findRun(svg, 'six').size < body.size,
+    'h5/h6 shrink below the base size');
+});
+
+test('audit3: UA <p> margins — adjacent paragraphs collapse to one 1em gap', async () => {
+  const { svg, notices } = await bakeRichLabel('<p>one</p><p>two</p>', '', 240, 200);
+  assert.equal(notices.length, 0);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  // lineH 14.4 + collapsed max(12,12) margin = 26.4
+  assert.ok(Math.abs(d - 26.4) < 0.01, `1em collapsed margin between <p> (gap ${d})`);
+});
+
+test('audit3: inline margin:0 override wins over the UA <p> margin (drawio templates)', async () => {
+  const { svg } = await bakeRichLabel(
+    '<p style="margin: 0px;">one</p><p style="margin: 0px;">two</p>', '', 240, 200);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  assert.ok(Math.abs(d - 14.4) < 0.01, `margin:0 paragraphs stay flush (gap ${d})`);
+});
+
+test('audit3: <div> line containers have NO UA margin (drawio default lines)', async () => {
+  const { svg } = await bakeRichLabel('<div>one</div><div>two</div>', '', 240, 200);
+  const d = findRun(svg, 'two').y - findRun(svg, 'one').y;
+  assert.ok(Math.abs(d - 14.4) < 0.01, `div lines stay flush (gap ${d})`);
+});
+
+test('audit3: heading UA margins use the HEADING’s em (h2 bottom = 0.83em of 18px)', async () => {
+  const { svg } = await bakeRichLabel('<h2>T</h2><p>b</p>', '', 240, 220);
+  const d = findRun(svg, 'b').y - findRun(svg, 'T').y;
+  // h2 line box: ascent 16.56, lineH 21.6; gap = max(h2 mb 0.83*18=14.94, p mt 12)
+  // baseline delta = (21.6 - 16.56) + 14.94 + 0.92*12 = 31.02
+  assert.ok(Math.abs(d - 31.02) < 0.05, `h2 margin-bottom in h2 em (delta ${d})`);
+});
+
+test('audit3: lists indent by the UA 40px padding-left and carry 1em vertical margins', async () => {
+  const { svg, notices } = await bakeRichLabel('<p>x</p><ul><li>item</li></ul>', 'align=left;', 320, 220);
+  assert.equal(notices.length, 0);
+  const bullet = richRuns(svg).find((r) => r.text === '•');
+  assert.ok(bullet, 'bullet emitted');
+  assert.ok(Math.abs(bullet.x - 40) < 0.01, `list padding-left = 40px (got ${bullet.x})`);
+  const d = bullet.y - findRun(svg, 'x').y;
+  // collapsed max(p mb 12, ul mt 12) = 12 + lineH 14.4
+  assert.ok(Math.abs(d - 26.4) < 0.01, `ul top margin 1em collapsed (gap ${d})`);
+});
+
+test('audit3: blockquote indents 40px with 1em vertical margins', async () => {
+  const { svg } = await bakeRichLabel('<blockquote>q</blockquote>', 'align=left;', 240, 200);
+  const q = findRun(svg, 'q');
+  assert.ok(Math.abs(q.x - 40) < 0.01, `blockquote margin-left 40px (got ${q.x})`);
+});
+
+test('audit3: middle HTML label taller than its box grows the viewport UPWARD', async () => {
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>` +
+    `<mxCell id="0"/><mxCell id="1" parent="0"/>` +
+    `<mxCell id="2" vertex="1" value="${escHtmlAttr('<div>a</div>'.repeat(8))}" ` +
+    `style="whiteSpace=wrap;html=1;fontSize=12;" parent="1">` +
+    `<mxGeometry x="20" y="50" width="120" height="40" as="geometry"/>` +
+    `</mxCell></root></mxGraphModel>`;
+  const { contract } = await bake(xml);
+  const paint = contract.document.pages[0].paint;
+  const node = paint.find((n) => n.kind === 'svg');
+  // The vertex body rect gives the cell box in contract units.
+  const body = paint.find((n) => n.kind === 'path' && /Z$/.test(n.d));
+  const ys = [...body.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[2]);
+  const cellTop = Math.min(...ys), cellBot = Math.max(...ys);
+  // 8 rows * 14.4 = 115.2 in a 40-high box: oy = -37.6 — the label stays
+  // CENTERED on the cell, spilling above and below equally.
+  assert.ok(node.box.y < cellTop, `viewport grows above the cell top (y=${node.box.y})`);
+  assert.ok(node.box.h > (cellBot - cellTop) * 2.5, `viewport holds the whole stack (h=${node.box.h})`);
+  assert.ok(Math.abs((node.box.y + node.box.h / 2) - (cellTop + cellBot) / 2) < (cellBot - cellTop) / 20,
+    'label remains centered on the cell');
+});
+
+test('audit3: html label without markup is entity-decoded end-to-end', async () => {
+  // XML attr &amp;amp; -> stored value "Tom &amp; Jerry" -> displayed "Tom & Jerry"
+  const { svg, notices } = await bakeRichLabel('Tom &amp; Jerry');
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes('>Tom &amp; Jerry<'),
+    'one decode: prints "Tom & Jerry", not the literal entity text');
+});
+
 // --- audit: parser/exporter fidelity regressions (routing, bounds, text) ---
 // Each test pins a fixed silent divergence found in the end-to-end WYSIWYG
 // audit. Routing values are checked against drawio's own mxEdgeStyle
@@ -2306,7 +2429,9 @@ test('audit: elbowEdgeStyle default is SideToSide (horizontal-first), not mid-Y'
   // SideToSide routes through mid-X (160): exits source EAST at y=20,
   // vertical leg at x=160, enters target WEST at y=180. The old hand-rolled
   // router produced the inverted TopToBottom (mid-Y 100) elbow.
-  assert.match(edge.d, /M 80 20 L 160 20 L 160 180 L 240 180/,
+  // The line stops at 240 - 6.368 = 233.632: the default classic arrowhead
+  // recedes the endpoint by (size+sw)*3/4 + sw*1.118 (mxMarker.js:69-70).
+  assert.match(edge.d, /M 80 20 L 160 20 L 160 180 L 233\.632 180/,
     `expected drawio SideToSide route, got ${edge.d}`);
 });
 
@@ -2382,9 +2507,10 @@ test('audit: edge to a child of a collapsed group attaches to the group', async 
   assert.ok(edge, 'edge present');
   const nums = (edge.d.match(/[-\d.]+/g) || []).map(Number);
   const endX = nums[nums.length - 2], endY = nums[nums.length - 1];
-  // Must land on the collapsed GROUP's box (y in [0,30], x ~200), not the
+  // Must land on the collapsed GROUP's box (y in [0,30], x ~200 minus the
+  // classic-arrowhead line recession of 6.368px, mxMarker.js:69-70), not the
   // hidden child's stale geometry at (210,50)+.
-  assert.ok(endY <= 31 && endX >= 195 && endX <= 285,
+  assert.ok(endY <= 31 && endX >= 188 && endX <= 285,
     `edge must attach to the collapsed group perimeter, got (${endX},${endY})`);
 });
 
@@ -2526,4 +2652,648 @@ test('audit: ink-extent anchoring keeps outside-positioned labels on the page', 
       assert.ok(n.box.y > -3, `no ink may anchor off the page top (box.y=${n.box.y})`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Round-2 audit regression tests: shape fidelity fixes verified against
+// Shapes.js / mxgraph shape sources (structural assertions on the baked
+// contract, px units). Each test pins the exact geometry/paint drawio uses.
+// ---------------------------------------------------------------------------
+
+function auditProbe(style, w = 100, h = 60) {
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}" parent="1">
+      <mxGeometry x="0" y="0" width="${w}" height="${h}" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel>`;
+  return bake(xml, { keepPx: true });
+}
+const decodeSvgNode = (n) => Buffer.from(n.source, 'base64').toString('utf8');
+
+test('audit2: note geometry — size default 30, fold stroked open path, no invented shade fill', async () => {
+  const { contract, notices } = await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // NoteShape: s = max(0, min(w, min(h, size=30))) — pentagon corner cut at 30px
+  assert.ok(svg.includes('M 0 0 L 70 0 L 100 30 L 100 60 L 0 60 L 0 0 Z'),
+    'note body pentagon must cut the corner at size=30 (NoteShape default), got: ' + svg);
+  // fold = OPEN path (w-s,0)->(w-s,s)->(w,s) stroked in strokeColor
+  assert.match(svg, /<path d="M 70 0 L 70 30 L 100 30" fill="none" stroke="#d6b656"/,
+    'fold must be the stroked open path in strokeColor');
+  // darkOpacity defaults 0: NO filled fold triangle, no shaded fill
+  assert.ok(!/M 70 0 L 70 30 L 100 30 Z/.test(svg), 'no fold triangle fill at darkOpacity=0');
+  assert.ok(!/#e5dab7|#ccc2a3/.test(svg), 'no invented shadeHex fold fill');
+});
+
+test('audit2: note darkOpacity fills the fold triangle black/white at |op| alpha', async () => {
+  const pos = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;darkOpacity=0.3;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(pos, /<path d="M 70 0 L 70 30 L 100 30 Z" fill="#000000" fill-opacity="0.3" stroke="none"\/>/,
+    'darkOpacity=0.3 fills the fold triangle black at 0.3');
+  const neg = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;darkOpacity=-0.4;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(neg, /<path d="M 70 0 L 70 30 L 100 30 Z" fill="#ffffff" fill-opacity="0.4" stroke="none"\/>/,
+    'darkOpacity<0 fills white at |op|');
+});
+
+test('audit2: note body fill honors fillOpacity/opacity multiplicatively', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;opacity=50;fillOpacity=50;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(svg, /fill="#fff2cc" fill-opacity="0.25"/, 'fill-opacity = opacity * fillOpacity = 0.25');
+});
+
+test('audit2: note2 paints the dog-ear exactly like note (NoteShape2 extends NoteShape)', async () => {
+  const note = await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  const note2 = await auditProbe('shape=note2;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  assert.equal(note2.notices.length, 0, 'note2 must not degrade');
+  assert.equal(decodeSvgNode(note2.contract.document.pages[0].paint[0]),
+    decodeSvgNode(note.contract.document.pages[0].paint[0]),
+    'note2 must bake byte-identically to note (was a plain rectangle)');
+});
+
+test('audit2: note flipH mirrors the fold within the box', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=note;flipH=1;fillColor=#FFF2CC;strokeColor=#D6B656;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(svg, /<g transform="translate\(100,0\) scale\(-1,1\)">/,
+    'flipH must mirror the note shape (was silently ignored)');
+});
+
+test('audit2: process honors fixedSize, and rounded=1 rounds the background + widens the inset', async () => {
+  const { contract, notices } = await auditProbe('shape=process;fixedSize=1;size=12;rounded=1;arcSize=20;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0, 'rounded process must round faithfully, not notice');
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // inset = max(min(w,12), min(w*0.2,h*0.2)=12) = 12 (absolute px, fixedSize)
+  assert.match(svg, /<line x1="12" y1="0" x2="12" y2="60"/, 'left inset line at 12px (fixedSize absolute)');
+  assert.match(svg, /<line x1="88" y1="0" x2="88" y2="60"/, 'right inset line at w-12');
+  // rounded background: arc radius min(w,h)*arcSize/100 = 12
+  assert.match(svg, /<path d="M 12 0 L 88 0 A 12 12 0 0 1 100 12/, 'rounded-rect background, r=12');
+  // relative default still works: size=0.2 -> inset 20
+  const rel = decodeSvgNode((await auditProbe('shape=process;size=0.2;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(rel, /<line x1="20" y1="0"/, 'relative size=0.2 -> inset w*0.2=20');
+});
+
+test('audit2: cloud is the exact mxCloud silhouette', async () => {
+  const { contract, notices } = await auditProbe('shape=cloud;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const d = contract.document.pages[0].paint[0].d;
+  // mxCloud.redrawPath, w=100 h=60: M(25,15) C(5,15)(0,30)(16,33) ...
+  assert.equal(d,
+    'M 25 15 C 5 15 0 30 16 33 C 0 39.6 18 54 31 48 C 40 60 70 60 80 48 ' +
+    'C 100 48 100 36 87.5 30 C 100 18 80 6 62.5 12 C 50 3 30 3 25 15 Z',
+    'cloud must match mxCloud.js:45-55 exactly');
+});
+
+test('audit2: actor is the exact mxActor silhouette (single path)', async () => {
+  const { contract, notices } = await auditProbe('shape=actor;fillColor=#ffffff;strokeColor=#000000;', 60, 90);
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 90 C 0 54 0 36 30 36 C 10 36 10 0 30 0 C 50 0 50 36 30 36 C 60 36 60 54 60 90 Z',
+    'actor must match mxActor.js:77-87 exactly (width=w/3, shoulders at 2h/5)');
+});
+
+test('audit2: doubleEllipse margin = min(3+strokewidth, min(w/5,h/5)) and honors margin=', async () => {
+  const def = (await auditProbe('shape=doubleEllipse;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  // strokeWidth 1 -> margin 4: inner ellipse from (4,30) rx 46 ry 26
+  assert.ok(def.includes('M 4 30 A 46 26 0 1 0 96 30'), `default margin must be 4 (3+sw), got: ${def}`);
+  const m8 = (await auditProbe('shape=doubleEllipse;margin=8;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  assert.ok(m8.includes('M 8 30 A 42 22 0 1 0 92 30'), `margin=8 style key must be honored, got: ${m8}`);
+});
+
+test('audit2: singleArrow body is arrowWidth*h FULL height (not 2x), arrowSize honored', async () => {
+  const { contract, notices } = await auditProbe('shape=singleArrow;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  // aw=0.3*60=18 -> at=21 ab=39; as=0.2*100=20 (Shapes.js SingleArrowShape)
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 21 L 80 21 L 80 0 L 100 30 L 80 60 L 80 39 L 0 39 Z');
+  const custom = (await auditProbe('shape=singleArrow;arrowWidth=0.5;arrowSize=0.1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  assert.equal(custom, 'M 0 15 L 90 15 L 90 0 L 100 30 L 90 60 L 90 45 L 0 45 Z',
+    'arrowWidth/arrowSize style keys must be honored');
+});
+
+test('audit2: doubleArrow geometry matches DoubleArrowShape', async () => {
+  const { contract, notices } = await auditProbe('shape=doubleArrow;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  // aw=18 at=21 ab=39 as=20
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 30 L 20 0 L 20 21 L 80 21 L 80 0 L 100 30 L 80 60 L 80 39 L 20 39 L 20 60 Z');
+});
+
+test('audit2: rounded singleArrow rounds via addPoints (no notice, quadratic corners)', async () => {
+  const { contract, notices } = await auditProbe('shape=singleArrow;rounded=1;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0, 'rounded singleArrow must round, not notice');
+  assert.match(contract.document.pages[0].paint[0].d, / C /, 'rounded corners present (Q->C converted)');
+});
+
+test('audit2: plus is a rect background + stroke-only inset plus lines (PlusShape)', async () => {
+  const { contract, notices } = await auditProbe('shape=plus;fillColor=#ffffff;strokeColor=#000000;', 60, 60);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'plus is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  assert.match(svg, /<rect x="0" y="0" width="60" height="60" fill="#ffffff" stroke="#000000"/,
+    'full rect background (was a filled Greek cross)');
+  // border = min(w/5,h/5)+1 = 13
+  assert.match(svg, /<path d="M 30 13 L 30 47 M 13 30 L 47 30" fill="none" stroke="#000000"/,
+    'stroke-only plus lines inset by border=13');
+});
+
+test('audit2: cylinder2 cap uses absolute size (default 15) with arcs + stroke-only inner lid', async () => {
+  const { contract, notices } = await auditProbe('shape=cylinder2;fillColor=#ffffff;strokeColor=#000000;', 100, 120);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'cylinder2 is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  assert.ok(svg.includes('M 0 15 A 50 15 0 0 1 50 0 A 50 15 0 0 1 100 15 L 100 105 A 50 15 0 0 1 50 120 A 50 15 0 0 1 0 105 Z'),
+    'body per CylinderShape (size=15 absolute), got: ' + svg);
+  assert.match(svg, /<path d="M 100 15 A 50 15 0 0 1 50 30 A 50 15 0 0 1 0 15" fill="none"/,
+    'inner lid is stroke-only at 2*size');
+});
+
+test('audit2: cylinder3 honors size= and lid=0 (downward top arc, no inner lid)', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=cylinder3;size=40;lid=0;fillColor=#ffffff;strokeColor=#000000;', 100, 120))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 0 0 A 50 40 0 0 0 50 40 A 50 40 0 0 0 100 0 L 100 80'),
+    'lid=0 top edge is the sweep-0 arc pair, got: ' + svg);
+  assert.ok(!svg.includes('fill="none"') || !/A 50 40 0 0 1 50 80/.test(svg),
+    'no inner lid stroke when lid=0');
+  assert.equal((svg.match(/<path/g) || []).length, 1, 'lid=0 -> single body path, no inner lid');
+});
+
+test('audit2: isoCube2 hexagon body + stroke-only interior edges (isoAngle honored)', async () => {
+  const { contract, notices } = await auditProbe('shape=isoCube2;fillColor=#ffffff;strokeColor=#000000;', 80, 100);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'isoCube2 is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  // isoAngle 15 -> isoH = min(80*tan(15*PI/200), 50) = 80*tan(0.23562) = 19.206
+  assert.match(svg, /<path d="M 40 0 L 80 19\.206 L 80 80\.794 L 40 100 L 0 80\.794 L 0 19\.206 Z"/,
+    'IsoCubeShape2 hexagonal body');
+  assert.match(svg, /<path d="M 0 19\.206 L 40 38\.413 L 80 19\.206 M 40 38\.413 L 40 100" fill="none"/,
+    'stroke-only interior edges');
+});
+
+test('audit2: corner/tee are FILLED polygons with dx/dy; crossbar is end bars + middle line', async () => {
+  const corner = await auditProbe('shape=corner;fillColor=#ff0000;strokeColor=#000000;');
+  assert.equal(corner.notices.length, 0);
+  const cn = corner.contract.document.pages[0].paint[0];
+  assert.equal(cn.d, 'M 0 0 L 100 0 L 100 20 L 20 20 L 20 60 L 0 60 Z', 'CornerShape polygon (dx=dy=20)');
+  assert.ok(cn.fill && cn.fill.color === '#ff0000', 'corner is FILLED (was a bare polyline)');
+  const tee = await auditProbe('shape=tee;dx=30;dy=10;fillColor=#ff0000;strokeColor=#000000;');
+  assert.equal(tee.contract.document.pages[0].paint[0].d,
+    'M 0 0 L 100 0 L 100 10 L 65 10 L 65 60 L 35 60 L 35 10 L 0 10 Z', 'TeeShape polygon honors dx/dy');
+  const bar = await auditProbe('shape=crossbar;strokeColor=#000000;fillColor=none;');
+  assert.equal(bar.contract.document.pages[0].paint[0].d,
+    'M 0 0 L 0 60 M 100 0 L 100 60 M 0 30 L 100 30', 'CrossbarShape: end bars + middle line (was a plus)');
+});
+
+test('audit2: rounded=1 rounds every ported polygon shape faithfully (no notice, no square corners)', async () => {
+  for (const shape of ['card', 'manualInput', 'loopLimit', 'offPageConnector', 'corner', 'tee',
+    'hexagon', 'parallelogram', 'step', 'trapezoid', 'singleArrow', 'doubleArrow']) {
+    const { contract, notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
+    assert.equal(notices.length, 0, `rounded ${shape} must round faithfully, not notice`);
+    const d = contract.document.pages[0].paint[0].d;
+    assert.match(d, / C /, `rounded ${shape} must contain rounded (curve) corners`);
+  }
+});
+
+test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout/zigzag)', async () => {
+  for (const shape of ['folder', 'callout', 'zigzag']) {
+    const { notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
+    assert.ok(notices.some((n) => /rounded corners on/.test(n.detail && n.detail.detail || '')),
+      `rounded ${shape} must emit a loud notice (not silently square)`);
+  }
+});
+
+test('audit2: step includes the left notch point (StepShape exact polygon)', async () => {
+  const { contract } = await auditProbe('shape=step;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 80 0 L 100 30 L 80 60 L 0 60 L 20 30 Z',
+    'StepShape points incl. (s, h/2) notch');
+});
+
+test('audit2: gradient fills carry fill-opacity on every svg-emission path', async () => {
+  // plain gradient cell
+  const g1 = decodeSvgNode((await auditProbe('fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(g1, /fill="url\(#g\d*\)" fill-opacity="0.4"/, 'gradient cell carries fill-opacity');
+  // rotated gradient cell (separate emission path)
+  const g2 = decodeSvgNode((await auditProbe('rotation=30;fillColor=#dae8fc;gradientColor=#7ea6e0;opacity=50;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(g2, /fill="url\(#g\d*\)" fill-opacity="0.5"/, 'rotated gradient cell carries fill-opacity');
+  // swimlane header gradient (regionFillNode)
+  const sw = (await auditProbe('swimlane;startSize=20;fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint.find((n) => n.kind === 'svg' && /linearGradient/.test(decodeSvgNode(n)));
+  assert.match(decodeSvgNode(sw), /fill="url\(#r\w*\)" fill-opacity="0.4"/, 'swimlane header gradient carries fill-opacity');
+  // note gradient
+  const ng = decodeSvgNode((await auditProbe('shape=note;fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(ng, /fill="url\(#ngrad\)" fill-opacity="0.4"/, 'note gradient carries fill-opacity');
+});
+
+test('audit2: flipH/flipV apply to builtinShapeSvg and swimlane branches', async () => {
+  const proc = decodeSvgNode((await auditProbe('shape=process;flipH=1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(proc, /<g transform="translate\(100,0\) scale\(-1,1\)">/, 'builtinShapeSvg flipH mirrors content');
+  const cyl = decodeSvgNode((await auditProbe('shape=cylinder3;flipV=1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(cyl, /<g transform="translate\(0,60\) scale\(1,-1\)">/, 'cylinder3 flipV mirrors content');
+  // swimlane flipV: header (and its divider) moves to the bottom edge
+  const lane = (await auditProbe('swimlane;flipV=1;startSize=20;fillColor=#dae8fc;strokeColor=#6c8ebf;'))
+    .contract.document.pages[0].paint;
+  const headerFill = lane.find((n) => n.kind === 'path' && n.fill);
+  assert.equal(headerFill.d, 'M 0 60 L 100 60 L 100 40 L 0 40 Z',
+    'flipV swimlane header fill sits at the bottom (40..60)');
+  const divider = lane.filter((n) => n.kind === 'path' && !n.fill).map((n) => n.d);
+  assert.ok(divider.includes('M 0 40 L 100 40'), 'divider line at the flipped header boundary');
+});
+
+// ---- audit2 router fixes: self-loop via real mxEdgeStyle.Loop; rotated/flipped
+// floating perimeters (mxGraphView.getFloatingTerminalPoint/getPerimeterPoint).
+
+async function bakeEdgeProbe(vertexStyle, edgeStyle, opts) {
+  const o = opts || {};
+  const geo = o.geometry || { x: 100, y: 100, w: 80, h: 40 };
+  const target = o.target || null;
+  const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="${vertexStyle}" parent="1">
+      <mxGeometry x="${geo.x}" y="${geo.y}" width="${geo.w}" height="${geo.h}" as="geometry"/></mxCell>
+    ${target ? `<mxCell id="b" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="${target.x}" y="${target.y}" width="${target.w}" height="${target.h}" as="geometry"/></mxCell>` : ''}
+    <mxCell id="e" edge="1" style="${edgeStyle}" source="a" target="${target ? 'b' : 'a'}" parent="1">
+      <mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  // The edge polyline is the multi-point unfilled path.
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && !n.fill && (n.d.match(/L /g) || []).length >= 1);
+  return edge;
+}
+
+test('audit2: self-loop honors direction=north (loops over the TOP, mxEdgeStyle.Loop)', async () => {
+  const east = await bakeEdgeProbe('rounded=0;', 'direction=west;');
+  const north = await bakeEdgeProbe('rounded=0;', 'direction=north;');
+  // direction=west (drawio default): loop off the RIGHT side -> max x beyond the box.
+  const xs = [...east.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
+  assert.ok(Math.max(...xs) > 80, `west loop extends right of the shape, got max x ${Math.max(...xs)}`);
+  // direction=north: loop over the TOP -> min y above the box top (y=0 in anchored coords).
+  // The loop tops out 20 units above the box top (2*seg); with the ink-extent
+  // anchor the loop apex IS the content top (only the stroke halo above it).
+  const ys = [...north.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[2]);
+  assert.ok(Math.min(...ys) < 1, `north loop extends above the shape, got min y ${Math.min(...ys)}`);
+});
+
+test('audit2: self-loop honors segment= (loop depth scales)', async () => {
+  const near = await bakeEdgeProbe('rounded=0;', '');
+  const far = await bakeEdgeProbe('rounded=0;', 'segment=30;');
+  const maxX = (e) => Math.max(...[...e.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]));
+  assert.ok(maxX(far) > maxX(near) + 30,
+    `segment=30 loops farther out (${maxX(far)} vs ${maxX(near)})`);
+});
+
+test('audit2: floating edge attaches to the ROTATED perimeter of a rotated terminal', async () => {
+  // 80x20 box rotated 90: its ink occupies x in [cx-10, cx+10] = [130, 150].
+  // A floating edge from a target far to the right must attach at the rotated
+  // right ink edge x=150 (the unrotated box edge x=180 would be detached air).
+  const edge = await bakeEdgeProbe('rounded=0;rotation=90;', 'edgeStyle=none;',
+    { geometry: { x: 100, y: 100, w: 80, h: 20 }, target: { x: 400, y: 100, w: 40, h: 20 } });
+  const first = /M (-?[\d.]+) (-?[\d.]+)/.exec(edge.d);
+  // anchored coords: content min-x is the rotated vertex's ink left edge.
+  // The attach x must be ~50 units from content origin (130->150 span is 20 wide,
+  // rotated box center at 140; content min x = 130). Attach = 150-130 = 20.
+  assert.ok(Math.abs(+first[1] - 20) < 1.5,
+    `edge attaches at the rotated ink edge (expected ~20, got ${first[1]})`);
+});
+
+// ─── audit4: edge markers (mxMarker fidelity) and stencil renderer fixes ────
+
+// fmt() mirror of the exporter's 3-decimal coordinate formatter.
+const f3 = (n) => {
+  const r = Math.round(n * 1000) / 1000;
+  return String(Object.is(r, -0) ? 0 : r);
+};
+
+// Free-floating edge (no terminals) so the routed points are exactly the
+// source/target points and only the line + markers are painted.
+function markerProbe(style) {
+  return `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="e" edge="1" style="${style}" parent="1"><mxGeometry relative="1" as="geometry">
+      <mxPoint x="20" y="100" as="sourcePoint"/><mxPoint x="220" y="100" as="targetPoint"/>
+    </mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+}
+const pathsOf = (contract) =>
+  contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+// The connector line is the only path with a non-null dashless stroke and no
+// fill that has exactly one straight segment from min-x; simpler: it is the
+// FIRST path emitted by emitEdge.
+const lineOf = (contract) => pathsOf(contract)[0];
+const endNums = (d) => {
+  const nums = (d.match(/-?[\d.]+/g) || []).map(Number);
+  return { x: nums[nums.length - 2], y: nums[nums.length - 1] };
+};
+
+test('audit4: endArrow=none paints NO marker; absent endArrow paints the classic default', async () => {
+  // The stylesheet resolver DELETES endArrow=none (value-none keys), making it
+  // indistinguishable from "absent" — the exporter then re-injected the
+  // defaultEdge classic arrow, printing an arrowhead drawio does not draw.
+  const none = await bake(markerProbe('endArrow=none;'), { keepPx: true });
+  assert.equal(pathsOf(none.contract).length, 1,
+    'endArrow=none must paint only the line, no marker node');
+  // absent endArrow → drawio defaultEdge endArrow=classic → notched triangle
+  const dflt = await bake(markerProbe('rounded=0;'), { keepPx: true });
+  const dPaths = pathsOf(dflt.contract);
+  assert.equal(dPaths.length, 2, 'default edge paints line + classic marker');
+  assert.ok(dPaths[1].fill && /( L [-\d. ]+){3} Z$/.test(dPaths[1].d),
+    `default marker is the filled classic notched triangle (d=${dPaths[1].d})`);
+  // startArrow: absent → none (defaultEdge has no startArrow); explicit none → none
+  const sNone = await bake(markerProbe('startArrow=none;endArrow=none;'), { keepPx: true });
+  assert.equal(pathsOf(sNone.contract).length, 1, 'startArrow=none paints no marker');
+  const sDflt = await bake(markerProbe('endArrow=none;startArrow=classic;'), { keepPx: true });
+  assert.equal(pathsOf(sDflt.contract).length, 2, 'explicit startArrow paints one marker');
+});
+
+test('audit4: classic marker — exact mxMarker geometry and receded line endpoint', async () => {
+  // Horizontal edge, sw=1, endSize default 6 (mxConstants.DEFAULT_MARKERSIZE).
+  // mxMarker createArrow: endOffset = sw*1.118; unit=(size+sw)=7;
+  // tip pt = pe - 1.118; wings at (pt-7, y±3.5); classic notch at pt-7*3/4;
+  // line recedes to pe - 7*3/4 - 1.118 = tip(model) - 6.368.
+  const { contract, notices } = await bake(markerProbe('endArrow=classic;rounded=0;'), { keepPx: true });
+  assert.equal(notices.length, 0);
+  const [line, marker] = pathsOf(contract);
+  const le = endNums(line.d);
+  const tipX = le.x + 6.368, y = le.y; // recession is exactly 6.368
+  assert.equal(marker.d,
+    `M ${f3(tipX - 1.118)} ${f3(y)}` +
+    ` L ${f3(tipX - 8.118)} ${f3(y + 3.5)}` +
+    ` L ${f3(tipX - 6.368)} ${f3(y)}` +
+    ` L ${f3(tipX - 8.118)} ${f3(y - 3.5)} Z`,
+    'classic marker path must match mxMarker.js exactly');
+  assert.ok(marker.fill && marker.stroke, 'filled marker fillAndStrokes');
+  assert.equal(marker.stroke.dash, null, 'markers are never dashed');
+});
+
+test('audit4: marker size comes from endSize/startSize, not strokeWidth', async () => {
+  // endSize=12, sw=1: recession = (12+1)*3/4 + 1.118 = 10.868; wing half-width
+  // = (size+sw)/2 = 6.5. Previously size was max(7, sw*5)=7 for everything.
+  const { contract } = await bake(markerProbe('endArrow=classic;endSize=12;'), { keepPx: true });
+  const [line, marker] = pathsOf(contract);
+  const le = endNums(line.d);
+  const tipX = le.x + 10.868, y = le.y;
+  assert.equal(marker.d,
+    `M ${f3(tipX - 1.118)} ${f3(y)}` +
+    ` L ${f3(tipX - 14.118)} ${f3(y + 6.5)}` +
+    ` L ${f3(tipX - 10.868)} ${f3(y)}` +
+    ` L ${f3(tipX - 14.118)} ${f3(y - 6.5)} Z`,
+    'endSize=12 classic marker geometry');
+  // per-end: startSize only affects the start marker
+  const both = await bake(markerProbe('endArrow=block;startArrow=block;startSize=20;'), { keepPx: true });
+  const ps = pathsOf(both.contract);
+  const ld = ps[0].d, sM = ps[1].d, eM = ps[2].d; // line, start marker, end marker
+  const lineStartX = Number(ld.match(/-?[\d.]+/)[0]);
+  const lineEndX = endNums(ld).x;
+  const xsOf = (d) => [...d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
+  // The marker path's extreme x is its strokewidth-offset tip pt = model
+  // endpoint ∓ sw*1.118. Block recedes the line by (size+sw) + sw*1.118, so
+  // (line endpoint − path tip) = size+sw exactly:
+  //   start: startSize 20 → 21;  end: default 6 → 7.
+  const sTip = Math.min(...xsOf(sM)); // start marker points left; tip = min x
+  const eTip = Math.max(...xsOf(eM));
+  assert.ok(Math.abs((lineStartX - sTip) - 21) < 0.01,
+    `start line recedes by startSize formula (got ${lineStartX - sTip})`);
+  assert.ok(Math.abs((eTip - lineEndX) - 7) < 0.01,
+    `end line recedes by endSize formula (got ${eTip - lineEndX})`);
+});
+
+test('audit4: hollow (endFill=0) markers are outlined and the line does not bisect them', async () => {
+  // Expected (marker-path max-x − line end-x) on a horizontal edge, sw=1,
+  // size=6 — recession minus the path tip's own strokewidth offset:
+  //   classic: recession 6.368, path tip at model−1.118 → 5.25  (= (size+sw)*3/4)
+  //   diamond: recession 7.7071, path tip at model−0.7071 → 7   (= size+sw)
+  //   box:     recession 8, front face AT the model endpoint → 8 (= size+sw+1)
+  // In every case the line end sits at/behind the marker's rear face — it no
+  // longer bisects the hollow glyph.
+  for (const [type, gap] of [['classic', 5.25], ['diamond', 7], ['box', 8]]) {
+    const { contract } = await bake(markerProbe(`endArrow=${type};endFill=0;`), { keepPx: true });
+    const [line, marker] = pathsOf(contract);
+    assert.ok(!marker.fill && marker.stroke, `${type} endFill=0 is stroke-only`);
+    const lineEndX = endNums(line.d).x;
+    const tipX = Math.max(...[...marker.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]));
+    assert.ok(Math.abs((tipX - lineEndX) - gap) < 0.02,
+      `${type}: marker-tip − line-end = ${tipX - lineEndX}, expected ${gap}`);
+  }
+  // circle: recession 2(size+sw)+sw = 15 lands the line end exactly ON the
+  // circle's rear arc point (center model−8, radius 7): the ellipse path's
+  // first M x equals the receded line end — tangent, not bisecting.
+  const { contract: cc } = await bake(markerProbe('endArrow=circle;endFill=0;'), { keepPx: true });
+  const [cLine, cMarker] = pathsOf(cc);
+  assert.ok(!cMarker.fill && cMarker.stroke, 'circle endFill=0 is stroke-only');
+  const cRear = Number(cMarker.d.match(/^M (-?[\d.]+)/)[1]);
+  assert.ok(Math.abs(cRear - endNums(cLine.d).x) < 0.02,
+    'circle: line end coincides with the circle rear point (no bisecting chord)');
+});
+
+test('audit4: oval marker — diameter=size circle centered AT the endpoint, recession size/2', async () => {
+  const { contract } = await bake(markerProbe('endArrow=oval;'), { keepPx: true });
+  const [line, marker] = pathsOf(contract);
+  const le = endNums(line.d);
+  const tipX = le.x + 3, y = le.y; // oval recedes by size/2 = 3 (to the center)
+  // ellipse path: M (cx-r) cy A r r 0 1 0 (cx+r) cy A r r 0 1 0 (cx-r) cy Z, r=3, c=tip
+  assert.equal(marker.d,
+    `M ${f3(tipX - 3)} ${f3(y)} A 3 3 0 1 0 ${f3(tipX + 3)} ${f3(y)}` +
+    ` A 3 3 0 1 0 ${f3(tipX - 3)} ${f3(y)} Z`,
+    'oval marker is a size-diameter circle centered at the line endpoint');
+  assert.ok(marker.fill, 'oval defaults filled (endFill default 1)');
+});
+
+test('audit4: open marker recedes the line by exactly 2*sw*1.118', async () => {
+  const { contract } = await bake(markerProbe('endArrow=open;strokeWidth=3;'), { keepPx: true });
+  const [line, marker] = pathsOf(contract);
+  const le = endNums(line.d);
+  // sw=3: recession = 2*3*1.118 = 6.708; tip pt = recession/2 ahead of line end
+  const tipX = le.x + 6.708;
+  assert.ok(!marker.fill && marker.stroke, 'open is stroke-only');
+  // wings: unit=(6+3)=9, pt=(tip-3.354): M(pt-9, y+4.5) L(pt) L(pt-9, y-4.5)
+  assert.equal(marker.d,
+    `M ${f3(tipX - 3.354 - 9)} ${f3(le.y + 4.5)}` +
+    ` L ${f3(tipX - 3.354)} ${f3(le.y)}` +
+    ` L ${f3(tipX - 3.354 - 9)} ${f3(le.y - 4.5)}`,
+    'open marker geometry (mxMarker createOpenArrow)');
+});
+
+test('audit4: circle marker — radius size+sw centered size+2sw behind the tip (Shapes.js)', async () => {
+  const { contract } = await bake(markerProbe('endArrow=circle;'), { keepPx: true });
+  const [line, marker] = pathsOf(contract);
+  const le = endNums(line.d);
+  const tipX = le.x + 15, y = le.y; // recession 2*(6+1)+1 = 15
+  const c = tipX - 8, r = 7;        // center size+2sw=8 behind tip, radius size+sw=7
+  assert.equal(marker.d,
+    `M ${f3(c - r)} ${f3(y)} A 7 7 0 1 0 ${f3(c + r)} ${f3(y)}` +
+    ` A 7 7 0 1 0 ${f3(c - r)} ${f3(y)} Z`,
+    'circle marker per Shapes.js circleMarker');
+});
+
+// ─── audit4: stencil renderer fixes ─────────────────────────────────────────
+
+// Inline stencil probe: makeStencilXml's cell is 120x100; stencil space is
+// 60x50, so sx=sy=minScale(su)=2 exactly.
+function stencilProbe(inner, styleExtra = '', shapeAttrs = '') {
+  const xml = `<shape name="probe" w="60" h="50" aspect="variable"${shapeAttrs}>${inner}</shape>`;
+  const b64 = Buffer.from(xml, 'utf8').toString('base64');
+  return makeStencilXml(`shape=stencil(${b64});${styleExtra}`, '');
+}
+async function stencilSvgOf(xml) {
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  return { svg: node ? Buffer.from(node.source, 'base64').toString('utf8') : '', notices };
+}
+
+test('audit4: stencil <fillcolor> switches to SOLID fill; earlier gradient def survives', async () => {
+  // mxAbstractCanvas2D.setFillColor clears the gradient. Previously the
+  // exporter minted a NEW gradient id on <fillcolor> and dropped the old def:
+  // the already-painted element referenced a dangling def (broken paint) and
+  // the post-<fillcolor> element wrongly kept a gradient.
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="30" h="50"/></background>' +
+    '<foreground><fillstroke/>' +
+    '<fillcolor color="#ff0000"/><rect x="30" y="0" w="30" h="50"/><fillstroke/></foreground>',
+    'fillColor=#0000ff;gradientColor=#00ff00;'));
+  assert.equal(notices.length, 0);
+  const url = /fill="url\(#([^)]+)\)"/.exec(svg);
+  assert.ok(url, 'first rect painted with the cell gradient');
+  assert.ok(svg.includes(`<linearGradient id="${url[1]}"`),
+    `gradient def #${url[1]} must exist in <defs> (no dangling reference)`);
+  assert.match(svg, /<rect x="60"[^>]*fill="#ff0000"/,
+    'rect after <fillcolor> paints SOLID (gradient cleared), not a new gradient');
+});
+
+test('audit4: stencil save/restore restores the gradient fill state', async () => {
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="30" h="50"/></background>' +
+    '<foreground><save/><fillcolor color="#ff0000"/><fillstroke/>' +
+    '<restore/><rect x="30" y="0" w="30" h="50"/><fillstroke/></foreground>',
+    'fillColor=#0000ff;gradientColor=#00ff00;'));
+  assert.equal(notices.length, 0);
+  assert.match(svg, /<rect x="0"[^>]*fill="#ff0000"/,
+    'rect painted under save+fillcolor is solid');
+  const m2 = /<rect x="60"[^>]*fill="url\(#([^)]+)\)"/.exec(svg);
+  assert.ok(m2 && svg.includes(`<linearGradient id="${m2[1]}"`),
+    'restore must bring the gradient back (and its def must exist)');
+});
+
+test('audit4: stencil <text> font size is scaled ONCE (fontsize*minScale, no double su)', async () => {
+  // mxStencil.js:965-968: <fontsize size="12"> → setFontSize(12*minScale=24).
+  // The <text> emitter then uses the canvas font size as-is; it used to
+  // multiply by su AGAIN (48 at su=2).
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground><fillstroke/><fontsize size="12"/>' +
+    '<text str="Hi" x="10" y="10" align="left" valign="top"/></foreground>'));
+  assert.equal(notices.length, 0);
+  assert.match(svg, /font-size="24"/, 'fontsize 12 at minScale 2 = 24');
+  assert.doesNotMatch(svg, /font-size="48"/, 'must not double-scale');
+  // align defaults LEFT (anchor start) and valign TOP: first-line baseline at
+  // y + size - 1 (mxSvgCanvas2D.plainText) = 20 + 24 - 1 = 43.
+  assert.match(svg, /<text x="20" y="43" text-anchor="start"/);
+});
+
+test('audit4: stencil <text> vertical/rotation rotate about the anchor', async () => {
+  const { svg } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground><fillstroke/><text str="V" x="10" y="10" vertical="1"/></foreground>'));
+  assert.match(svg, /rotate\(-90 20 20\)/, 'vertical="1" rotates -90 about (x,y)');
+  const { svg: svg2 } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground><fillstroke/><text str="R" x="10" y="10" rotation="30"/></foreground>'));
+  assert.match(svg2, /rotate\(-30 20 20\)/, 'rotation attr SUBTRACTS (mxStencil.js:853)');
+});
+
+test('audit4: stencil missing strokewidth attr = 1*minScale, NOT the cell strokeWidth', async () => {
+  // mxStencil.parseDescription defaults strokewidth to '1'; only the literal
+  // 'inherit' uses the style value. 106 bundled stencils omit the attribute.
+  const inner = '<background><rect x="0" y="0" w="60" h="50"/></background><foreground><fillstroke/></foreground>';
+  const { svg } = await stencilSvgOf(stencilProbe(inner, 'strokeWidth=5;'));
+  assert.match(svg, /stroke-width="2"/, 'absent strokewidth → 1 * minScale(2)');
+  const { svg: svgInh } = await stencilSvgOf(stencilProbe(inner, 'strokeWidth=5;', ' strokewidth="inherit"'));
+  assert.match(svgInh, /stroke-width="5"/, 'strokewidth="inherit" → cell strokeWidth');
+});
+
+test('audit4: stencil <fillalpha alpha="0"> makes the fill fully transparent', async () => {
+  // parseFloat(a.alpha) || 1 treated alpha=0 as 1 (falsy-zero bug).
+  const { svg } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground><fillalpha alpha="0"/><fillstroke/></foreground>',
+    'fillColor=#ff0000;'));
+  assert.match(svg, /fill-opacity="0"/, 'alpha=0 must yield fill-opacity 0');
+});
+
+test('audit4: stencil <path rounded="1"> — exact addPoints geometry at su=2, arcSize unscaled', async () => {
+  // Triangle (0,0)→(30,0)→(30,25)→(0,0), arcSize=4, su=2: points scale to
+  // (0,0),(60,0),(60,50); first==last → auto-close pops the duplicate and the
+  // virtual midpoint (30,25) between last and first becomes the path start
+  // (mxShape.addPoints:1239-1245). arcSize stays UNSCALED (radius 4).
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><path rounded="1" arcSize="4">' +
+    '<move x="0" y="0"/><line x="30" y="0"/><line x="30" y="25"/><line x="0" y="0"/>' +
+    '</path></background><foreground><fillstroke/></foreground>'));
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes(
+    'd="M 30 25 L 3.073 2.561 Q 0 0 4 0 L 56 0 Q 60 0 60 4 L 60 46 Q 60 50 56.927 47.439 Z"'),
+    `exact rounded-path geometry (got ${/d="([^"]*)"/.exec(svg)?.[1]})`);
+});
+
+test('audit4: stencil rounded path with multiple <move> splits into independent segments', async () => {
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><path rounded="1" arcSize="4">' +
+    '<move x="0" y="0"/><line x="20" y="0"/><line x="20" y="20"/>' +
+    '<move x="30" y="0"/><line x="50" y="0"/>' +
+    '</path></background><foreground><stroke/></foreground>'));
+  assert.equal(notices.length, 0);
+  assert.ok(svg.includes('d="M 0 0 L 36 0 Q 40 0 40 4 L 40 40 M 60 0 L 100 0"'),
+    `multi-move rounded path segments (got ${/d="([^"]*)"/.exec(svg)?.[1]})`);
+});
+
+test('audit4: stencil rounded path with explicit <close/> parses regularly (drawio fallback)', async () => {
+  // mxStencil only supports move/line inside rounded paths; <close/> flips it
+  // back to the regular (UNROUNDED) parser — no Q commands.
+  const { svg, notices } = await stencilSvgOf(stencilProbe(
+    '<background><path rounded="1" arcSize="4">' +
+    '<move x="0" y="0"/><line x="30" y="0"/><line x="30" y="25"/><close/>' +
+    '</path></background><foreground><fillstroke/></foreground>'));
+  assert.equal(notices.length, 0);
+  assert.doesNotMatch(svg, /Q /, 'explicit close → regular (unrounded) parse');
+  assert.match(svg, /d="M 0 0 L 60 0 L 60 50 Z"/);
+});
+
+test('audit4: stencil <dashpattern> values scale by minScale (then strokeWidth)', async () => {
+  // mxStencil.js:897-916 multiplies each value by minScale; mxSvgCanvas2D
+  // multiplies by strokeWidth. su=2, stencil sw=1*su=2 → 3 2 → 12 8.
+  const { svg } = await stencilSvgOf(stencilProbe(
+    '<background><rect x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground><dashed dashed="1"/><dashpattern pattern="3 2"/><fillstroke/></foreground>'));
+  assert.match(svg, /stroke-dasharray="12 8"/,
+    'dash pattern must be pattern*minScale*strokeWidth');
+});
+
+test('audit4: include-shape applies the direction rotation ONCE (outermost only)', async () => {
+  // drawio rotates the canvas once for the whole shape; the included stencil
+  // only recomputes aspect (scale swap + delta translate, mxStencil.js:497-508,
+  // 862-874). The nested render used to wrap a second rotate(-90).
+  const xml = stencilProbe(
+    '<background><include-shape name="mxgraph.basic.4_point_star" x="0" y="0" w="60" h="50"/></background>' +
+    '<foreground></foreground>',
+    'direction=north;');
+  const { svg, notices } = await stencilSvgOf(xml);
+  assert.ok(!notices.some((n) => n.kind === 'ExporterUnsupportedStencilFeature'),
+    `no stencil notice expected: ${notices.map((n) => n.message).join('; ')}`);
+  const rotates = (svg.match(/rotate\(/g) || []).length;
+  assert.equal(rotates, 1, `direction rotation must appear exactly once, got ${rotates}`);
+  // nested delta translate: cell 120x100 north → outer frame 100x120; include
+  // W=100, H=120 → delta=(100-120)/2=-10 → translate(-10,10).
+  assert.match(svg, /translate\(-10,10\)/, 'nested aspect delta translate present');
 });

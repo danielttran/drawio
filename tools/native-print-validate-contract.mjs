@@ -196,8 +196,10 @@ function validatePaint(paint, path) {
       bad(path + '.alpha', 'alpha must be in [0,1]');
     }
   } else if (paint.type === 'linear' || paint.type === 'radial') {
-    if (!Array.isArray(paint.stops) || paint.stops.length < 2) {
-      bad(path + '.stops', 'gradient needs >= 2 stops');
+    // The engine (contract_loader.cpp parse_paint) accepts >= 1 stop; a
+    // >= 2 check here falsely rejected contracts the engine prints fine.
+    if (!Array.isArray(paint.stops) || paint.stops.length < 1) {
+      bad(path + '.stops', 'gradient needs >= 1 stop');
       return;
     }
     paint.stops.forEach((stop, i) => {
@@ -253,6 +255,12 @@ function validate(contract) {
   if (!required(contract, 'schema', '$', 'object')) return;
   if (contract.schema?.major !== 1) {
     bad('$.schema.major', `must be 1, got ${JSON.stringify(contract.schema?.major)}`);
+  }
+  // The engine loader (contract_loader.cpp) require_int's schema.minor too;
+  // a contract that omits it passes a major-only validation here, then fails
+  // at the engine boundary — the exact drift this validator exists to catch.
+  if (!Number.isInteger(contract.schema?.minor) || contract.schema.minor < 0) {
+    bad('$.schema.minor', `must be a non-negative integer, got ${JSON.stringify(contract.schema?.minor)}`);
   }
   if (!required(contract, 'document', '$', 'object')) return;
   if (contract.document?.units !== 'px' && contract.document?.units !== 'um') {

@@ -425,22 +425,6 @@ function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
   return { x: cx, y: cy };
 }
 
-// Self-loop (source == target, no waypoints): drawio's mxEdgeStyle.Loop routes
-// a small loop off one side of the shape (default WEST direction -> right side,
-// seg = gridSize = 10, out by 2*seg). Without this the endpoints collapse to one
-// point and the edge is dropped entirely.
-function selfLoopRoute(box) {
-  const seg = 10;
-  const cy = box.y + box.height / 2;
-  const x = box.x + box.width + 2 * seg;
-  return [
-    { x: box.x + box.width, y: cy - seg },
-    { x, y: cy - seg },
-    { x, y: cy + seg },
-    { x: box.x + box.width, y: cy + seg }
-  ];
-}
-
 function edgePoints(cell, cells) {
   const g = cell.geometry;
   const { ax, ay } = absolutePos(cell, cells);
@@ -460,11 +444,6 @@ function edgePoints(cell, cells) {
     ? { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 }
     : null;
 
-  // Self-loop: source and target are the same cell.
-  if (cell.source && cell.source === cell.target && waypoints.length === 0 && sourceBox) {
-    return selfLoopRoute(sourceBox);
-  }
-
   // Literal terminal points apply ONLY to an endpoint whose cell ref is
   // missing (mxGraphView.getFixedTerminalPoint). drawio routinely leaves a
   // stale sourcePoint/targetPoint on connected edges; treating it as
@@ -474,15 +453,26 @@ function edgePoints(cell, cells) {
   const literalTgt = (!tgtCell && g.targetPoint)
     ? { x: g.targetPoint.x + ax, y: g.targetPoint.y + ay } : null;
 
-  const orth = styleName ? isOrthogonalStyle(styleName, style) : false;
   const hasExit = style.exitX != null || style.exitY != null;
   const hasEntry = style.entryX != null || style.entryY != null;
+
+  // Self-loop: mxGraphView.isLoopStyleEnabled -- source == target, fewer
+  // than 2 hints, and (orthogonalLoop unset OR no fixed exit/entry point)
+  // routes through mxEdgeStyle.Loop REGARDLESS of the edge's edgeStyle
+  // (honoring direction/segment and a single dragged hint). The previous
+  // hand-rolled right-side loop silently ignored direction= and hints.
+  const isLoop = srcCell != null && srcCell === tgtCell &&
+    waypoints.length < 2 &&
+    (!styleFlag(style, 'orthogonalLoop') || (!hasExit && !hasEntry));
+  const effStyleName = isLoop ? 'loopEdgeStyle' : styleName;
+
+  const orth = effStyleName ? isOrthogonalStyle(effStyleName, style) : false;
   const fixedSrc = literalSrc ||
     (hasExit && sourceBox ? terminalPoint(cell, cells, cell.source, true, null, orth) : null);
   const fixedTgt = literalTgt ||
     (hasEntry && targetBox ? terminalPoint(cell, cells, cell.target, false, null, orth) : null);
 
-  if (styleName && isRoutedEdgeStyle(styleName) &&
+  if (effStyleName && isRoutedEdgeStyle(effStyleName) &&
       (sourceBox || fixedSrc) && (targetBox || fixedTgt)) {
     const srcStyle = srcCell
       ? (srcCell.resolvedStyle || srcCell.style || {}) : {};
@@ -491,8 +481,8 @@ function edgePoints(cell, cells) {
     const sState = sourceBox ? makeTerminalState(sourceBox, srcStyle, srcCell) : null;
     const tState = targetBox ? makeTerminalState(targetBox, tgtStyle, tgtCell) : null;
     // EntityRelation never reads control hints (mxEdgeStyle.js).
-    const hints = styleName === 'entityRelationEdgeStyle' ? [] : waypoints;
-    const inner = routeEdge(styleName, style, sState, tState,
+    const hints = effStyleName === 'entityRelationEdgeStyle' ? [] : waypoints;
+    const inner = routeEdge(effStyleName, style, sState, tState,
       fixedSrc, fixedTgt, hints) || [];
     const startToward = inner[0] || fixedTgt || targetCenter || fixedSrc;
     const endToward = inner[inner.length - 1] || fixedSrc || sourceCenter || fixedTgt;

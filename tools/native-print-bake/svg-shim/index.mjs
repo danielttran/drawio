@@ -25,11 +25,16 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // work correctly headlessly.
 
 function decodeHtmlEntities(s) {
+  // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
+  // "<" instead of the literal "&lt;"); numeric references need fromCodePoint
+  // (fromCharCode corrupts astral code points like emoji to surrogate
+  // garbage). &nbsp; stays U+00A0 (browser innerHTML semantics).
   return s
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, '&');
 }
 
 function parseHtmlAttrs(str) {

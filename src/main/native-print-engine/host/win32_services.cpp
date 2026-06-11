@@ -314,6 +314,46 @@ std::string color_to_css(const Rgba& c) {
   return buf;
 }
 
+// Normalize an interpolation ramp for SetInterpolationColors per SVG stop
+// semantics. GDI+ REQUIRES positions[0]==0 and positions[n-1]==1 (otherwise
+// it rejects the call -- silently when Status is unchecked). SVG instead
+// says everything before the first stop takes the first stop's color and
+// everything after the last stop takes the last stop's color. So: synthesize
+// boundary stops at 0/1 (same color as the nearest real stop) instead of
+// MOVING the real first/last stops there, which would shift the whole ramp.
+// Also enforces strictly increasing positions (GDI+ requires non-decreasing;
+// exact duplicates are nudged by epsilon).
+void normalize_gradient_ramp(std::vector<Gdiplus::Color>& colors,
+                             std::vector<Gdiplus::REAL>& positions) {
+  if (colors.empty() || colors.size() != positions.size()) return;
+  for (auto& p : positions) {
+    p = std::clamp(p, 0.0f, 1.0f);
+  }
+  if (positions.front() > 0.0f) {
+    positions.insert(positions.begin(), 0.0f);
+    colors.insert(colors.begin(), colors.front());
+  }
+  if (positions.back() < 1.0f) {
+    positions.push_back(1.0f);
+    colors.push_back(colors.back());
+  }
+  constexpr Gdiplus::REAL kEps = 1.0e-5f;
+  // Forward pass: nudge duplicates upward (saturating at 1).
+  for (std::size_t i = 1; i < positions.size(); ++i) {
+    if (positions[i] <= positions[i - 1]) {
+      positions[i] = std::min(1.0f, positions[i - 1] + kEps);
+    }
+  }
+  // Backward pass: a run saturated at 1.0 is resolved by nudging the
+  // earlier entries downward; the last entry stays exactly 1.0 and the
+  // first stays exactly 0.0 (neither is modified by its own pass).
+  for (std::size_t i = positions.size() - 1; i-- > 1;) {
+    if (positions[i] >= positions[i + 1]) {
+      positions[i] = std::max(0.0f, positions[i + 1] - kEps);
+    }
+  }
+}
+
 std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
                                             const Gdiplus::RectF& bounds) {
   if (paint.type == PaintType::Solid) {
@@ -326,22 +366,24 @@ std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
         Gdiplus::PointF(bounds.X, bounds.Y),
         Gdiplus::PointF(bounds.X + bounds.Width, bounds.Y),
         first, last);
-    if (paint.stops.size() > 2) {
+    // Always install an explicit interpolation ramp so SVG stop OFFSETS are
+    // honored. The old code skipped this for 2-stop gradients (offsets
+    // 0.3/0.7 silently became a full-span 0..1 ramp) and pinned the real
+    // first/last stops to 0/1 for >=3 stops (shifting the ramp).
+    {
       std::vector<Gdiplus::Color> colors;
       std::vector<Gdiplus::REAL> positions;
-      colors.reserve(paint.stops.size());
-      positions.reserve(paint.stops.size());
+      colors.reserve(paint.stops.size() + 2);
+      positions.reserve(paint.stops.size() + 2);
       for (const auto& stop : paint.stops) {
         colors.push_back(gdip_color(stop.color));
         positions.push_back(static_cast<Gdiplus::REAL>(stop.offset));
       }
-      // GDI+ requires positions[0]==0 and positions[n-1]==1 or it rejects
-      // the call (silently -- Status unchecked) and falls back to the
-      // 2-color constructor endpoints.
-      positions.front() = 0.0f;
-      positions.back() = 1.0f;
-      brush->SetInterpolationColors(colors.data(), positions.data(),
-                                    static_cast<INT>(colors.size()));
+      normalize_gradient_ramp(colors, positions);
+      if (colors.size() >= 2) {
+        brush->SetInterpolationColors(colors.data(), positions.data(),
+                                      static_cast<INT>(colors.size()));
+      }
     }
     return brush;
   }
@@ -353,25 +395,26 @@ std::unique_ptr<Gdiplus::Brush> make_brush(const Paint& paint,
     Gdiplus::Color surround = gdip_color(paint.stops.back().color);
     INT count = 1;
     brush->SetSurroundColors(&surround, &count);
-    if (paint.stops.size() > 2) {
-      // GDI+ PathGradientBrush interpolation positions run 0 = path
-      // BOUNDARY -> 1 = center, the opposite of SVG radial offsets
-      // (0 = center). Feed the stops reversed or >=3-stop radial
-      // gradients render inverted. Positions are pinned to start at 0
-      // and end at 1 (GDI+ rejects the call otherwise -- silently, as
-      // the Status was unchecked).
+    // GDI+ PathGradientBrush interpolation positions run 0 = path
+    // BOUNDARY -> 1 = center, the opposite of SVG radial offsets
+    // (0 = center). Feed the stops reversed or radial gradients render
+    // inverted. As with the linear branch, always install an explicit
+    // ramp with synthetic boundary stops so SVG offsets are honored
+    // instead of being discarded (2 stops) or pinned (>=3 stops).
+    {
       std::vector<Gdiplus::Color> colors;
       std::vector<Gdiplus::REAL> positions;
-      colors.reserve(paint.stops.size());
-      positions.reserve(paint.stops.size());
+      colors.reserve(paint.stops.size() + 2);
+      positions.reserve(paint.stops.size() + 2);
       for (auto it = paint.stops.rbegin(); it != paint.stops.rend(); ++it) {
         colors.push_back(gdip_color(it->color));
         positions.push_back(static_cast<Gdiplus::REAL>(1.0 - it->offset));
       }
-      positions.front() = 0.0f;
-      positions.back() = 1.0f;
-      brush->SetInterpolationColors(colors.data(), positions.data(),
-                                    static_cast<INT>(colors.size()));
+      normalize_gradient_ramp(colors, positions);
+      if (colors.size() >= 2) {
+        brush->SetInterpolationColors(colors.data(), positions.data(),
+                                      static_cast<INT>(colors.size()));
+      }
     }
     return brush;
   }
@@ -964,7 +1007,11 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       }
       Gdiplus::GraphicsState clip_state = g.Save();
       if (c.overflow == "clip") {
-        g.SetClip(box);
+        // INTERSECT with the per-tile clip (set at the Clip command above).
+        // The default CombineModeReplace would DISCARD the tile clip, so
+        // clipped text would print on every tile of a multi-tile poster
+        // page (seam duplication).
+        g.SetClip(box, Gdiplus::CombineModeIntersect);
       }
       for (std::size_t line_index = 0; line_index < lay.lines.size(); ++line_index) {
         const auto& line = lay.lines[line_index];
@@ -1327,6 +1374,16 @@ class Win32Services final : public EngineServices {
   Result<PreviewOutput, ContractError> render_preview(
       const BakedDocument& doc,
       const std::map<std::string, std::string>& merge, double dpi) override {
+    return render_preview(doc, merge, dpi, PrintRenderOptions{});
+  }
+
+  // INV-5: preview rasterizes through the SAME draw_trace path with the SAME
+  // per-job options as print (edge_crisp included), so a crisp job previews
+  // exactly as it prints.
+  Result<PreviewOutput, ContractError> render_preview(
+      const BakedDocument& doc,
+      const std::map<std::string, std::string>& merge, double dpi,
+      const PrintRenderOptions& opts) override {
     const RenderTarget target{dpi > 0 ? dpi : 300.0, units_per_inch(doc.units)};
     auto rendered = render_to_trace(doc, target, merge, false);
     if (!rendered) {
@@ -1360,7 +1417,8 @@ class Win32Services final : public EngineServices {
       for (std::size_t index = 0; index < tiles.size(); ++index) {
         Gdiplus::GraphicsState state = g.Save();
         g.TranslateTransform(0.0f, static_cast<Gdiplus::REAL>(y_offset));
-        auto drawn = draw_trace(g, tiles[index].trace, svg_rasterizer_.get());
+        auto drawn = draw_trace(g, tiles[index].trace, svg_rasterizer_.get(),
+                                opts.edge_crisp);
         g.Restore(state);
         if (!drawn) {
           return Result<PreviewOutput, ContractError>::err(drawn.error());

@@ -58,6 +58,13 @@ class FakeServices : public proto::EngineServices {
   }
 
   Result<proto::PreviewOutput, ContractError> render_preview(
+      const BakedDocument& doc, const std::map<std::string, std::string>& merge,
+      double dpi, const proto::PrintRenderOptions& opts) override {
+    last_opts = opts;
+    return render_preview(doc, merge, dpi);
+  }
+
+  Result<proto::PreviewOutput, ContractError> render_preview(
       const BakedDocument&, const std::map<std::string, std::string>&,
       double) override {
     proto::PreviewOutput out;
@@ -258,6 +265,30 @@ TEST_CASE("D6: Print with aa:on (default) keeps edge_crisp false",
   CHECK(svc.last_opts.edge_crisp == false);
 }
 
+TEST_CASE("D6/INV-5: RenderPreview with aa:crisp threads edge_crisp into the"
+          " preview render options",
+          "[adapter][d6][aa][inv5]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  Json m = req("RenderPreview");
+  m.set("contractRef",
+        inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  m.set("aa", Json::str("crisp"));
+  auto r = d.handle(m);
+  CHECK(r.control.get("result")->as_string() == "PreviewResult");
+  CHECK(svc.last_opts.edge_crisp == true);
+
+  // And the default stays AA on, matching Print.
+  svc.last_opts = {};
+  Json m2 = req("RenderPreview");
+  m2.set("contractRef",
+         inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+  auto r2 = d.handle(m2);
+  CHECK(r2.control.get("result")->as_string() == "PreviewResult");
+  CHECK(svc.last_opts.edge_crisp == false);
+}
+
 TEST_CASE("Phase 5 device-side SvgArtworkRasterized notice round-trips through"
           " the proto adapter wire format",
           "[adapter][notice][svg]") {
@@ -340,4 +371,123 @@ TEST_CASE("contractRef path is read and validated like inline",
   CHECK(r.control.get("result")->as_string() == "ContractFields");
   CHECK(r.control.get("fields")->items().size() == 2);
   std::remove(tmp.c_str());
+}
+
+TEST_CASE("Hello refuses non-integral / out-of-range proto version numbers",
+          "[adapter][handshake][hardening]") {
+  // static_cast of an out-of-range double to uint32 is UB; the adapter must
+  // refuse these wire values loudly instead of casting them.
+  for (const double bad : {1e300, -1.0, 1.5, 4294967296.0}) {
+    FakeServices svc;
+    proto::ProtoDispatcher d(svc);
+    Json m = req("Hello");
+    Json p = Json::object();
+    p.set("major", Json::number(bad));
+    p.set("minor", Json::number(0));
+    m.set("proto", std::move(p));
+    auto r = d.handle(m);
+    INFO("major: " << bad);
+    CHECK(r.control.get("result")->as_string() == "Error");
+    CHECK(r.control.get("error")->as_string() == "ProtoHandshakeError");
+    CHECK_FALSE(d.session().handshaked());
+  }
+}
+
+TEST_CASE("RenderPreview refuses out-of-range or non-numeric dpi",
+          "[adapter][ops][hardening]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  const auto preview_with_dpi = [&](Json dpi) {
+    Json m = req("RenderPreview");
+    m.set("contractRef",
+          inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+    m.set("dpi", std::move(dpi));
+    return d.handle(m);
+  };
+
+  for (const double bad : {1e300, 0.0, -300.0, 10001.0}) {
+    auto r = preview_with_dpi(Json::number(bad));
+    INFO("dpi: " << bad);
+    CHECK(r.control.get("result")->as_string() == "Error");
+    CHECK(r.control.get("error")->as_string() == "ContractValidationError");
+  }
+  // Present-but-not-a-number is refused, never silently defaulted.
+  auto str_dpi = preview_with_dpi(Json::str("300"));
+  CHECK(str_dpi.control.get("result")->as_string() == "Error");
+  // In-range dpi still renders.
+  auto ok = preview_with_dpi(Json::number(600));
+  CHECK(ok.control.get("result")->as_string() == "PreviewResult");
+}
+
+TEST_CASE("Print refuses out-of-range or fractional copies",
+          "[adapter][ops][hardening]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  const auto print_with_copies = [&](Json copies) {
+    Json m = req("Print");
+    m.set("contractRef",
+          inline_ref(fixtures::FixtureBuilder().empty_page().build()));
+    m.set("printerId", Json::str("printer-1"));
+    m.set("stockId", Json::str("stock-4x6"));
+    m.set("copies", std::move(copies));
+    return d.handle(m);
+  };
+
+  for (const double bad : {1e300, 0.0, -1.0, 2.5, 1000.0}) {
+    auto r = print_with_copies(Json::number(bad));
+    INFO("copies: " << bad);
+    CHECK(r.control.get("result")->as_string() == "Error");
+    CHECK(r.control.get("error")->as_string() == "ContractValidationError");
+  }
+  auto ok = print_with_copies(Json::number(999));
+  CHECK(ok.control.get("result")->as_string() == "PrintResult");
+}
+
+TEST_CASE("non-string mergeData values are refused loudly, naming the key",
+          "[adapter][ops][hardening]") {
+  FakeServices svc;
+  proto::ProtoDispatcher d(svc);
+  (void)d.handle(hello_msg());
+  const std::string contract =
+      fixtures::FixtureBuilder().merge_text_and_barcode_page().build();
+
+  Json md = Json::object();
+  md.set("NAME", Json::str("fine"));
+  md.set("qty", Json::number(5));  // would have merged as "" -> blank print
+
+  Json m = req("Print");
+  m.set("contractRef", inline_ref(contract));
+  m.set("printerId", Json::str("printer-1"));
+  m.set("stockId", Json::str("stock-4x6"));
+  m.set("mergeData", std::move(md));
+  auto r = d.handle(m);
+  CHECK(r.control.get("result")->as_string() == "Error");
+  CHECK(r.control.get("error")->as_string() == "ContractValidationError");
+  REQUIRE(r.control.get("detail") != nullptr);
+  CHECK(r.control.get("detail")->as_string().find("qty") != std::string::npos);
+
+  // RenderPreview takes the same refusal path.
+  Json md2 = Json::object();
+  md2.set("CODE", Json::boolean(true));
+  Json pm = req("RenderPreview");
+  pm.set("contractRef", inline_ref(contract));
+  pm.set("mergeData", std::move(md2));
+  auto pr = d.handle(pm);
+  CHECK(pr.control.get("result")->as_string() == "Error");
+  CHECK(pr.control.get("detail")->as_string().find("CODE") !=
+        std::string::npos);
+
+  // All-string mergeData still prints.
+  Json md3 = Json::object();
+  md3.set("NAME", Json::str("Ada"));
+  md3.set("CODE", Json::str("12345"));
+  Json om = req("Print");
+  om.set("contractRef", inline_ref(contract));
+  om.set("printerId", Json::str("printer-1"));
+  om.set("stockId", Json::str("stock-4x6"));
+  om.set("mergeData", std::move(md3));
+  auto orr = d.handle(om);
+  CHECK(orr.control.get("result")->as_string() == "PrintResult");
 }

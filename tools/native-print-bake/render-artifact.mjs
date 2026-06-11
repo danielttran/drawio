@@ -36,7 +36,9 @@ import { bake, noticeSeverity } from './bake.mjs';
 
 const execFileP = promisify(execFile);
 const __dir = dirname(fileURLToPath(import.meta.url));
-const RASTERIZE = resolve(__dir, 'native-engine-render/rasterize');
+// Exported so other gates (production-audit.mjs ink check) can locate the
+// SAME production rasterizer CLI instead of duplicating the lookup.
+export const RASTERIZE = resolve(__dir, 'native-engine-render/rasterize');
 const PX_PER_INCH = 96; // contract units:"px" -> 96 dpi base (units_per_inch)
 
 function esc(s) {
@@ -121,7 +123,7 @@ function nodeToSvg(node, defs) {
   return '';
 }
 
-function composePageSvg(page) {
+export function composePageSvg(page) {
   const W = page.size.w, H = page.size.h;
   const defs = [];
   const body = page.paint.map((n) => nodeToSvg(n, defs)).join('\n');
@@ -169,7 +171,7 @@ function encodePng(rgba, w, h) {
     chunk('IEND', Buffer.alloc(0))]);
 }
 
-async function rasterizeSvg(svgText, tw, th, dpi, tmp, tag) {
+export async function rasterizeSvg(svgText, tw, th, dpi, tmp, tag) {
   const svgFile = join(tmp, `${tag}.svg`);
   const rawFile = join(tmp, `${tag}.rgba`);
   await writeFile(svgFile, svgText, 'utf8');
