@@ -176,6 +176,11 @@ async function renderFile(drawioPath, outPng) {
 
     await writeFile(outPng, blob);
     console.log(`  PNG: ${outPng} (${blob.length} bytes)`);
+    if (blob.length < 100) {
+      console.error('  WARNING: tiny PNG — this host binary is the cross-platform');
+      console.error('  STUB (stub_services.cpp returns a fixed 1x1 preview). For real');
+      console.error('  pixels on this box use render-artifact.mjs (production resvg).');
+    }
     return true;
   } finally {
     client.close();

@@ -102,3 +102,8 @@ client.close();
 if (msg.result === 'Error') { console.error('ENGINE ERROR:', msg.error, msg.detail); process.exit(1); }
 await writeFile(outPng, blob);
 console.log(`${basename(inputFile)} @ ${dpi}dpi → ${outPng} (${blob.length} bytes)`);
+if (blob.length < 100) {
+  console.error('WARNING: tiny PNG — this host binary is the cross-platform STUB');
+  console.error('(stub_services.cpp returns a fixed 1x1 preview). For real pixels');
+  console.error('on this box use render-artifact.mjs (production resvg).');
+}
