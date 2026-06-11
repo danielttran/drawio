@@ -505,7 +505,8 @@ test('merge with shrinkFloorPx but non-shrink overflow exits 1 (reject_key)', as
 
 function validImage() {
   return { kind: 'image', box: { x: 0, y: 0, w: 50, h: 50 },
-    format: 'png', data: 'iVBORw==', aspect: 'fill', flipH: false, flipV: false };
+    format: 'png', data: 'iVBORw0KGgoAAAA=', aspect: 'fill', flipH: false, flipV: false };
+  // (full 8-byte PNG signature prefix: the validator now checks it)
 }
 
 test('image with flipH/flipV bools passes', async () => {
@@ -628,7 +629,7 @@ test('image with bogus aspect value exits 1', async () => {
   const c = minimalValid();
   c.document.pages[0].paint.push({
     kind: 'image', box: { x: 0, y: 0, w: 50, h: 50 },
-    format: 'png', data: 'iVBORw==', aspect: 'cover'
+    format: 'png', data: 'iVBORw0KGgoAAAA=', aspect: 'cover'
   });
   const r = await run(c);
   assert.equal(r.code, 1);
@@ -649,4 +650,108 @@ test('no argument exits 2', async () => {
     });
   });
   assert.equal(r.code, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Audit round 7: validator/loader parity additions.
+// ---------------------------------------------------------------------------
+
+async function runRaw(text) {
+  const dir = await mkdtemp(join(tmpdir(), 'nprint-val-'));
+  const path = join(dir, 'c.json');
+  await writeFile(path, text);
+  try {
+    const r = await execFileP(process.execPath, [SCRIPT, path]);
+    return { code: 0, stdout: r.stdout, stderr: r.stderr };
+  } catch (e) {
+    return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
+
+test('audit7: non-finite number literals anywhere are rejected (engine refuses 1e999)', async () => {
+  // In a field the loader reads (tile origin)...
+  const origin = JSON.stringify(minimalValid())
+    .replace('"origin":{"x":0', '"origin":{"x":1e999');
+  const r1 = await runRaw(origin);
+  assert.equal(r1.code, 1);
+  assert.match(r1.stdout, /non-finite|finite/);
+
+  // ...and in an extra field the loader never reads: the engine's number
+  // PARSER still refuses the literal, so the validator must too.
+  const extra = JSON.stringify(minimalValid())
+    .replace('"document":{', '"document":{"extraneous":1e999,');
+  const r2 = await runRaw(extra);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stdout, /non-finite/);
+});
+
+test('audit7: duplicate page ids are rejected', async () => {
+  const c = minimalValid();
+  c.document.pages.push(JSON.parse(JSON.stringify(c.document.pages[0])));
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /duplicate page id/);
+});
+
+test('audit7: page/tile extents beyond the printable range are rejected', async () => {
+  const huge = minimalValid();
+  huge.document.pages[0].size.w = 1e9;
+  const r1 = await run(huge);
+  assert.equal(r1.code, 1);
+  assert.match(r1.stdout, /printable range/);
+
+  const hugeOrigin = minimalValid();
+  hugeOrigin.document.pages[0].tiles[0].origin.x = 1e30;
+  const r2 = await run(hugeOrigin);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stdout, /printable range/);
+});
+
+test('audit7: non-PNG image payload is rejected (engine fails it late and mislabeled)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'image', box: { x: 1, y: 1, w: 10, h: 10 },
+    format: 'png', aspect: 'preserve', flipH: false, flipV: false,
+    data: 'aGVsbG8h' // "hello!" — strict base64 but not a PNG
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /PNG signature/);
+});
+
+test('audit7: merge sample exceeding maxLen is rejected (text and barcode)', async () => {
+  const text = minimalValid();
+  text.document.pages[0].paint.push({
+    kind: 'text', box: { x: 1, y: 1, w: 40, h: 10 },
+    font: { family: 'Arial', sizePx: 8, weight: 400, italic: false, color: '#000000' },
+    align: { h: 'left', v: 'top' },
+    content: { type: 'merge', key: 'NAME', sample: 'TOO-LONG', maxLen: 4,
+               wrap: 'none', overflow: 'clip' }
+  });
+  const r1 = await run(text);
+  assert.equal(r1.code, 1);
+  assert.match(r1.stdout, /sample exceeds maxLen/);
+
+  const barcode = minimalValid();
+  barcode.document.pages[0].paint.push({
+    kind: 'barcode', box: { x: 1, y: 1, w: 40, h: 10 },
+    symbology: 'stub', params: {},
+    value: { type: 'merge', key: 'CODE', sample: '123456', maxLen: 4,
+             errorOnUnencodable: true }
+  });
+  const r2 = await run(barcode);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stdout, /sample exceeds maxLen/);
+
+  // Code points, not UTF-16 units: 4 astral chars at maxLen 4 must pass.
+  const astral = minimalValid();
+  astral.document.pages[0].paint.push({
+    kind: 'text', box: { x: 1, y: 1, w: 40, h: 10 },
+    font: { family: 'Arial', sizePx: 8, weight: 400, italic: false, color: '#000000' },
+    align: { h: 'left', v: 'top' },
+    content: { type: 'merge', key: 'NAME', sample: '\u{1F600}\u{1F600}\u{1F600}\u{1F600}', maxLen: 4,
+               wrap: 'none', overflow: 'clip' }
+  });
+  const r3 = await run(astral);
+  assert.equal(r3.code, 0, r3.stdout);
 });

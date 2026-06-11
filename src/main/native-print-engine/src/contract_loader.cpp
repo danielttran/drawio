@@ -749,6 +749,23 @@ private:
   return Result<Unit, ContractError>::ok(Unit{});
 }
 
+// Ceiling for page/tile extents and origins. A huge-but-finite extent
+// (e.g. 1e300) passes every isfinite() guard, then std::lround of the
+// derived device size is unspecified behaviour downstream (observed as a
+// silent 1x1 white preview). 1e8 contract units is ~1 km in um and far
+// beyond any printable stock; exceeding it is a producer bug, refused
+// loudly here so it can never reach device math.
+constexpr double kMaxPageExtent = 1.0e8;
+
+[[nodiscard]] Result<Unit, ContractError> require_printable_magnitude(
+    double value, std::string path) {
+  if (std::fabs(value) > kMaxPageExtent) {
+    return Result<Unit, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, std::move(path), "extent is out of printable range"));
+  }
+  return Result<Unit, ContractError>::ok(Unit{});
+}
+
 [[nodiscard]] Result<Rect, ContractError> read_box(const JsonObject& node, std::string path) {
   auto box = require_object(node, "box", path);
   if (!box) {
@@ -770,6 +787,20 @@ private:
   auto h = require_number(*box.value(), "h", path + ".h");
   if (!h) {
     return Result<Rect, ContractError>::err(h.error());
+  }
+  // A zero/negative extent box has no faithful render: escapes_page tests
+  // only the left/top+extent edges (a negative-w box partially off-paper
+  // fires no notice) and GDI+ silently MIRRORS an image drawn into a
+  // negative-width destination. The JS validator already refuses these;
+  // accepting them here let a contract that fails the published gate
+  // print silently wrong.
+  if (w.value() <= 0.0) {
+    return Result<Rect, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, path + ".w", "box width must be positive"));
+  }
+  if (h.value() <= 0.0) {
+    return Result<Rect, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, path + ".h", "box height must be positive"));
   }
   return Result<Rect, ContractError>::ok(Rect{x.value(), y.value(), w.value(), h.value()});
 }
@@ -964,6 +995,19 @@ private:
     const JsonObject& content,
     std::string path);
 
+// maxLen counts Unicode code points (the renderer's overflow guard works the
+// same way); a merge SAMPLE longer than its own maxLen is statically
+// inconsistent and previously surfaced only as a render-time failure.
+[[nodiscard]] std::size_t utf8_code_point_count(const std::string& s) {
+  std::size_t n = 0;
+  for (const unsigned char ch : s) {
+    if ((ch & 0xC0) != 0x80) {
+      ++n;
+    }
+  }
+  return n;
+}
+
 [[nodiscard]] Result<Unit, ContractError> validate_text_content(
     const JsonObject& content,
     BakedDocument& document,
@@ -1017,6 +1061,14 @@ private:
   if (max_len.value() < 0) {
     return Result<Unit, ContractError>::err(
       error(ContractErrorCode::ContractValueError, path + ".maxLen", "maxLen cannot be negative"));
+  }
+  // The sample must satisfy the node's own overflow guard: a sample longer
+  // than maxLen is statically inconsistent and previously failed only at
+  // render time (incl. design previews, which render the sample).
+  const std::string sample = require_string(content, "sample", path + ".sample").value();
+  if (utf8_code_point_count(sample) > static_cast<std::size_t>(max_len.value())) {
+    return Result<Unit, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, path + ".sample", "sample exceeds maxLen"));
   }
 
   const std::string wrap = require_string(content, "wrap", path + ".wrap").value();
@@ -1127,6 +1179,12 @@ private:
         error(ContractErrorCode::ContractShapeError, item_path, "expected string line"));
     }
     result.push_back(*line);
+  }
+  if (result.empty()) {
+    // Parity with the JS validator ("static text must have at least one
+    // line"): an empty lines array is a producer bug, not a printable node.
+    return Result<std::vector<std::string>, ContractError>::err(
+      error(ContractErrorCode::ContractValueError, path + ".lines", "static text must have at least one line"));
   }
   return Result<std::vector<std::string>, ContractError>::ok(std::move(result));
 }
@@ -1386,9 +1444,13 @@ private:
       return Result<PaintNodeSummary, ContractError>::err(
         error(ContractErrorCode::ContractEnumError, path + ".aspect", "unknown svg aspect"));
     }
-    if (!is_base64_like(source.value())) {
+    // Full decode, not just the shape check: is_base64_like permits
+    // mid-stream '=' ("QQ==QQ==") that decode_base64 refuses at draw time,
+    // so an engine-"valid" contract printed a crosshatch stub. Mirror the
+    // image branch (and the JS validator's isStrictBase64) here.
+    if (!decode_base64(source.value())) {
       return Result<PaintNodeSummary, ContractError>::err(
-        error(ContractErrorCode::ContractValueError, path + ".source", "svg source must be base64"));
+        error(ContractErrorCode::ContractValueError, path + ".source", "svg source must be valid base64"));
     }
     auto read = read_box(node, path + ".box");
     if (!read) {
@@ -1438,6 +1500,13 @@ private:
       if (max_len.value() < 0) {
         return Result<PaintNodeSummary, ContractError>::err(
           error(ContractErrorCode::ContractValueError, path + ".value.maxLen", "maxLen cannot be negative"));
+      }
+      // Same static-consistency rule as merge text: the sample must satisfy
+      // the node's own maxLen, or design previews fail at render time.
+      const std::string barcode_sample = require_string(*value.value(), "sample", path + ".value.sample").value();
+      if (utf8_code_point_count(barcode_sample) > static_cast<std::size_t>(max_len.value())) {
+        return Result<PaintNodeSummary, ContractError>::err(
+          error(ContractErrorCode::ContractValueError, path + ".value.sample", "sample exceeds maxLen"));
       }
       auto can_error = require_bool(*value.value(), "errorOnUnencodable", path + ".value.errorOnUnencodable");
       if (!can_error) {
@@ -1492,6 +1561,10 @@ private:
   if (!minor) {
     return ContractLoadResult::err(minor.error());
   }
+  if (minor.value() < 0) {
+    return ContractLoadResult::err(
+      error(ContractErrorCode::ContractVersionError, "$.schema.minor", "schema minor must be a non-negative integer"));
+  }
   if (major.value() != SupportedMajor) {
     return ContractLoadResult::err(
       error(ContractErrorCode::ContractVersionError, "$.schema.major", "unsupported schema major"));
@@ -1524,6 +1597,7 @@ private:
       error(ContractErrorCode::ContractValueError, "$.document.pages", "at least one page is required"));
   }
 
+  std::vector<std::string> seen_page_ids;
   for (std::size_t page_index = 0; page_index < pages.value()->size(); ++page_index) {
     const JsonObject* page = as_object((*pages.value())[page_index]);
     const std::string page_path = "$.document.pages[" + std::to_string(page_index) + "]";
@@ -1537,6 +1611,15 @@ private:
     if (!id) {
       return ContractLoadResult::err(id.error());
     }
+    // Notices are keyed by page id: two same-id pages collapse their
+    // distinct HardwareMarginClip/barcode notices into one (silent
+    // notice loss), and the host's tile splitter treats adjacent
+    // same-id pages as one page. Refuse the ambiguity at the gate.
+    if (std::find(seen_page_ids.begin(), seen_page_ids.end(), id.value()) != seen_page_ids.end()) {
+      return ContractLoadResult::err(
+        error(ContractErrorCode::ContractValueError, page_path + ".id", "duplicate page id"));
+    }
+    seen_page_ids.push_back(id.value());
     summary.id = id.value();
 
     auto size = require_object(*page, "size", page_path + ".size");
@@ -1558,6 +1641,12 @@ private:
     auto positive_page_h = require_positive(height.value(), page_path + ".size.h", "page height must be positive");
     if (!positive_page_h) {
       return ContractLoadResult::err(positive_page_h.error());
+    }
+    for (const auto& [extent, key] : {std::pair{width.value(), "w"}, std::pair{height.value(), "h"}}) {
+      auto bounded = require_printable_magnitude(extent, page_path + ".size." + key);
+      if (!bounded) {
+        return ContractLoadResult::err(bounded.error());
+      }
     }
     summary.width = width.value();
     summary.height = height.value();
@@ -1608,6 +1697,13 @@ private:
       auto positive_tile_h = require_positive(th.value(), tile_path + ".size.h", "tile height must be positive");
       if (!positive_tile_h) {
         return ContractLoadResult::err(positive_tile_h.error());
+      }
+      for (const auto& [extent, key] : {std::pair{ox.value(), ".origin.x"}, std::pair{oy.value(), ".origin.y"},
+                                        std::pair{tw.value(), ".size.w"}, std::pair{th.value(), ".size.h"}}) {
+        auto bounded = require_printable_magnitude(extent, tile_path + key);
+        if (!bounded) {
+          return ContractLoadResult::err(bounded.error());
+        }
       }
       summary.tiles.push_back(TileSummary{Point{ox.value(), oy.value()}, Size{tw.value(), th.value()}});
     }

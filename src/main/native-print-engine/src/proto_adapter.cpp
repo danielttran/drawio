@@ -346,6 +346,10 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
                           node.merge_sample});
           } else if (node.merge_max_len < found->second.max_len) {
             found->second.max_len = node.merge_max_len;
+            // Keep the sample paired with the binding (minimum) maxLen --
+            // the first node's sample could statically exceed the reported
+            // limit, advertising a field the app could then overflow.
+            found->second.sample = node.merge_sample;
           }
         }
       }

@@ -394,3 +394,17 @@ test('invalid JSON body → 400', async () => {
     await svc.stop();
   }
 });
+
+test('audit7: encodeFrame refuses oversize payloads with a typed error (C++ parity)', async () => {
+  const { encodeFrame, FrameType } = await import('./proto-codec.mjs');
+  // Just over the 64 MiB frame limit: without the encode-side guard the
+  // peer's decoder hard-fails on the length prefix and kills the transport.
+  const oversize = Buffer.alloc(64 * 1024 * 1024 - 4);
+  assert.throws(
+    () => encodeFrame(FrameType.Control, 0, oversize),
+    (e) => e.code === 'FRAME_TOO_LARGE' && /frame limit/.test(e.message));
+  // At the limit exactly: still encodable (frameLen == MAX_FRAME_LEN).
+  const atLimit = Buffer.alloc(64 * 1024 * 1024 - 5);
+  const frame = encodeFrame(FrameType.Control, 0, atLimit);
+  assert.equal(frame.readUInt32LE(0), 64 * 1024 * 1024);
+});
