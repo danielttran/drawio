@@ -2971,10 +2971,13 @@ test('audit2: self-loop honors direction=north (loops over the TOP, mxEdgeStyle.
   const xs = [...east.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
   assert.ok(Math.max(...xs) > 80, `west loop extends right of the shape, got max x ${Math.max(...xs)}`);
   // direction=north: loop over the TOP -> min y above the box top (y=0 in anchored coords).
-  // The loop tops out 20 units above the box top (2*seg); with the ink-extent
-  // anchor the loop apex IS the content top (only the stroke halo above it).
+  // The loop tops out 20 units above the box top (2*seg). Compare against
+  // the box top in the same anchored coordinates (the anchor itself moves
+  // with halo growth, e.g. the marker bbox augmentation).
   const ys = [...north.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[2]);
-  assert.ok(Math.min(...ys) < 1, `north loop extends above the shape, got min y ${Math.min(...ys)}`);
+  const boxTop = Math.max(...ys); // loop start/end sit ON the box top edge
+  assert.ok(Math.min(...ys) <= boxTop - 19,
+    `north loop extends ~20 above the shape top (top ${boxTop}, min ${Math.min(...ys)})`);
 });
 
 test('audit2: self-loop honors segment= (loop depth scales)', async () => {
@@ -3326,4 +3329,62 @@ test('audit4: include-shape applies the direction rotation ONCE (outermost only)
   // nested delta translate: cell 120x100 north → outer frame 100x120; include
   // W=100, H=120 → delta=(100-120)/2=-10 → translate(-10,10).
   assert.match(svg, /translate\(-10,10\)/, 'nested aspect delta translate present');
+});
+
+// ---- audit5 router fixes: fixed-anchor perimeter projection + connection
+// point order (mxGraph.getConnectionPoint parity) + marker bbox growth.
+
+test('audit5: exitX/exitY anchors project onto the terminal PERIMETER by default', async () => {
+  const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="ellipse;" parent="1"><mxGeometry x="200" y="100" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="edgeStyle=none;exitX=0;exitY=0;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && !n.fill && /^M /.test(n.d) && (n.d.match(/ L /g) || []).length === 1);
+  // mxGraph.getConnectionPoint projects (200,100) onto the ellipse outline:
+  // (214.64, 114.64) in model coords. Content min is (20,20)-anchored; the
+  // vertex b at (20,20) defines origin (minus the 0.5 stroke halo).
+  const m = /^M (-?[\d.]+) (-?[\d.]+)/.exec(edge.d);
+  const ax = +m[1], ay = +m[2];
+  assert.ok(Math.abs(ax - 195.14) < 1 && Math.abs(ay - 95.14) < 1,
+    `anchor sits on the ellipse outline (~195.14,95.14 anchored), got ${ax},${ay}`);
+});
+
+test('audit5: exitPerimeter=0 keeps the raw fraction point (no projection)', async () => {
+  const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="ellipse;" parent="1"><mxGeometry x="200" y="100" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="edgeStyle=none;exitX=0;exitY=0;exitPerimeter=0;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && !n.fill && /^M /.test(n.d) && (n.d.match(/ L /g) || []).length === 1);
+  const m = /^M (-?[\d.]+) (-?[\d.]+)/.exec(edge.d);
+  assert.ok(Math.abs(+m[1] - 180.5) < 1 && Math.abs(+m[2] - 80.5) < 1,
+    `raw bbox corner (~180.5,80.5 anchored), got ${m[1]},${m[2]}`);
+});
+
+test('audit5: anchorPointDirection=0 skips the quarter-turn but bounds still rotate90', async () => {
+  const { fixedConnectionPoint } = await import('./mx-edge-router.mjs');
+  const b = { x: 200, y: 100, width: 100, height: 60 };
+  // mxGraph.getConnectionPoint: south + apd=0, exitX=1,exitY=0.5 -> (280,130)
+  const p = fixedConnectionPoint(b, { direction: 'south', anchorPointDirection: 0 }, 1, 0.5, 0, 0, false);
+  assert.ok(Math.abs(p.x - 280) < 0.001 && Math.abs(p.y - 130) < 0.001, JSON.stringify(p));
+  // flips apply BEFORE the quarter-turn: south+flipH, exitX=1,exitY=0.25 -> (225,160)
+  const q = fixedConnectionPoint(b, { direction: 'south', flipH: 1 }, 1, 0.25, 0, 0, false);
+  assert.ok(Math.abs(q.x - 225) < 0.001 && Math.abs(q.y - 160) < 0.001, JSON.stringify(q));
+});
+
+test('audit5: auto-fit paper grows for marker ink (no cropped arrowheads)', async () => {
+  const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="e" edge="1" style="edgeStyle=none;endArrow=classic;" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="0" y="40" as="sourcePoint"/><mxPoint x="200" y="40" as="targetPoint"/></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const page = contract.document.pages[0];
+  // classic marker wings span ±(size+sw)/2 = ±3.5 around the line; page must
+  // be at least that tall (was 1px before the augmentBoundingBox growth).
+  assert.ok(page.size.h >= 7, `page tall enough for marker wings, got ${page.size.h}`);
 });

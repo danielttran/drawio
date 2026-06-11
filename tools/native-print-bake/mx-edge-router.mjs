@@ -318,55 +318,59 @@ function rotatePointAbout(pt, deg, cx, cy) {
   return { x: dx * cos - dy * sin + cx, y: dy * cos + dx * sin + cy };
 }
 
-// Fixed connection point, port of mxGraph.getConnectionPoint: honors the
-// vertex's direction (N/S quarter-turn of the bounds), flipH/flipV
-// mirroring, and rotation about the state center. The old fraction-on-the-
-// unrotated-box silently attached edges to the wrong side of any rotated/
-// flipped/redirected shape.
-export function fixedConnectionPoint(box, style, fx, fy, dx, dy) {
+// Fixed connection point: exact port of mxGraph.getConnectionPoint
+// (mxGraph.js:7200-7322). Order matters and each step was previously wrong
+// or missing: (1) the bounds rotate90 for N/S is UNCONDITIONAL (outside the
+// anchorPointDirection gate); (2) flips (swapped for N/S) mirror the point
+// BEFORE the direction quarter-turn; (3) the quarter-turn applies only when
+// anchorPointDirection == 1 (default; the style stores numeric 0, so the old
+// `st.anchorPointDirection || 1` truthiness silently ignored an explicit 0);
+// (4) constraint.perimeter (exitPerimeter/entryPerimeter, DEFAULT TRUE)
+// projects the anchor through the shape's perimeter function -- skipping it
+// detached every fixed anchor from ellipse/rhombus/triangle outlines;
+// (5) the cell rotation applies last. No rounding (mxGraphView
+// getFixedTerminalPoint passes round=false).
+export function fixedConnectionPoint(box, style, fx, fy, dx, dy, projectPerimeter) {
   const st = style || {};
-  let bounds = { x: box.x, y: box.y, width: box.width, height: box.height };
-  const direction = st.direction;
-  let r1 = 0;
-  if (direction != null && String(st.anchorPointDirection || 1) !== '0') {
-    if (direction === 'north') r1 += 270;
-    else if (direction === 'west') r1 += 180;
-    else if (direction === 'south') r1 += 90;
-    // Bounds are rotated 90 degrees for north/south.
-    if (direction === 'north' || direction === 'south') {
-      const cx = bounds.x + bounds.width / 2;
-      const cy = bounds.y + bounds.height / 2;
-      bounds = {
-        x: cx - bounds.height / 2,
-        y: cy - bounds.width / 2,
-        width: bounds.height,
-        height: bounds.width
-      };
-    }
-  }
+  const ccx = box.x + box.width / 2;
+  const ccy = box.y + box.height / 2;
+  const ns = st.direction === 'north' || st.direction === 'south';
+  const bounds = ns
+    ? { x: ccx - box.height / 2, y: ccy - box.width / 2,
+        width: box.height, height: box.width }
+    : { x: box.x, y: box.y, width: box.width, height: box.height };
   let point = {
     x: bounds.x + fx * bounds.width + (dx || 0),
     y: bounds.y + fy * bounds.height + (dy || 0)
   };
-  if (r1 !== 0) {
-    point = rotateAbout(point, r1,
-      bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  }
-  // flipH/flipV mirror about the ORIGINAL state bounds (mxGraph reads the
-  // shape's flip after direction normalization; for north/south the flips
-  // are swapped by the stencil flow, mirrored here like mxGraph.js does).
   let flipH = String(st.flipH) === '1';
   let flipV = String(st.flipV) === '1';
-  if (direction === 'north' || direction === 'south') {
-    const t = flipH; flipH = flipV; flipV = t;
+  // Legacy stencilFlipH/V applies only when the shape HAS a stencil
+  // (mxGraph.getConnectionPoint gates on shape.stencil != null).
+  if (typeof st.shape === 'string' && st.shape.indexOf('mxgraph.') === 0) {
+    flipH = flipH || String(st.stencilFlipH) === '1';
+    flipV = flipV || String(st.stencilFlipV) === '1';
   }
-  if (flipH) point.x = 2 * (box.x + box.width / 2) - point.x;
-  if (flipV) point.y = 2 * (box.y + box.height / 2) - point.y;
+  if (ns) { const t = flipH; flipH = flipV; flipV = t; }
+  if (flipH) point.x = 2 * (bounds.x + bounds.width / 2) - point.x;
+  if (flipV) point.y = 2 * (bounds.y + bounds.height / 2) - point.y;
+  let r1 = 0;
+  const apd = st.anchorPointDirection;
+  if (st.direction != null && (apd == null || String(apd) === '1')) {
+    if (st.direction === 'north') r1 = 270;
+    else if (st.direction === 'west') r1 = 180;
+    else if (st.direction === 'south') r1 = 90;
+  }
+  if (r1 !== 0) point = rotateAbout(point, r1, ccx, ccy);
+  if (projectPerimeter !== false) {
+    // getPerimeterPoint applies the flip mirroring itself; rotation is NOT
+    // part of the projection here (applied separately below, like mx r2).
+    const proj = perimeterPoint(box, Object.assign({}, st, { rotation: 0 }),
+      point, false);
+    if (proj) point = proj;
+  }
   const rotation = parseFloat(st.rotation) || 0;
-  if (rotation !== 0) {
-    point = rotateAbout(point, rotation,
-      box.x + box.width / 2, box.y + box.height / 2);
-  }
+  if (rotation !== 0) point = rotateAbout(point, rotation, ccx, ccy);
   return point;
 }
 

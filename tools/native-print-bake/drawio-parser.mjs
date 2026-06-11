@@ -405,11 +405,14 @@ function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
     const dx = parseFloat(style[isSource ? 'exitDx' : 'entryDx'] || 0) || 0;
     const dy = parseFloat(style[isSource ? 'exitDy' : 'entryDy'] || 0) || 0;
     // mxGraph.getConnectionPoint: the fraction applies to the direction-
-    // normalized bounds, then flip mirroring and the vertex rotation --
-    // the bare fraction-on-the-box silently attached edges to the wrong
-    // side of rotated/flipped/redirected terminals.
+    // normalized bounds, then flip mirroring, the direction quarter-turn,
+    // the PERIMETER PROJECTION (exitPerimeter/entryPerimeter default true --
+    // anchors sit ON the ellipse/rhombus outline, not the bounding box), and
+    // the vertex rotation last.
+    const perimKey = isSource ? 'exitPerimeter' : 'entryPerimeter';
+    const perim = style[perimKey] == null || String(style[perimKey]) !== '0';
     return fixedConnectionPoint(box, terminal && terminal.resolvedStyle
-      ? terminal.resolvedStyle : (terminal && terminal.style) || {}, px, py, dx, dy);
+      ? terminal.resolvedStyle : (terminal && terminal.style) || {}, px, py, dx, dy, perim);
   }
 
   const cx = box.x + box.width / 2;
@@ -576,11 +579,23 @@ function computeBounds(cells) {
       // width/startWidth/endWidth AROUND the route; without that halo the
       // band's outer ink fell outside the computed bounds and the page.
       const st = cell.style || {};
+      // mxConnector.augmentBoundingBox: marker ink extends (size+1) beyond
+      // the endpoint/route; without this growth an auto-fit page (no
+      // pageWidth/pageHeight) cropped arrowhead wings at the sheet edge.
+      const rst = cell.resolvedStyle || st;
+      let markerHalo = 0;
+      if (rst.startArrow != null && String(rst.startArrow) !== 'none') {
+        markerHalo = (parseFloat(rst.startSize) || 6) + 1;
+      }
+      if (rst.endArrow != null && String(rst.endArrow) !== 'none') {
+        markerHalo = Math.max(markerHalo, (parseFloat(rst.endSize) || 6) + 1);
+      }
+      // Additive like mx: stroke/band halo first, then the marker growth.
       const halo = Math.max(
         parseFloat(st.width) || 0,
         parseFloat(st.startWidth) || 0,
         parseFloat(st.endWidth) || 0,
-        parseFloat(st.strokeWidth) || 1) / 2;
+        parseFloat(st.strokeWidth) || 1) / 2 + markerHalo;
       try {
         for (const pt of edgePoints(cell, cells)) {
           include(pt.x - halo, pt.y - halo);
