@@ -2673,6 +2673,24 @@
     };
   }
 
+  // mxSvgCanvas2D shadow (createShadow): every painted node is duplicated with
+  // its non-none fill AND stroke replaced by the shadow color, offset by the
+  // shadow dx/dy in SCREEN space (the translate is prepended to the node's
+  // transform) and composited at the shadow alpha. Re-color a builtin shape's
+  // inner-SVG content string the same way: gradient defs are dropped (the
+  // shadow is flat) and per-node fill/stroke opacities removed (the caller
+  // applies the shadow alpha once via a group opacity, so overlapping
+  // sub-paths do not double-darken). Foreground/glass sub-paths painted after
+  // drawio's setShadow(false) are included too, but they lie inside the
+  // background silhouette and the flattened group composite makes the union
+  // visually identical to the background-only silhouette.
+  function shadowRecolorSvg(content, color) {
+    return content
+      .replace(/<defs>[\s\S]*?<\/defs>/g, '')
+      .replace(/\b(fill|stroke)="(?!none")[^"]*"/g, '$1="' + color + '"')
+      .replace(/ (?:fill|stroke)-opacity="[^"]*"/g, '');
+  }
+
   // drawio glass effect (mxShape.paintGlassEffect): a white highlight over the
   // top ~40% of the shape, filled with a south gradient fading 0.9 -> 0.1 alpha.
   // Previously dropped silently. Returns the inner SVG content for a box-sized
@@ -3011,13 +3029,6 @@
     return 'M ' + p(x, y + h) + ' L ' + p(x, y + s) + ' L ' + p(x + w, y) + ' L ' + p(x + w, y + h) + ' Z';
   }
 
-  function internalStoragePath(x, y, w, h, dxIn, dyIn) {
-    var dx = (dxIn == null) ? Math.min(w, 20) : Math.min(w, dxIn); // drawio dx default 20
-    var dy = (dyIn == null) ? Math.min(h, 20) : Math.min(h, dyIn); // drawio dy default 20
-    return rectPath(x, y, w, h) + ' M ' + p(x + dx, y) + ' L ' + p(x + dx, y + h) +
-      ' M ' + p(x, y + dy) + ' L ' + p(x + w, y + dy);
-  }
-
   function dataStoragePath(x, y, w, h, sIn) {
     var s = (sIn == null) ? w * 0.1 : sIn; // drawio DataStorageShape size default 0.1
     // D-shape: bulging right edge, concave left edge (drawio redrawPath).
@@ -3166,7 +3177,9 @@
       ], polyArcSize(style), true);
       return manualInputPath(x, y, w, h, miS);
     }
-    if (shape === 'internalStorage') return internalStoragePath(x, y, w, h, number(style.dx, 20), number(style.dy, 20));
+    // internalStorage is a multi-paint mxRectangleShape subclass (rounded bg +
+    // stroke-only dividers with the rounded inset clamp) handled by
+    // builtinShapeSvg before shapePath is consulted.
     if (shape === 'offPageConnector') {
       var opS = h * Math.max(0, Math.min(1, number(style.size, 0.375)));
       if (boolish(style.rounded)) return roundedPoly([
@@ -3175,7 +3188,9 @@
       ], polyArcSize(style), true);
       return offPageConnectorPath(x, y, w, h, opS);
     }
-    if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(style, x, y, w, h);
+    // mermaidBlockArrow is NOT a singleArrow — it has its own dirs/nodePadding
+    // polygon (MermaidBlockArrowShape) ported in builtinShapeSvg.
+    if (shape === 'singleArrow' || shape === 'flexArrow') return singleArrowPath(style, x, y, w, h);
     if (shape === 'doubleArrow') return doubleArrowPath(style, x, y, w, h);
     if (shape === 'cross') return crossPath(x, y, w, h, Math.min(w, h) * Math.max(0, Math.min(1, number(style.size, 0.2))));
     if (shape === 'display') return displayPath(x, y, w, h, Math.max(0, number(style.size, 0.25)) * w);
@@ -3220,12 +3235,15 @@
     // no silent single-path flattening here.
     if (shape === 'umlState') return roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12);
     if (shape === 'transparent') return rectPath(x, y, w, h);
-    if (shape === 'ext' || shape === 'message' || shape === 'umlFrame') return rectPath(x, y, w, h);
+    // umlFrame (title pentagon + L-border) is handled by builtinShapeSvg.
+    if (shape === 'ext' || shape === 'message') return rectPath(x, y, w, h);
     if (shape === 'umlBoundary' || shape === 'umlEntity' || shape === 'umlControl' || shape === 'lollipop' || shape === 'waypoint') return ellipsePath(x, y, w, h);
     if (shape === 'umlDestroy') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h) + ' M ' + p(x + w, y) + ' L ' + p(x, y + h);
     if (shape === 'umlLifeline') return rectPath(x, y, w, h) + ' M ' + p(x + w / 2, y + h * 0.25) + ' L ' + p(x + w / 2, y + h);
-    if (shape === 'requires' || shape === 'requiredInterface' || shape === 'providedRequiredInterface') return ellipsePath(x, y, w, h);
-    if (shape === 'module') return rectPath(x, y, w, h);
+    // requiredInterface / providedRequiredInterface / module are multi-paint
+    // shapes ported faithfully in builtinShapeSvg (the old ellipse/rect
+    // mappings here were wrong silhouettes).
+    if (shape === 'requires') return ellipsePath(x, y, w, h);
     if (shape === 'startState') return ellipsePath(x, y, w, h);
     if (shape === 'link') return 'M ' + p(x, y + h / 2) + ' C ' + p(x + w / 3, y) + ' ' + p(x + 2 * w / 3, y + h) + ' ' + p(x + w, y + h / 2);
     if (shape === 'curlyBracket') return 'M ' + p(x + w, y) + ' C ' + p(x, y) + ' ' + p(x + w, y + h / 2) + ' ' + p(x, y + h / 2) + ' C ' + p(x + w, y + h / 2) + ' ' + p(x, y + h) + ' ' + p(x + w, y + h);
@@ -3352,9 +3370,9 @@
   // while its interior lines render full — the asymmetry reads as "thick"
   // interior lines (most visible on tables). The box grows by the pad on each
   // side (the stroke halo), matching how drawio's own renderer paints strokes.
-  function paddedSvgShapeNode(content, box, style) {
+  function paddedSvgShapeNode(content, box, style, extraPad) {
     var sw = Math.max(0.1, number(style.strokeWidth, 1));
-    var pad = sw / 2;
+    var pad = sw / 2 + (extraPad > 0 ? extraPad : 0);
     var W = box.w + sw, H = box.h + sw;
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(W) +
       '" height="' + fmt(H) + '" viewBox="' + fmt(-pad) + ' ' + fmt(-pad) + ' ' +
@@ -3402,11 +3420,14 @@
       }
       content = defs + '<path d="' + penta + '"' + fillAttr + strokeSvgAttrs(style) + '/>';
       // Fold (NoteShape paint order): the closed triangle is FILLED only when
-      // darkOpacity != 0 — black for op>0, white for op<0, at |op| fill alpha —
-      // then the open fold path is STROKED in the strokeColor.
+      // darkOpacity != 0 — black for op>0, white for op<0 — then the open fold
+      // path is STROKED in the strokeColor. NoteShape calls c.setFillAlpha(|op|)
+      // which REPLACES fillAlpha, so mxSvgCanvas2D.updateFill paints the fold at
+      // fill-opacity = alpha * |op| (the cell's base opacity times |darkOpacity|),
+      // not a flat |op|.
       if (op !== 0) {
         content += '<path d="' + foldTri + '" fill="' + (op < 0 ? '#ffffff' : '#000000') +
-          '" fill-opacity="' + fmt(Math.abs(op)) + '" stroke="none"/>';
+          '" fill-opacity="' + fmt(Math.abs(op) * opacity(style, 'opacity')) + '" stroke="none"/>';
       }
       content += '<path d="' + foldLine + '" fill="none"' + strokeSvgAttrs(style) + '/>';
     }
@@ -3424,20 +3445,51 @@
   // Mirror inner-SVG content within a (0,0)→(w,h) viewport for flipH/flipV.
   // translate(w,0) scale(-1,1) / translate(0,h) scale(1,-1), matching the
   // stencil implementation (exporter stencil Step 12).
+  // stencilFlipH/V are deliberately NOT read here: mxShape.apply ORs them into
+  // flipH/flipV ONLY when a stencil exists (mxShape.js:1410-1415); on the
+  // non-stencil paths drawio ignores them.
   function flipWrapSvg(content, w, h, style) {
-    if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
+    if (boolish(style.flipH)) {
       content = '<g transform="translate(' + fmt(w) + ',0) scale(-1,1)">' + content + '</g>';
     }
-    if (boolish(style.flipV) || boolish(style.stencilFlipV)) {
+    if (boolish(style.flipV)) {
       content = '<g transform="translate(0,' + fmt(h) + ') scale(1,-1)">' + content + '</g>';
     }
     return content;
   }
 
+  // builtinShapeSvg: gradient-aware wrapper. A cell with gradientColor must
+  // render a real gradient on the builtin path too — previously every builtin
+  // shape silently dropped its gradient to solid fillColor (fillSvgAttr was
+  // called with an empty gradId). The defs are prepended to the content; under
+  // the emitVertex direction= wrapper the whole <g> rotates, which rotates the
+  // objectBoundingBox gradient axis with the shape exactly like drawio's
+  // canvas-level rotation does (mxShape.updateTransform runs before
+  // setGradient), so the axis needs no extra rotateGradDir here.
   function builtinShapeSvg(style, w, h) {
+    var gradId = '';
+    var defs = '';
+    if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
+      gradId = 'b' + stableGradId(style.fillColor, style.gradientColor);
+      defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor),
+        hex(style.gradientColor), style.gradientDirection) + '</defs>';
+    }
+    var content = builtinShapeSvgImpl(style, w, h, gradId);
+    return content == null ? null : defs + content;
+  }
+
+  function builtinShapeSvgImpl(style, w, h, gradId) {
     var shape = style.shape;
-    var fill = fillSvgAttr(style, '');
+    var fill = fillSvgAttr(style, gradId);
     var strk = strokeSvgAttrs(style);
+    // drawio paints the glass highlight ONLY for shapes that actually call
+    // paintGlassEffect: the mxRectangleShape family (paintForeground,
+    // mxRectangleShape.js:107-110 — process/plus/internalStorage here) and the
+    // swimlane family header (mxSwimlane.js:267-270 — table here). Other
+    // builtin shapes (cylinder/actor/folder/...) never paint glass in drawio,
+    // so omitting it there IS the faithful render, not a silent drop.
+    var glassEl = (boolish(style.glass) && isPaintable(style.fillColor))
+      ? glassOverlaySvg(style, w, h) : '';
     if (shape === 'umlActor') {
       // Head (fillAndStroke) + body/arms/legs (stroke) — UmlActorShape, Shapes.js
       var head = '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 8) + '" rx="' + fmt(w / 4) + '" ry="' + fmt(h / 8) + '"' + fill + strk + '/>';
@@ -3471,7 +3523,9 @@
       var pBg = pRounded
         ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
         : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
-      return pBg +
+      // Glass under the foreground lines (mxRectangleShape.paintForeground
+      // paints glass first, then ProcessShape draws its inset lines over it).
+      return pBg + glassEl +
         '<line x1="' + fmt(pInset) + '" y1="0" x2="' + fmt(pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>' +
         '<line x1="' + fmt(w - pInset) + '" y1="0" x2="' + fmt(w - pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>';
     }
@@ -3484,7 +3538,7 @@
       var plBg = boolish(style.rounded)
         ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
         : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
-      return plBg +
+      return plBg + glassEl +
         '<path d="M ' + p(w / 2, plB) + ' L ' + p(w / 2, h - plB) +
         ' M ' + p(plB, h / 2) + ' L ' + p(w - plB, h / 2) + '" fill="none"' + strk + '/>';
     }
@@ -3608,12 +3662,41 @@
       return '<path d="' + cBody + '"' + fill + strk + '/><path d="' + cFg + '" fill="none"' + strk + '/>';
     }
     if (shape === 'table') {
-      // Full rect + header separator line — TableShape (swimlane-like), Shapes.js
+      // TableShape extends mxSwimlane (Shapes.js:240-330 + mxSwimlane.js
+      // paintSwimlane): the TITLE row is filled with fillColor, the BODY with
+      // swimlaneFillColor (default none = transparent) — previously the whole
+      // table was filled with fillColor, silently filling the body. The
+      // divider honors swimlaneLine (default on); head/body stroke gates per
+      // mxSwimlane. startSize=0 falls back to PartialRectangleShape (full
+      // rect in fillColor, TableShape.paintVertexShape:260-263).
       var tStart = Math.min(h, Math.max(0, number(style.startSize, 30)));
-      var tLine = (tStart > 0 && tStart < h)
-        ? '<line x1="0" y1="' + fmt(tStart) + '" x2="' + fmt(w) + '" y2="' + fmt(tStart) + '" fill="none"' + strk + '/>'
-        : '';
-      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' + tLine;
+      if (tStart <= 0) {
+        return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      }
+      var tHead = String(style.swimlaneHead) !== '0';   // default 1
+      var tBody = String(style.swimlaneBody) !== '0';   // default 1
+      var tLaneA = opacity(style, 'fillOpacity');
+      var tLane = isPaintable(style.swimlaneFillColor)
+        ? ' fill="' + hex(style.swimlaneFillColor) + '"' +
+          (tLaneA < 1 ? ' fill-opacity="' + fmt(tLaneA) + '"' : '')
+        : ' fill="none"';
+      // header: 3-sided path, fillAndStroke (or fill only when swimlaneHead=0)
+      var tOut = '<path d="M 0 ' + fmt(tStart) + ' L 0 0 L ' + fmt(w) + ' 0 L ' +
+        fmt(w) + ' ' + fmt(tStart) + '"' + fill + (tHead ? strk : ' stroke="none"') + '/>';
+      // glass over the header only (mxSwimlane.js:267-270)
+      if (glassEl) tOut += glassOverlaySvg(style, w, tStart);
+      // body: 3-sided path, laneFill (+stroke gated on swimlaneBody)
+      if (tStart < h) {
+        tOut += '<path d="M 0 ' + fmt(tStart) + ' L 0 ' + fmt(h) + ' L ' + fmt(w) +
+          ' ' + fmt(h) + ' L ' + fmt(w) + ' ' + fmt(tStart) + '"' + tLane +
+          (tBody ? strk : ' stroke="none"') + '/>';
+      }
+      // divider between title and body (paintDivider, gated swimlaneLine)
+      if (String(style.swimlaneLine) !== '0' && tStart < h) {
+        tOut += '<line x1="0" y1="' + fmt(tStart) + '" x2="' + fmt(w) +
+          '" y2="' + fmt(tStart) + '" fill="none"' + strk + '/>';
+      }
+      return tOut;
     }
     if (shape === 'mxgraph.basic.button') {
       // 3D bevel button — mxShapeBasicButton.paintVertexShape (mxBasic.js).
@@ -3627,6 +3710,152 @@
         '<path d="M ' + fmt(w) + ' 0 L ' + fmt(w) + ' ' + fmt(h) + ' L ' + fmt(w - dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w - dx) + ' ' + fmt(dx) + ' Z"' + attr + '/>' +
         '<path d="M 0 ' + fmt(h) + ' L ' + fmt(dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w - dx) + ' ' + fmt(h - dx) + ' L ' + fmt(w) + ' ' + fmt(h) + ' Z"' + attr + '/>' +
         '<path d="M 0 ' + fmt(h) + ' L 0 0 L ' + fmt(dx) + ' ' + fmt(dx) + ' L ' + fmt(dx) + ' ' + fmt(h - dx) + ' Z"' + attr + '/>';
+    }
+    if (shape === 'internalStorage') {
+      // InternalStorageShape extends mxRectangleShape (Shapes.js:3402-3446):
+      // rounded=1 rounds the background like a normal rect AND raises dx/dy to
+      // at least the corner inset min(w*f, h*f), f = arcSize/100 (default 15).
+      // Previously rounded was silently square and the inset clamp was missing.
+      var isR = boolish(style.rounded);
+      var isInset = 0;
+      if (isR) {
+        var isF = number(style.arcSize, 15) / 100;
+        isInset = Math.max(isInset, Math.min(w * isF, h * isF));
+      }
+      var isDx = Math.max(isInset, Math.min(w, number(style.dx, 20)));
+      var isDy = Math.max(isInset, Math.min(h, number(style.dy, 20)));
+      var isBg = isR
+        ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
+        : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      // foreground (stroke-only divider lines) over glass, like drawio's
+      // paintForeground order (mxRectangleShape glass first, then dividers).
+      return isBg + glassEl +
+        '<path d="M 0 ' + fmt(isDy) + ' L ' + fmt(w) + ' ' + fmt(isDy) +
+        ' M ' + fmt(isDx) + ' 0 L ' + fmt(isDx) + ' ' + fmt(h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'requiredInterface') {
+      // RequiredInterfaceShape (Shapes.js:3087-3097): a STROKE-ONLY open
+      // half-circle arc M0,0 Q w,0 w,h/2 Q w,h 0,h — never filled. Previously
+      // printed as a filled full ellipse.
+      return '<path d="M 0 0 Q ' + p(w, 0) + ' ' + p(w, h / 2) +
+        ' Q ' + p(w, h) + ' ' + p(0, h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'providedRequiredInterface') {
+      // ProvidedRequiredInterfaceShape (Shapes.js:3111-3125): ellipse inset by
+      // (style inset default 2) + strokewidth, fillAndStroke; plus the open
+      // stroke-only arc M w/2,0 Q w,0 w,h/2 Q w,h w/2,h.
+      var priI = number(style.inset, 2) + Math.max(0.1, number(style.strokeWidth, 1));
+      return '<ellipse cx="' + fmt((w - 2 * priI) / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(Math.max(0, (w - 2 * priI) / 2)) + '" ry="' + fmt(Math.max(0, (h - 2 * priI) / 2)) + '"' + fill + strk + '/>' +
+        '<path d="M ' + p(w / 2, 0) + ' Q ' + p(w, 0) + ' ' + p(w, h / 2) +
+        ' Q ' + p(w, h) + ' ' + p(w / 2, h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'module') {
+      // ModuleShape (Shapes.js:3141-3179, mxCylinder two-pass): body polygon
+      // with two jetty notches on the left (fillAndStroke) + stroke-only jetty
+      // box outlines. jettyWidth default 20, jettyHeight default 10 (NOT the
+      // 32/12 of ComponentShape). x0=jw/2, x1=jw; y0=min(jh,h-jh),
+      // y1=min(y0+2jh,h-jh). Previously printed as a plain rectangle.
+      var mJw = number(style.jettyWidth, 20), mJh = number(style.jettyHeight, 10);
+      var mx0 = mJw / 2, mx1 = mx0 + mJw / 2;
+      var my0 = Math.min(mJh, h - mJh), my1 = Math.min(my0 + 2 * mJh, h - mJh);
+      var mBody = 'M ' + p(mx0, 0) + ' L ' + p(w, 0) + ' L ' + p(w, h) + ' L ' + p(mx0, h) +
+        ' L ' + p(mx0, my1 + mJh) + ' L ' + p(0, my1 + mJh) + ' L ' + p(0, my1) + ' L ' + p(mx0, my1) +
+        ' L ' + p(mx0, my0 + mJh) + ' L ' + p(0, my0 + mJh) + ' L ' + p(0, my0) + ' L ' + p(mx0, my0) + ' Z';
+      var mFg = 'M ' + p(mx0, my0) + ' L ' + p(mx1, my0) + ' L ' + p(mx1, my0 + mJh) + ' L ' + p(mx0, my0 + mJh) +
+        ' M ' + p(mx0, my1) + ' L ' + p(mx1, my1) + ' L ' + p(mx1, my1 + mJh) + ' L ' + p(mx0, my1 + mJh);
+      return '<path d="' + mBody + '"' + fill + strk + '/><path d="' + mFg + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'umlFrame') {
+      // UmlFrame (Shapes.js:2605-2650): optional swimlaneFillColor full-rect
+      // background (fill only), title pentagon (corner cut, fillAndStroke with
+      // fillColor) and the body's L-shaped border (stroke only). width default
+      // 60 (>= corner=10), height default 30 (>= corner*1.5). Previously
+      // printed as a plain rect filled with fillColor over the whole frame.
+      var ufCo = 10;
+      var ufW0 = Math.min(w, Math.max(ufCo, number(style.width, 60)));
+      var ufH0 = Math.min(h, Math.max(ufCo * 1.5, number(style.height, 30)));
+      var ufOut = '';
+      if (isPaintable(style.swimlaneFillColor)) {
+        var ufA = opacity(style, 'fillOpacity');
+        ufOut += '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) +
+          '" fill="' + hex(style.swimlaneFillColor) +
+          (ufA < 1 ? '" fill-opacity="' + fmt(ufA) : '') + '" stroke="none"/>';
+      }
+      ufOut += '<path d="M 0 0 L ' + p(ufW0, 0) + ' L ' + p(ufW0, Math.max(0, ufH0 - ufCo * 1.5)) +
+        ' L ' + p(Math.max(0, ufW0 - ufCo), ufH0) + ' L ' + p(0, ufH0) + ' Z"' + fill + strk + '/>';
+      ufOut += '<path d="M ' + p(ufW0, 0) + ' L ' + p(w, 0) + ' L ' + p(w, h) +
+        ' L ' + p(0, h) + ' L ' + p(0, ufH0) + '" fill="none"' + strk + '/>';
+      return ufOut;
+    }
+    if (shape === 'mermaidBlockArrow') {
+      // MermaidBlockArrowShape (Shapes.js:6697-6863): a closed polygon whose
+      // points depend on dirs (default 'right') and nodePadding (default 8);
+      // source stores points as (px, -py) and paints at (px, h+py). Forces a
+      // round line join (paintVertexShape). Previously silently mapped to
+      // singleArrowPath — a different shape.
+      var mbDirs = {};
+      String(style.dirs == null ? 'right' : style.dirs).split(/[,| ]+/).forEach(function (dd) {
+        dd = dd.trim().toLowerCase();
+        if (dd === 'x') { mbDirs.right = true; mbDirs.left = true; }
+        else if (dd === 'y') { mbDirs.up = true; mbDirs.down = true; }
+        else if (dd) { mbDirs[dd] = true; }
+      });
+      var mbPadF = number(style.nodePadding, 8) / 2;
+      var mbM = h / 2;
+      var mbPts;
+      if (mbDirs.right && mbDirs.left && mbDirs.up && mbDirs.down) {
+        mbPts = [[0, 0], [mbM, 0], [w / 2, 2 * mbPadF], [w - mbM, 0], [w, 0],
+          [w, -h / 3], [w + 2 * mbPadF, -h / 2], [w, -2 * h / 3], [w, -h],
+          [w - mbM, -h], [w / 2, -h - 2 * mbPadF], [mbM, -h],
+          [0, -h], [0, -2 * h / 3], [-2 * mbPadF, -h / 2], [0, -h / 3]];
+      } else if (mbDirs.right && mbDirs.left && mbDirs.up) {
+        mbPts = [[mbM, 0], [w - mbM, 0], [w, -h / 2], [w - mbM, -h], [mbM, -h], [0, -h / 2]];
+      } else if (mbDirs.right && mbDirs.left && mbDirs.down) {
+        mbPts = [[0, 0], [mbM, -h], [w - mbM, -h], [w, 0]];
+      } else if (mbDirs.right && mbDirs.up && mbDirs.down) {
+        mbPts = [[0, 0], [w, -mbM], [w, -h + mbM], [0, -h]];
+      } else if (mbDirs.left && mbDirs.up && mbDirs.down) {
+        mbPts = [[w, 0], [0, -mbM], [0, -h + mbM], [w, -h]];
+      } else if (mbDirs.right && mbDirs.left) {
+        mbPts = [[mbM, 0], [mbM, -mbPadF], [w - mbM, -mbPadF], [w - mbM, 0],
+          [w, -h / 2], [w - mbM, -h], [w - mbM, -h + mbPadF],
+          [mbM, -h + mbPadF], [mbM, -h], [0, -h / 2]];
+      } else if (mbDirs.up && mbDirs.down) {
+        mbPts = [[w / 2, 0], [0, -mbPadF], [mbM, -mbPadF], [mbM, -h + mbPadF],
+          [0, -h + mbPadF], [w / 2, -h], [w, -h + mbPadF],
+          [w - mbM, -h + mbPadF], [w - mbM, -mbPadF], [w, -mbPadF]];
+      } else if (mbDirs.right && mbDirs.up) {
+        mbPts = [[0, 0], [w, -mbM], [0, -h]];
+      } else if (mbDirs.right && mbDirs.down) {
+        mbPts = [[0, 0], [w, 0], [0, -h]];
+      } else if (mbDirs.left && mbDirs.up) {
+        mbPts = [[w, 0], [0, -mbM], [w, -h]];
+      } else if (mbDirs.left && mbDirs.down) {
+        mbPts = [[w, 0], [0, 0], [w, -h]];
+      } else if (mbDirs.right) {
+        mbPts = [[mbM, -mbPadF], [w - mbM, -mbPadF], [w - mbM, 0], [w, -h / 2],
+          [w - mbM, -h], [w - mbM, -h + mbPadF], [mbM, -h + mbPadF]];
+      } else if (mbDirs.left) {
+        mbPts = [[mbM, 0], [mbM, -mbPadF], [w - mbM, -mbPadF], [w - mbM, -h + mbPadF],
+          [mbM, -h + mbPadF], [mbM, -h], [0, -h / 2]];
+      } else if (mbDirs.up) {
+        mbPts = [[mbM, -mbPadF], [mbM, -h + mbPadF], [0, -h + mbPadF], [w / 2, -h],
+          [w, -h + mbPadF], [w - mbM, -h + mbPadF], [w - mbM, -mbPadF]];
+      } else if (mbDirs.down) {
+        mbPts = [[w / 2, 0], [0, -mbPadF], [mbM, -mbPadF], [mbM, -h + mbPadF],
+          [w - mbM, -h + mbPadF], [w - mbM, -mbPadF], [w, -mbPadF]];
+      } else {
+        mbPts = [[0, 0], [w, 0], [w, -h], [0, -h]];
+      }
+      var mbD = 'M ' + p(mbPts[0][0], h + mbPts[0][1]);
+      for (var mbI = 1; mbI < mbPts.length; mbI++) {
+        mbD += ' L ' + p(mbPts[mbI][0], h + mbPts[mbI][1]);
+      }
+      mbD += ' Z';
+      // MermaidBlockArrowShape.paintVertexShape forces a round line join.
+      var mbStrk = strk.replace(/stroke-linejoin="[^"]*"/, 'stroke-linejoin="round"');
+      return '<path d="' + mbD + '"' + fill + mbStrk + '/>';
     }
     if (shape === 'tableRow' || shape === 'partialRectangle') {
       // Fill rect + selective border lines — PartialRectangleShape/TableRowShape, Shapes.js
@@ -5358,6 +5587,22 @@
         } else {
           builtinContent = flipWrapSvg(builtinContent, box.w, box.h, style);
         }
+        // shadow=1: paint the offset shadow copy FIRST (mxShape paints shadows
+        // under the shape). The copy is the builtin content re-colored to the
+        // shadow color at the shadow alpha, offset (2,3) in page space —
+        // mxSvgCanvas2D.createShadow prepends its translate to the node
+        // transform, so the offset does NOT rotate with the shape. Previously
+        // shadow=1 was silently dropped on this branch.
+        var shadowBI = boolish(style.shadow) ? shadowParams(style) : null;
+        var shadowContentBI = shadowBI
+          ? '<g opacity="' + fmt(shadowBI.alpha) + '">' +
+            shadowRecolorSvg(builtinContent, hex(shadowBI.color)) + '</g>'
+          : null;
+        // mermaidBlockArrow with dirs=x,y paints its four tips nodePadding
+        // beyond the cell box (Shapes.js:6732-6741) — give the viewport that
+        // headroom so they are not clipped.
+        var extraPadBI = style.shape === 'mermaidBlockArrow'
+          ? Math.max(0, number(style.nodePadding, 8)) : 0;
         var rotDegBI = number(style.rotation, 0);
         if (rotDegBI) {
           var thetaBI = rotDegBI * Math.PI / 180;
@@ -5366,6 +5611,18 @@
           var offXBI = (expWBI - box.w) / 2;
           var offYBI = (expHBI - box.h) / 2;
           var rcxBI = expWBI / 2, rcyBI = expHBI / 2;
+          if (shadowContentBI) {
+            var shRotGroupBI = '<g transform="rotate(' + fmt(rotDegBI) + ' ' + fmt(rcxBI) + ' ' + fmt(rcyBI) + ')">' +
+              '<g transform="translate(' + fmt(offXBI) + ' ' + fmt(offYBI) + ')">' + shadowContentBI + '</g></g>';
+            paint.push({
+              kind: 'svg',
+              box: { x: box.x + box.w / 2 - expWBI / 2 + shadowBI.dx,
+                     y: box.y + box.h / 2 - expHBI / 2 + shadowBI.dy, w: expWBI, h: expHBI },
+              source: base64('<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(expWBI) +
+                '" height="' + fmt(expHBI) + '">' + shRotGroupBI + '</svg>'),
+              aspect: 'preserve'
+            });
+          }
           var textElBI = rotatedLabelEls(graph, cell, style, offXBI, offYBI, box.w, box.h, label, notices, resolved);
           var innerBI = '<g transform="translate(' + fmt(offXBI) + ' ' + fmt(offYBI) + ')">' + builtinContent + '</g>';
           var rotGroupBI = '<g transform="rotate(' + fmt(rotDegBI) + ' ' + fmt(rcxBI) + ' ' + fmt(rcyBI) + ')">' + innerBI + textElBI + '</g>';
@@ -5379,7 +5636,12 @@
         } else {
           // Pad the viewport by strokeWidth/2 so the shape's outer border is not
           // half-clipped (which makes it thinner than the interior lines).
-          paint.push(paddedSvgShapeNode(builtinContent, box, style));
+          if (shadowContentBI) {
+            paint.push(paddedSvgShapeNode(shadowContentBI,
+              { x: box.x + shadowBI.dx, y: box.y + shadowBI.dy, w: box.w, h: box.h },
+              style, extraPadBI));
+          }
+          paint.push(paddedSvgShapeNode(builtinContent, box, style, extraPadBI));
           if (label !== '') {
             var lblBoxBI = box;
             var lposBI = style.labelPosition, vlposBI = style.verticalLabelPosition;
@@ -5401,6 +5663,15 @@
             if (style.shape === 'table') {
               var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
+            }
+            if (style.shape === 'umlFrame') {
+              // UmlFrame.getLabelMargins: the label lives in the title pentagon
+              // (top-left width x height box, defaults 60x30).
+              lblBoxBI = {
+                x: box.x, y: box.y,
+                w: Math.min(box.w, Math.max(10, number(style.width, 60))),
+                h: Math.min(box.h, Math.max(15, number(style.height, 30)))
+              };
             }
             labelNodes(graph, cell, state, style, lblBoxBI, label, notices, resolved)
               .forEach(function (n) { paint.push(n); });
@@ -5432,6 +5703,17 @@
       // title sits in the header. (Rotated swimlanes fall through to the generic
       // path, which is an extremely rare combination.)
       if (style.shape === 'swimlane' && !number(style.rotation, 0)) {
+        // direction= rotates the whole swimlane in drawio (mxShape.
+        // getShapeRotation); the structural header/body/divider emission here
+        // is not rotatable. LOUD notice, never silent (the lane prints in its
+        // default east orientation). horizontal=0 — the common way to get a
+        // vertical lane — IS handled below.
+        var swDir = String(style.direction || 'east').toLowerCase();
+        if (swDir !== 'east') {
+          notices.push(degradation('ExporterUnsupportedShape',
+            'swimlane direction="' + swDir + '" is not rotated (printed in the ' +
+            'default east orientation; use horizontal=0 for vertical lanes).', cell.id));
+        }
         var swH = String(style.horizontal) !== '0';
         var swSz = Math.min(Math.max(0, number(style.startSize, 30)), swH ? box.h : box.w);
         var swStroke = strokeOf(style);
@@ -5446,8 +5728,9 @@
         // to the opposite side), exactly like mxShape.updateTransform; the
         // label text stays upright but follows the flipped header
         // (mxSwimlane.getLabelBounds). Previously silently ignored.
-        var swFH = boolish(style.flipH) || boolish(style.stencilFlipH);
-        var swFV = boolish(style.flipV) || boolish(style.stencilFlipV);
+        // stencilFlipH/V only apply when a stencil exists (mxShape.js:1410-1415).
+        var swFH = boolish(style.flipH);
+        var swFV = boolish(style.flipV);
         var swFlipBox = function (b) {
           return (swFH || swFV) ? {
             x: swFH ? 2 * bx + bw - b.x - b.w : b.x,
@@ -5544,8 +5827,10 @@
       // outlinePath builds the fully-transformed outline for a given cell box,
       // matching c.rotate(getShapeRotation, flipH, flipV, cx, cy): draw in the
       // (inverted) paint bounds, mirror, then rotate — all about the centre.
-      var flipH_ = boolish(style.flipH) || boolish(style.stencilFlipH);
-      var flipV_ = boolish(style.flipV) || boolish(style.stencilFlipV);
+      // stencilFlipH/V only apply when a stencil exists (mxShape.js:1410-1415);
+      // this is the non-stencil path, so they are ignored like drawio does.
+      var flipH_ = boolish(style.flipH);
+      var flipV_ = boolish(style.flipV);
       var dir = String(style.direction || 'east').toLowerCase();
       var dirDeg = dir === 'south' ? 90 : dir === 'west' ? 180 : dir === 'north' ? 270 : 0;
       var dirInv = (dir === 'north' || dir === 'south');
