@@ -113,7 +113,12 @@
   // ---------------------------------------------------------------------------
   // stencilToSvg: render a parsed stencil <shape> node to an SVG string.
   // Returns SVG string, or null if unsupported feature encountered (notice pushed).
-  function stencilToSvg(shapeNode, cellW, cellH, style, notices, resolved) {
+  // `nested` is set for include-shape sub-renders: drawio applies the
+  // direction ROTATION and the flipH/flipV mirroring ONCE at the canvas level
+  // for the whole shape (mxShape.updateTransform); an included stencil only
+  // recomputes its aspect (scale swap + delta offset, mxStencil.js:490-528,
+  // 862-874) — it must NOT rotate or flip again.
+  function stencilToSvg(shapeNode, cellW, cellH, style, notices, resolved, nested) {
     // Step 1: Read shape metadata
     var w0 = parseFloat(shapeNode.attrs.w) || 100;
     var h0 = parseFloat(shapeNode.attrs.h) || 100;
@@ -131,12 +136,15 @@
     var asp = computeAspect(w0, h0, cw, ch, aspect);
     var ox = asp.ox, oy = asp.oy, sw = asp.sw, sh = asp.sh, su = asp.su;
 
-    // Step 3: Compute initial stroke width
+    // Step 3: Compute initial stroke width. mxStencil.parseDescription:313-314
+    // defaults an ABSENT strokewidth attribute to the string '1', and
+    // drawShape:428-431 scales any numeric value by minScale — only the
+    // literal 'inherit' takes the cell style strokeWidth (unscaled).
     var sw_px;
-    if (!stencilStrokeWidthAttr || stencilStrokeWidthAttr === 'inherit') {
+    if (stencilStrokeWidthAttr === 'inherit') {
       sw_px = number(style.strokeWidth, 1);
     } else {
-      sw_px = parseFloat(stencilStrokeWidthAttr) * su;
+      sw_px = number(stencilStrokeWidthAttr, 1) * su;
     }
 
     // Step 4: Initialize render state
@@ -183,12 +191,17 @@
       return rawColor; // unresolved key, no usable default: preserve prior behaviour
     }
 
-    // Gradient support: if gradientColor is paintable, we'll emit a linearGradient
-    var gradId = null;
-    var gradDef = '';
+    // Gradient support: if gradientColor is paintable, the shape canvas starts
+    // with a gradient fill (mxShape.configureCanvas → setGradient). The
+    // gradient is part of the canvas STATE: <fillcolor> switches to a solid
+    // fill (mxAbstractCanvas2D.setFillColor clears state.gradient) and
+    // save/restore snapshots it. All emitted defs are COLLECTED (never
+    // overwritten) so earlier elements keep referencing a live def.
+    var gradId = null;     // current canvas gradient (null = solid fill)
+    var gradDefs = [];     // every gradient def emitted for this stencil
     if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
       gradId = stableGradId(state.fillColor, style.gradientColor);
-      gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
+      gradDefs.push(linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection));
     }
 
     // Helper: fill SVG attr using current state
@@ -236,42 +249,100 @@
 
     // Walk a <path> block's children, building an SVG path d string.
     // Returns d string, or null if unsupported command encountered.
+    // Faithful transcription of mxShape.prototype.addPoints(c, pts, rounded=
+    // true, arcSize, close) for <path rounded="1"> segments. Points are in
+    // ALREADY-SCALED canvas coordinates; arcSize is used UNSCALED (drawio
+    // passes the raw attribute straight through, mxStencil.js:715).
+    // For closed segments a virtual midpoint between last and first point is
+    // prepended, so the path starts mid-segment and EVERY corner is rounded.
+    function addPointsD(pts, arcSize, close) {
+      if (!pts.length) return '';
+      pts = pts.slice();
+      var pe2 = pts[pts.length - 1];
+      if (close) {
+        var p0 = pts[0];
+        pts.unshift({ x: pe2.x + (p0.x - pe2.x) / 2, y: pe2.y + (p0.y - pe2.y) / 2 });
+      }
+      var pt = pts[0];
+      var i = 1;
+      var parts2 = ['M ' + p(pt.x, pt.y)];
+      while (i < (close ? pts.length : pts.length - 1)) {
+        var tmp = pts[i % pts.length];
+        var dx2 = pt.x - tmp.x, dy2 = pt.y - tmp.y;
+        if (dx2 !== 0 || dy2 !== 0) {
+          var dist = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+          var nx1 = dx2 * Math.min(arcSize, dist / 2) / dist;
+          var ny1 = dy2 * Math.min(arcSize, dist / 2) / dist;
+          parts2.push('L ' + p(tmp.x + nx1, tmp.y + ny1));
+          var next = pts[(i + 1) % pts.length];
+          while (i < pts.length - 2 && Math.round(next.x - tmp.x) === 0 &&
+                 Math.round(next.y - tmp.y) === 0) {
+            next = pts[(i + 2) % pts.length];
+            i++;
+          }
+          dx2 = next.x - tmp.x; dy2 = next.y - tmp.y;
+          dist = Math.max(1, Math.sqrt(dx2 * dx2 + dy2 * dy2));
+          var nx2 = dx2 * Math.min(arcSize, dist / 2) / dist;
+          var ny2 = dy2 * Math.min(arcSize, dist / 2) / dist;
+          var x2 = tmp.x + nx2, y2 = tmp.y + ny2;
+          parts2.push('Q ' + p(tmp.x, tmp.y) + ' ' + p(x2, y2));
+          tmp = { x: x2, y: y2 };
+        } else {
+          parts2.push('L ' + p(tmp.x, tmp.y));
+        }
+        pt = tmp;
+        i++;
+      }
+      parts2.push(close ? 'Z' : 'L ' + p(pe2.x, pe2.y));
+      return parts2.join(' ');
+    }
+
     function walkPath(pathNode) {
-      // Bezier corner-rounding for <path rounded="1">.
-      // Algorithm mirrors mxShape.prototype.addPoints(): quadratic Bezier at each corner.
+      // Corner-rounding for <path rounded="1"> — mxStencil.js:664-721:
+      //   * attribute is camelCase `arcSize` (XML getAttribute is
+      //     case-sensitive; our parser preserves attribute case);
+      //   * absent attribute → Number(null) = 0 (no rounding), NOT 10;
+      //   * arcSize is UNSCALED — the points are scaled, the radius is not;
+      //   * ONLY move/line children qualify — any other child (including an
+      //     explicit <close/>) makes drawio parse the path regularly, i.e.
+      //     UNROUNDED;
+      //   * each <move> starts an independent segment; a segment whose first
+      //     and last points coincide is auto-closed (duplicate point popped).
       if (pathNode.attrs.rounded === '1') {
-        var arcSizePx = (parseFloat(pathNode.attrs.arcsize) || 10) * su;
-        var rpts = [], rclosed = false;
+        var arcSizeAttr = pathNode.attrs.arcSize;
+        var arcSizeR = (arcSizeAttr == null) ? 0 : Number(arcSizeAttr);
+        var rsegs = [], rok = true, rcount = 0;
         for (var rci = 0; rci < pathNode.children.length; rci++) {
           var rcc = pathNode.children[rci];
           if (rcc.name === 'move' || rcc.name === 'line') {
-            rpts.push({ x: tx(parseFloat(rcc.attrs.x) || 0), y: ty(parseFloat(rcc.attrs.y) || 0) });
-          } else if (rcc.name === 'close') {
-            rclosed = true;
+            if (rcc.name === 'move' || rsegs.length === 0) rsegs.push([]);
+            // getAttribute(null) → Number(null) = 0 in drawio; our parser
+            // yields undefined for absent attrs (Number(undefined) is NaN).
+            rsegs[rsegs.length - 1].push({
+              x: tx(Number(rcc.attrs.x != null ? rcc.attrs.x : 0)),
+              y: ty(Number(rcc.attrs.y != null ? rcc.attrs.y : 0)) });
+            rcount++;
           } else {
-            rpts = null; break; // curve/arc/quad present — fall through to regular parse
+            rok = false; // close/curve/arc/quad — drawio parses regularly
+            break;
           }
         }
-        if (rpts && rpts.length >= 2) {
-          var rn = rpts.length;
-          function rpt(ri) { return rclosed ? rpts[((ri % rn) + rn) % rn] : rpts[Math.max(0, Math.min(rn - 1, ri))]; }
-          var rp = ['M ' + fmt(rpts[0].x) + ' ' + fmt(rpts[0].y)];
-          for (var rj = (rclosed ? 0 : 1); rj < (rclosed ? rn : rn - 1); rj++) {
-            var rv = rpt(rj - 1), rc = rpt(rj), rne = rpt(rj + 1);
-            var dpx = rv.x - rc.x, dpy = rv.y - rc.y;
-            var dnx = rne.x - rc.x, dny = rne.y - rc.y;
-            var dp = Math.sqrt(dpx * dpx + dpy * dpy) || 1;
-            var dn = Math.sqrt(dnx * dnx + dny * dny) || 1;
-            var r = Math.min(arcSizePx, dp / 2, dn / 2);
-            rp.push('L ' + fmt(rc.x + dpx / dp * r) + ' ' + fmt(rc.y + dpy / dp * r) +
-              ' Q ' + fmt(rc.x) + ' ' + fmt(rc.y) +
-              ' ' + fmt(rc.x + dnx / dn * r) + ' ' + fmt(rc.y + dny / dn * r));
+        if (rok && rcount > 0) {
+          var rparts = [];
+          for (var rsi = 0; rsi < rsegs.length; rsi++) {
+            var seg = rsegs[rsi];
+            var rclose = false;
+            var rs = seg[0], re = seg[seg.length - 1];
+            if (seg.length > 1 && rs.x === re.x && rs.y === re.y) {
+              seg = seg.slice(0, -1);
+              rclose = true;
+            }
+            var segD = addPointsD(seg, arcSizeR, rclose);
+            if (segD) rparts.push(segD);
           }
-          if (!rclosed) rp.push('L ' + fmt(rpts[rn - 1].x) + ' ' + fmt(rpts[rn - 1].y));
-          if (rclosed)  rp.push('Z');
-          return rp.join(' ');
+          return rparts.join(' ');
         }
-        // Mixed path (curve/arc/quad with rounded="1") — fall through to regular parse.
+        // Non-move/line child present — fall through to regular (unrounded) parse.
       }
       var parts = [];
       for (var i = 0; i < pathNode.children.length; i++) {
@@ -417,7 +488,10 @@
               lineJoin: state.lineJoin, miterLimit: state.miterLimit,
               alpha: state.alpha, fontColor: state.fontColor,
               fontSize: state.fontSize, fontFamily: state.fontFamily,
-              fontStyle: state.fontStyle
+              fontStyle: state.fontStyle,
+              // the gradient is canvas state too (mxAbstractCanvas2D.save
+              // snapshots state.gradient)
+              gradId: gradId
             });
             break;
           case 'restore':
@@ -430,11 +504,9 @@
               state.alpha = saved.alpha; state.fontColor = saved.fontColor;
               state.fontSize = saved.fontSize; state.fontFamily = saved.fontFamily;
               state.fontStyle = saved.fontStyle;
-              // Recompute gradient if fill color changed
-              if (isPaintable(state.fillColor) && isPaintable(style.gradientColor) && !gradId) {
-                gradId = stableGradId(state.fillColor, style.gradientColor);
-                gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
-              }
+              // Restore the gradient captured at save time (its def is still
+              // in gradDefs — defs are collected, never dropped).
+              gradId = saved.gradId;
             }
             break;
           case 'strokecolor':
@@ -442,11 +514,11 @@
             break;
           case 'fillcolor':
             state.fillColor = resolveStencilColor(a.color, a.default, state.fillColor);
-            // Update gradient if fill changed
-            if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
-              gradId = stableGradId(state.fillColor, style.gradientColor);
-              gradDef = linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection);
-            }
+            // mxAbstractCanvas2D.setFillColor CLEARS the gradient: after an
+            // explicit <fillcolor> the canvas paints SOLID. Previously this
+            // minted a NEW gradient id and dropped the old def — earlier
+            // elements then referenced a dangling def (broken paint).
+            gradId = null;
             break;
           case 'strokewidth': {
             var w = parseFloat(a.width) || 1;
@@ -457,7 +529,15 @@
             state.dashed = a.dashed === '1';
             break;
           case 'dashpattern':
-            state.dashPattern = a.pattern;
+            // mxStencil.js:897-916 multiplies each dash value by minScale
+            // BEFORE setDashPattern (the strokeWidth scaling in
+            // stateStrokeAttrs/createDashPattern then applies on top).
+            if (a.pattern != null) {
+              state.dashPattern = String(a.pattern).split(/\s+/)
+                .filter(function (v) { return v.length > 0; })
+                .map(function (v) { return Number(v) * su; })
+                .join(' ');
+            }
             break;
           case 'linecap':
             state.lineCap = a.cap || 'butt';
@@ -470,10 +550,15 @@
             break;
           case 'alpha':
           case 'fillalpha':
-          case 'strokealpha':
-            // Both fill/stroke alpha map to global alpha in mxGraph stencil engine
-            state.alpha = clamp01(parseFloat(a.alpha) || 1);
+          case 'strokealpha': {
+            // Both fill/stroke alpha map to global alpha in mxGraph stencil
+            // engine (mxStencil.js:940-951 — all three call canvas.setAlpha).
+            // alpha="0" is a VALID value (fully transparent) — `|| 1` treated
+            // it as opaque (falsy-zero bug, e.g. hpe_aruba <fillalpha alpha="0">).
+            var av = parseFloat(a.alpha);
+            state.alpha = clamp01(Number.isFinite(av) ? av : 1);
             break;
+          }
           case 'fontcolor':
             state.fontColor = resolveStencilColor(a.color, a.default, state.fontColor);
             break;
@@ -518,8 +603,11 @@
                 'include-shape "' + isName + '" not found in stencil registry', ''));
               break;
             }
-            // stencilToSvg() creates fresh state/elems — parent state is never mutated.
-            var isSvg = stencilToSvg(isNode, isW * sw, isH * sh, style, notices, resolved);
+            // stencilToSvg() creates fresh state/elems — parent state is never
+            // mutated. nested=true: direction rotation/flip apply ONCE at the
+            // outermost level (drawio rotates the canvas once; the included
+            // stencil only recomputes aspect, mxStencil.js:862-874).
+            var isSvg = stencilToSvg(isNode, isW * sw, isH * sh, style, notices, resolved, true);
             if (isSvg) {
               // stencilToSvg() never emits nested <svg>, so this regex is safe.
               var isM = /^<svg[^>]*>([\s\S]*)<\/svg>\s*$/.exec(isSvg);
@@ -536,15 +624,56 @@
             if (tStr) {
               var ttx = tx(parseFloat(a.x) || 0);
               var tty = ty(parseFloat(a.y) || 0);
-              var tAnchor = a.align === 'left' ? 'start' : a.align === 'right' ? 'end' : 'middle';
-              var tBase = a.valign === 'top' ? 'hanging' : a.valign === 'bottom' ? 'auto' : 'central';
-              var tFs = (parseFloat(a.fontsize) || state.fontSize || 11) * su;
-              var tFf = a.fontfamily || state.fontFamily || 'Arial';
-              var tFc = state.fontColor || '#000000';
-              elems.push('<text x="' + fmt(ttx) + '" y="' + fmt(tty) + '"' +
-                ' text-anchor="' + tAnchor + '" dominant-baseline="' + tBase + '"' +
-                ' font-family="' + escXml(tFf) + '" font-size="' + fmt(tFs) + '"' +
-                ' fill="' + tFc + '">' + escXml(tStr) + '</text>');
+              // mxStencil.js:824-860 → canvas.text(x, y, 0, 0, str,
+              // align||'left', valign||'top', …, rotation):
+              //   align defaults LEFT (anchor start), valign defaults TOP;
+              //   vertical="1" starts at -90 and the rotation attr SUBTRACTS.
+              var tAnchor = a.align === 'right' ? 'end'
+                : a.align === 'center' ? 'middle' : 'start';
+              var tRot = (a.vertical === '1' ? -90 : 0) - number(a.rotation, 0);
+              // align-shape="0" counter-rotates against the SHAPE rotation —
+              // only observable when the cell itself is rotated. Not modelled
+              // headless: loud notice instead of a silently wrong angle.
+              if (a['align-shape'] === '0' && number(style.rotation, 0) !== 0) {
+                if (Array.isArray(notices)) notices.push(degradation(
+                  'ExporterUnsupportedStencilFeature',
+                  'stencil <text align-shape="0"> on a rotated cell is not counter-rotated', ''));
+              }
+              // Font size is the CANVAS state: <fontsize> nodes were already
+              // scaled by minScale when they set state.fontSize — multiplying
+              // by su again here double-scaled every stencil text.
+              var tFs = state.fontSize || 11;
+              var tFf = state.fontFamily || 'Arial';
+              var tFc = hex(state.fontColor || '#000000');
+              // Baseline math from mxSvgCanvas2D.plainText (w=h=0, no clip):
+              //   first-line baseline cy = y + size - 1; middle subtracts
+              //   textHeight/2; bottom subtracts textHeight + 1;
+              //   line height = round(size * mxConstants.LINE_HEIGHT (1.2)).
+              var tLines = String(tStr).split('\n');
+              var tLh = Math.round(tFs * 1.2);
+              var tTextH = tFs + (tLines.length - 1) * tLh;
+              var tCy = tty + tFs - 1;
+              if (a.valign === 'middle') tCy -= tTextH / 2;
+              else if (a.valign === 'bottom') tCy -= tTextH + 1;
+              var tStyleAttrs = '';
+              var tFsBits = number(state.fontStyle, 0);
+              if (tFsBits & 1) tStyleAttrs += ' font-weight="bold"';
+              if (tFsBits & 2) tStyleAttrs += ' font-style="italic"';
+              if (tFsBits & 4) tStyleAttrs += ' text-decoration="underline"';
+              if (state.alpha < 1) tStyleAttrs += ' opacity="' + fmt(state.alpha) + '"';
+              // rotation about the anchor point, like plainText's
+              // rotate(r, x, y) group transform.
+              var tOpen = tRot !== 0
+                ? '<g transform="rotate(' + fmt(tRot) + ' ' + fmt(ttx) + ' ' + fmt(tty) + ')">' : '';
+              var tClose = tRot !== 0 ? '</g>' : '';
+              var tBody = '';
+              for (var tli = 0; tli < tLines.length; tli++) {
+                tBody += '<text x="' + fmt(ttx) + '" y="' + fmt(tCy + tli * tLh) + '"' +
+                  ' text-anchor="' + tAnchor + '"' +
+                  ' font-family="' + escXml(tFf) + '" font-size="' + fmt(tFs) + '"' +
+                  ' fill="' + tFc + '"' + tStyleAttrs + '>' + escXml(tLines[tli]) + '</text>';
+              }
+              elems.push(tOpen + tBody + tClose);
             }
             break;
           }
@@ -569,10 +698,10 @@
 
     // Step 12: Flip transforms — must use cw/ch (the dimension-swapped space the path was built in)
     var innerContent = elems.join('');
-    if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
+    if (!nested && (boolish(style.flipH) || boolish(style.stencilFlipH))) {
       innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cw) + ',0)">' + innerContent + '</g>';
     }
-    if (boolish(style.flipV) || boolish(style.stencilFlipV)) {
+    if (!nested && (boolish(style.flipV) || boolish(style.stencilFlipV))) {
       innerContent = '<g transform="scale(1,-1) translate(0,' + fmt(-ch) + ')">' + innerContent + '</g>';
     }
 
@@ -580,7 +709,19 @@
     // For north/south: path was built in (cw=cellH, ch=cellW) space; rotate to fit (cellW×cellH).
     // translate(0,cellH)  rotate(-90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
     // translate(cellW,0)  rotate(+90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
-    if (dir === 'north') {
+    if (nested) {
+      // include-shape sub-render: the outermost render already rotated the
+      // whole shape. drawio's nested computeAspect still swaps the scales for
+      // north/south AND offsets by delta = (w-h)/2 (mxStencil.js:497-508);
+      // the swap happened above via cw/ch — apply only the delta here.
+      if (dir === 'north' || dir === 'south') {
+        var dlt = (cellW - cellH) / 2;
+        if (dlt !== 0) {
+          innerContent = '<g transform="translate(' + fmt(dlt) + ',' + fmt(-dlt) + ')">' + innerContent + '</g>';
+        }
+      }
+      // east/west: nothing — no nested rotation in drawio.
+    } else if (dir === 'north') {
       innerContent = '<g transform="translate(0,' + fmt(cellH) + ') rotate(-90)">' + innerContent + '</g>';
     } else if (dir === 'south') {
       innerContent = '<g transform="translate(' + fmt(cellW) + ',0) rotate(90)">' + innerContent + '</g>';
@@ -590,7 +731,7 @@
     }
 
     // Step 13: Assemble final SVG
-    var defsStr = gradDef ? '<defs>' + gradDef + '</defs>' : '';
+    var defsStr = gradDefs.length ? '<defs>' + gradDefs.join('') + '</defs>' : '';
     return '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(cellW) +
       '" height="' + fmt(cellH) + '">' +
       defsStr + innerContent + '</svg>';
@@ -851,14 +992,16 @@
         if (r === 'default') { r = def; }
         if (r !== v) { set(k, r); }
       });
-    // In the browser, getCellStyle DELETES keys whose value is "none", so an
-    // explicit strokeColor=none / fillColor=none would be re-forced to a theme
-    // default below (e.g. a black border on a borderless note). Recover the
-    // author's explicit "none" from the raw style string so it stays unpainted.
-    // (Headless parser keeps "none", so graph.getModel().getStyle is absent and
-    // this is a no-op there.)
+    // Both style resolvers DELETE keys whose value is "none" (browser
+    // getCellStyle and the headless faithfulCellStyle), so an explicit
+    // strokeColor=none / fillColor=none would be re-forced to a theme default
+    // below (e.g. a black border on a borderless note), and an explicit
+    // endArrow=none would be re-forced to the defaultEdge classic arrow.
+    // Recover the author's explicit "none" from the raw style string
+    // (graph.getModel().getStyle(cell) returns it on both paths).
+    var rawStyleStr = null;
     try {
-      var rawStyleStr = (graph && graph.getModel && typeof graph.getModel().getStyle === 'function')
+      rawStyleStr = (graph && graph.getModel && typeof graph.getModel().getStyle === 'function')
         ? graph.getModel().getStyle(cell) : null;
       if (typeof rawStyleStr === 'string') {
         ['strokeColor', 'fillColor', 'fontColor', 'gradientColor'].forEach(function (key) {
@@ -869,6 +1012,12 @@
         });
       }
     } catch (e) { /* ignore — fall through to defaults */ }
+    // True when the raw cell style explicitly sets key=none (deleted by the
+    // stylesheet resolvers, so indistinguishable from "absent" in `out`).
+    var rawExplicitNone = function (key) {
+      return typeof rawStyleStr === 'string' &&
+        new RegExp('(^|;)\\s*' + key + '\\s*=\\s*none\\s*(;|$)', 'i').test(rawStyleStr);
+    };
     // Supply drawio's stylesheet defaults when absent (styles/default.xml
     // defaultVertex: fillColor="default", strokeColor="default", fontColor="default";
     // defaultEdge: strokeColor="default", fontColor="default").
@@ -877,7 +1026,13 @@
     if (!('strokeColor' in out)) set('strokeColor', fg);
     if (!('fontColor' in out)) set('fontColor', fg);
     if (isVertex && !('fillColor' in out)) set('fillColor', bg);
-    if (!isVertex && !('endArrow' in out)) set('endArrow', 'classic');
+    // drawio's defaultEdge style carries endArrow=classic, so a plain edge DOES
+    // print a classic arrowhead — but an author's explicit endArrow=none was
+    // deleted by the stylesheet resolver and must NOT be re-defaulted here
+    // (it silently printed an arrowhead the editor does not draw).
+    if (!isVertex && !('endArrow' in out) && !rawExplicitNone('endArrow')) {
+      set('endArrow', 'classic');
+    }
     return out;
   }
 
@@ -3557,139 +3712,276 @@
       p(base.x - px * size * 0.45, base.y - py * size * 0.45) + ' Z';
   }
 
-  function openArrowPath(from, to, size) {
+  // Faithful headless edge-marker renderer, transcribed 1:1 from mxMarker.js
+  // and the Shapes.js marker registrations (dash/box/cross/circle/circlePlus/
+  // halfCircle/async/openAsync/ER family). drawio markers do two things:
+  //   1. paint the marker glyph (after the line, never dashed, fillAndStroke
+  //      in the marker fill color when `filled`, stroke-only otherwise);
+  //   2. RECEDE the line endpoint (the factory mutates pe) so the edge line
+  //      stops behind the marker instead of bisecting it.
+  // Returns { nodes: [paintNode…], pe: {x,y} } — pe is the receded endpoint
+  // the polyline must be drawn to — or null for a degenerate segment.
+  // `size` is the per-end endSize/startSize (mxConnector.js:107-108, default
+  // mxConstants.DEFAULT_MARKERSIZE = 6); `source` selects the half-arrow side
+  // for async/openAsync (mxMarker passes the source flag through).
+  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices, filled, source) {
     var dx = to.x - from.x, dy = to.y - from.y;
     var len = Math.sqrt(dx * dx + dy * dy);
     if (len <= 0.001) return null;
     var ux = dx / len, uy = dy / len;
-    var px = -uy, py = ux;
-    var base = { x: to.x - ux * size, y: to.y - uy * size };
-    return 'M ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) +
-      ' L ' + p(to.x, to.y) +
-      ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45);
-  }
-
-  // Faithful headless edge-marker renderer. drawio has ~30 arrowhead types; the
-  // re-derivation path (headless fallback) previously drew EVERY non-open marker
-  // as a classic filled triangle with NO notice — a silent WYSIWYG divergence
-  // (C1) for diamond/oval/box/circle/ER/etc. This renders the common ones
-  // faithfully and emits a LOUD notice for the genuinely-unsupported ones
-  // (drawing the closest approximation so the operator still sees a marker).
-  // Returns a paint node ({kind:'path', d, fill, stroke}) or null.
-  function edgeMarkerNode(type, from, to, size, stroke, arrowFill, cellId, notices, filled) {
-    var dx = to.x - from.x, dy = to.y - from.y;
-    var len = Math.sqrt(dx * dx + dy * dy);
-    if (len <= 0.001) return null;
-    var ux = dx / len, uy = dy / len, px = -uy, py = ux;
-    var base = { x: to.x - ux * size, y: to.y - uy * size };
-    var t = String(type).replace(/Thin$/, '');
-    // drawio endFill/startFill: a filled marker (classic/block/diamond/oval/box)
-    // is fillAndStroke when filled, but a plain stroked OUTLINE (transparent
-    // inside) when endFill/startFill=0. Previously always filled -> a hollow
-    // arrowhead silently printed solid. `filled` defaults true (endFill!='0').
-    var fillIf = (filled === false) ? null : arrowFill;
-    var strokeIf = (filled === false) ? stroke : null;
-    // Open V (stroked, not filled).
-    if (t === 'open' || t === 'openAsync') {
-      return { kind: 'path', d: openArrowPath(from, to, size), fill: null, stroke: stroke };
-    }
-    // Filled triangle: classic (notched back) and block (flat back). We render
-    // both as a flat-back triangle — visually equivalent at print marker sizes.
-    if (t === 'classic' || t === 'block' || t === '') {
-      return { kind: 'path', d: arrowPath(from, to, size), fill: fillIf, stroke: strokeIf };
-    }
-    // Filled rhombus.
-    if (t === 'diamond') {
-      var dm = { x: to.x - ux * size * 0.5, y: to.y - uy * size * 0.5 };
-      var dd = 'M ' + p(to.x, to.y) +
-        ' L ' + p(dm.x + px * size * 0.5, dm.y + py * size * 0.5) +
-        ' L ' + p(base.x, base.y) +
-        ' L ' + p(dm.x - px * size * 0.5, dm.y - py * size * 0.5) + ' Z';
-      return { kind: 'path', d: dd, fill: fillIf, stroke: strokeIf };
-    }
-    // Circle/ellipse, centered half a marker back from the tip. circle = hollow.
-    if (t === 'oval' || t === 'circle' || t === 'circlePlus') {
-      var c = { x: to.x - ux * size * 0.5, y: to.y - uy * size * 0.5 }, r = size * 0.5;
-      var cd = 'M ' + p(c.x - r, c.y) +
-        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x + r) + ' ' + fmt(c.y) +
-        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(c.x - r) + ' ' + fmt(c.y) + ' Z';
-      var hollow = (t === 'circle' || t === 'circlePlus' || filled === false);
-      var node = { kind: 'path', d: cd, fill: hollow ? null : arrowFill,
-        stroke: hollow ? stroke : null };
-      if (t === 'circlePlus') {
-        // notice: the plus glyph is not rendered, only the circle outline.
-        if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
-          'edge marker "' + type + '" rendered as circle (plus omitted)', cellId));
-      }
-      return node;
-    }
-    // Filled square.
-    if (t === 'box') {
-      var bd = 'M ' + p(to.x + px * size * 0.45, to.y + py * size * 0.45) +
-        ' L ' + p(to.x - px * size * 0.45, to.y - py * size * 0.45) +
-        ' L ' + p(base.x - px * size * 0.45, base.y - py * size * 0.45) +
-        ' L ' + p(base.x + px * size * 0.45, base.y + py * size * 0.45) + ' Z';
-      return { kind: 'path', d: bd, fill: fillIf, stroke: strokeIf };
-    }
-    // Stroked-line markers (dash, cross) and the ER crow's-foot family are
-    // rendered faithfully here, matching drawio's mxMarker formulas exactly
-    // (Q = unitX*(size+sw+1), Ca = unitY*(size+sw+1); unit vector points at the
-    // tip). These are pure stroked lines/feet — no edge-line recession — so a
-    // multi-segment stencil is returned as an array of stroked path nodes.
     var sw = (stroke && stroke.width) || 1;
+    var t = String(type);
+    // markers paint with the edge stroke but NEVER dashed
+    // (mxConnector.paintEdgeShape calls c.setDashed(false) before markers).
+    var mstroke = stroke ? { paint: stroke.paint, width: stroke.width,
+      cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit,
+      dash: null } : null;
+    var pe = { x: to.x, y: to.y };
+    // fillAndStroke when filled (fill AND stroke, mxMarker), stroke-only when
+    // endFill/startFill=0 (hollow outline).
+    function node(d, isFilled) {
+      return { kind: 'path', d: d, fill: isFilled ? arrowFill : null, stroke: mstroke };
+    }
+    function strokeNode(d) { return node(d, false); }
+    function done(nodes) { return { nodes: nodes, pe: pe }; }
+    function ellipseD(cx, cy, r) {
+      return 'M ' + p(cx - r, cy) +
+        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(cx + r) + ' ' + fmt(cy) +
+        ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 1 0 ' + fmt(cx - r) + ' ' + fmt(cy) + ' Z';
+    }
+
+    // classic / classicThin / block / blockThin — mxMarker.js createArrow.
+    if (t === 'classic' || t === 'classicThin' || t === 'block' || t === 'blockThin' || t === '') {
+      var wf = (t === 'classicThin' || t === 'blockThin') ? 3 : 2;
+      var eoX = ux * sw * 1.118, eoY = uy * sw * 1.118;
+      var nx = ux * (size + sw), ny = uy * (size + sw);
+      var ptx = to.x - eoX, pty = to.y - eoY;
+      var f = (t === 'classic' || t === 'classicThin') ? 3 / 4 : 1;
+      pe = { x: to.x - nx * f - eoX, y: to.y - ny * f - eoY };
+      var d = 'M ' + p(ptx, pty) +
+        ' L ' + p(ptx - nx - ny / wf, pty - ny + nx / wf);
+      if (t === 'classic' || t === 'classicThin') {
+        d += ' L ' + p(ptx - nx * 3 / 4, pty - ny * 3 / 4);
+      }
+      d += ' L ' + p(ptx + ny / wf - nx, pty - ny - nx / wf) + ' Z';
+      return done([node(d, filled !== false)]);
+    }
+
+    // open / openThin — mxMarker.js createOpenArrow (stroke-only V, line
+    // recedes by 2 * the strokewidth offset only).
+    if (t === 'open' || t === 'openThin') {
+      var owf = t === 'openThin' ? 3 : 2;
+      var oeX = ux * sw * 1.118, oeY = uy * sw * 1.118;
+      var onx = ux * (size + sw), ony = uy * (size + sw);
+      var optx = to.x - oeX, opty = to.y - oeY;
+      pe = { x: to.x - 2 * oeX, y: to.y - 2 * oeY };
+      return done([strokeNode(
+        'M ' + p(optx - onx - ony / owf, opty - ony + onx / owf) +
+        ' L ' + p(optx, opty) +
+        ' L ' + p(optx + ony / owf - onx, opty - ony - onx / owf))]);
+    }
+
+    // oval — mxMarker.js:139-159: circle of DIAMETER size centered AT the
+    // endpoint; the line recedes by size/2 (to the circle center).
+    if (t === 'oval') {
+      var oa = size / 2;
+      pe = { x: to.x - ux * oa, y: to.y - uy * oa };
+      return done([node(ellipseD(to.x, to.y, oa), filled !== false)]);
+    }
+
+    // diamond / diamondThin — mxMarker.js:218-260.
+    if (t === 'diamond' || t === 'diamondThin') {
+      var swF = (t === 'diamond') ? 0.7071 : 0.9862;
+      var deX = ux * sw * swF, deY = uy * sw * swF;
+      var dnx = ux * (size + sw), dny = uy * (size + sw);
+      var dptx = to.x - deX, dpty = to.y - deY;
+      pe = { x: to.x - dnx - deX, y: to.y - dny - deY };
+      var tk = (t === 'diamond') ? 2 : 3.4;
+      var dd = 'M ' + p(dptx, dpty) +
+        ' L ' + p(dptx - dnx / 2 - dny / tk, dpty + dnx / tk - dny / 2) +
+        ' L ' + p(dptx - dnx, dpty - dny) +
+        ' L ' + p(dptx - dnx / 2 + dny / tk, dpty - dny / 2 - dnx / tk) + ' Z';
+      return done([node(dd, filled !== false)]);
+    }
+
+    // box — Shapes.js:5840-5868: square of side ~(size+sw+1), line recedes by
+    // the full (size+sw+1) so it stops at the back face.
+    if (t === 'box') {
+      var bnx = ux * (size + sw + 1), bny = uy * (size + sw + 1);
+      var bpx = to.x + bnx / 2, bpy = to.y + bny / 2;
+      pe = { x: to.x - bnx, y: to.y - bny };
+      var bd = 'M ' + p(bpx - bnx / 2 - bny / 2, bpy - bny / 2 + bnx / 2) +
+        ' L ' + p(bpx - bnx / 2 + bny / 2, bpy - bny / 2 - bnx / 2) +
+        ' L ' + p(bpx + bny / 2 - 3 * bnx / 2, bpy - 3 * bny / 2 - bnx / 2) +
+        ' L ' + p(bpx - bny / 2 - 3 * bnx / 2, bpy - 3 * bny / 2 + bnx / 2) + ' Z';
+      return done([node(bd, filled !== false)]);
+    }
+
+    // circle / circlePlus — Shapes.js:5887-5934 circleMarker: radius (size+sw),
+    // centered (size+2sw) behind the tip; line recedes by 2(size+sw)+sw.
+    function circleNode() {
+      var cs = size + sw;
+      var ccx = to.x - ux * (cs + sw), ccy = to.y - uy * (cs + sw);
+      pe = { x: to.x - ux * (2 * cs + sw), y: to.y - uy * (2 * cs + sw) };
+      return node(ellipseD(ccx, ccy, cs), filled !== false);
+    }
+    if (t === 'circle') return done([circleNode()]);
+    if (t === 'circlePlus') {
+      var cpn = circleNode(); // mutates pe like circleMarker
+      var pnx = ux * (size + 2 * sw), pny = uy * (size + 2 * sw);
+      var cpd = 'M ' + p(to.x - ux * sw, to.y - uy * sw) +
+        ' L ' + p(to.x - 2 * pnx + ux * sw, to.y - 2 * pny + uy * sw) +
+        ' M ' + p(to.x - pnx - pny + uy * sw, to.y - pny + pnx - ux * sw) +
+        ' L ' + p(to.x + pny - pnx - uy * sw, to.y - pny - pnx + ux * sw);
+      return done([cpn, strokeNode(cpd)]);
+    }
+
+    // halfCircle — Shapes.js:5937-5954: two quadratics through the receded pe.
+    // The engine path grammar has no Q; emit the EXACT cubic equivalent
+    // (C1 = P0 + 2/3(Q-P0), C2 = P2 + 2/3(Q-P2) — identical curve).
+    if (t === 'halfCircle') {
+      var hnx = ux * (size + sw + 1), hny = uy * (size + sw + 1);
+      pe = { x: to.x - hnx, y: to.y - hny };
+      function quadC(x0, y0, qx2, qy2, x1, y1) {
+        return ' C ' + p(x0 + 2 / 3 * (qx2 - x0), y0 + 2 / 3 * (qy2 - y0)) +
+          ' ' + p(x1 + 2 / 3 * (qx2 - x1), y1 + 2 / 3 * (qy2 - y1)) +
+          ' ' + p(x1, y1);
+      }
+      var h0x = to.x - hny, h0y = to.y + hnx;
+      var h2x = to.x + hny, h2y = to.y - hnx;
+      return done([strokeNode(
+        'M ' + p(h0x, h0y) +
+        quadC(h0x, h0y, pe.x - hny, pe.y + hnx, pe.x, pe.y) +
+        quadC(pe.x, pe.y, pe.x + hny, pe.y - hnx, h2x, h2y))]);
+    }
+
+    // async — Shapes.js:5956-6001: half arrowhead (side depends on source).
+    if (t === 'async') {
+      var aeX = ux * sw * 1.118, aeY = uy * sw * 1.118;
+      var anx = ux * (size + sw), any_ = uy * (size + sw);
+      var aptx = to.x - aeX, apty = to.y - aeY;
+      pe = { x: to.x - anx - aeX, y: to.y - any_ - aeY };
+      var ad = 'M ' + p(aptx, apty) + ' L ' +
+        (source ? p(aptx - anx - any_ / 2, apty - any_ + anx / 2)
+                : p(aptx + any_ / 2 - anx, apty - any_ - anx / 2)) +
+        ' L ' + p(aptx - anx, apty - any_) + ' Z';
+      return done([node(ad, filled !== false)]);
+    }
+    // openAsync — Shapes.js:6003-6033: single stroked side, NO recession.
+    if (t === 'openAsync') {
+      var onx2 = ux * (size + sw), ony2 = uy * (size + sw);
+      return done([strokeNode('M ' + p(to.x, to.y) + ' L ' +
+        (source ? p(to.x - onx2 - ony2 / 2, to.y - ony2 + onx2 / 2)
+                : p(to.x + ony2 / 2 - onx2, to.y - ony2 - onx2 / 2)))]);
+    }
+
+    // doubleBlock — mxMarker.js:177-216: two stacked triangles, line recedes
+    // by 2*(size+sw) plus the strokewidth offset.
+    if (t === 'doubleBlock') {
+      var beX = ux * sw * 1.118, beY = uy * sw * 1.118;
+      var bnx2 = ux * (size + sw), bny2 = uy * (size + sw);
+      var bptx = to.x - beX, bpty = to.y - beY;
+      pe = { x: to.x - 2 * bnx2 - beX, y: to.y - 2 * bny2 - beY };
+      var dbd = 'M ' + p(bptx, bpty) +
+        ' L ' + p(bptx - bnx2 - bny2 / 2, bpty - bny2 + bnx2 / 2) +
+        ' L ' + p(bptx + bny2 / 2 - bnx2, bpty - bny2 - bnx2 / 2) + ' Z' +
+        ' M ' + p(bptx - bnx2, bpty - bny2) +
+        ' L ' + p(bptx - 2 * bnx2 - 0.5 * bny2, bpty + 0.5 * bnx2 - 2 * bny2) +
+        ' L ' + p(bptx - 2 * bnx2 + 0.5 * bny2, bpty - 0.5 * bnx2 - 2 * bny2) + ' Z';
+      return done([node(dbd, filled !== false)]);
+    }
+
+    // Stroked-line markers (dash, baseDash, cross) and the ER family — pure
+    // stroked lines/feet matching the Shapes.js formulas exactly
+    // (n = unit*(size+sw+1)); no recession except the hollow ERzeroTo* forms.
     var g = size + sw + 1;
-    var qx = ux * g, qy = uy * g;      // Q  (x-projection) and Ca (y-projection)
+    var qx = ux * g, qy = uy * g;
     function line(x0, y0, x1, y1) {
-      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1),
-        fill: null, stroke: stroke };
+      return strokeNode('M ' + p(x0, y0) + ' L ' + p(x1, y1));
     }
     function poly3(x0, y0, x1, y1, x2, y2) {
-      return { kind: 'path', d: 'M ' + p(x0, y0) + ' L ' + p(x1, y1) +
-        ' L ' + p(x2, y2), fill: null, stroke: stroke };
+      return strokeNode('M ' + p(x0, y0) + ' L ' + p(x1, y1) + ' L ' + p(x2, y2));
     }
     if (t === 'dash') {
-      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
-        to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2);
+      return done([line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2)]);
+    }
+    if (t === 'baseDash') {
+      // mxMarker.js:162-175 — perpendicular dash AT the endpoint.
+      return done([line(to.x - qy / 2, to.y + qx / 2, to.x + qy / 2, to.y - qx / 2)]);
     }
     if (t === 'cross') {
-      return [
+      return done([
         line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
           to.x + qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 - qx / 2),
         line(to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2,
           to.x - qy / 2 - 3 * qx / 2, to.y - 3 * qy / 2 + qx / 2)
-      ];
+      ]);
     }
     if (t === 'ERone') {
-      return line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
-        to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2);
+      return done([line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
+        to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2)]);
     }
     if (t === 'ERmany') {
-      return poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
-        to.x - qy / 2, to.y + qx / 2);
+      return done([poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
+        to.x - qy / 2, to.y + qx / 2)]);
     }
     if (t === 'ERmandOne') {
-      return [
+      return done([
         line(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2,
           to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2),
         line(to.x - qx - qy / 2, to.y - qy + qx / 2,
           to.x - qx + qy / 2, to.y - qy - qx / 2)
-      ];
+      ]);
     }
     if (t === 'ERoneToMany') {
-      return [
+      return done([
         line(to.x - qx - qy / 2, to.y - qy + qx / 2,
           to.x - qx + qy / 2, to.y - qy - qx / 2),
         poly3(to.x + qy / 2, to.y - qx / 2, to.x - qx, to.y - qy,
           to.x - qy / 2, to.y + qx / 2)
-      ];
+      ]);
     }
-    // Genuinely unsupported (async half-arrow, ER zero-to-* with endpoint
-    // recession, halfCircle curve, sysML glyphs, …): loud notice + classic-
+    // ERzeroToOne / ERzeroToMany — Shapes.js (min): circle of radius size/2
+    // centered 1.5n behind the tip. Filled: WHITE-filled circle, no recession
+    // (the line passes under the opaque circle). Hollow: recede the line and
+    // draw the tail segment(s) explicitly.
+    if (t === 'ERzeroToOne' || t === 'ERzeroToMany') {
+      var za = size / 2;
+      var isF = (filled !== false);
+      if (!isF) {
+        pe = { x: to.x - (2 * qx - ux * sw / 2), y: to.y - (2 * qy - uy * sw / 2) };
+      }
+      var zCircle = {
+        kind: 'path',
+        d: ellipseD(to.x - 1.5 * qx, to.y - 1.5 * qy, za),
+        fill: isF ? solid('#ffffff', 1) : null,
+        stroke: mstroke
+      };
+      var zd;
+      if (t === 'ERzeroToOne') {
+        zd = 'M ' + p(to.x - qx / 2 - qy / 2, to.y - qy / 2 + qx / 2) +
+          ' L ' + p(to.x - qx / 2 + qy / 2, to.y - qy / 2 - qx / 2);
+        if (!isF) {
+          zd += ' M ' + p(to.x - qx - ux * sw / 2, to.y - qy - uy * sw / 2) +
+            ' L ' + p(to.x, to.y);
+        }
+      } else {
+        zd = 'M ' + p(to.x + qy / 2, to.y - qx / 2) +
+          ' L ' + p(to.x - qx, to.y - qy) +
+          ' L ' + p(to.x - qy / 2, to.y + qx / 2);
+        if (!isF) {
+          zd += ' M ' + p(to.x - qx, to.y - qy) + ' L ' + p(to.x, to.y);
+        }
+      }
+      return done([zCircle, strokeNode(zd)]);
+    }
+    // Genuinely unsupported (sysML glyphs, plugins, …): loud notice + classic-
     // triangle placeholder so the edge still terminates visibly. NEVER a
-    // silent wrong marker.
+    // silent wrong marker. No recession (the placeholder is approximate anyway).
     if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedShape',
       'edge marker "' + type + '" approximated as a classic arrowhead', cellId));
-    return { kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null };
+    return done([{ kind: 'path', d: arrowPath(from, to, size), fill: arrowFill, stroke: null }]);
   }
 
   function alignH(a) {
@@ -5589,15 +5881,13 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'Custom edge shape "' + style.shape + '" exported as straight-line fallback.', cell.id));
     }
-    paint.push({
-      kind: 'path',
-      d: edgePath(points, boolish(style.rounded), boolish(style.curved), number(style.arcSize, 20) / 2),
-      fill: null,
-      stroke: stroke
-    });
-
     var arrowFill = stroke.paint || solid('#000000', 1);
-    var arrowSize = Math.max(7, stroke.width * 5);
+    // Marker size is the per-end endSize/startSize style value (mxConnector.js
+    // :107-108), default mxConstants.DEFAULT_MARKERSIZE = 6 — the drawn marker
+    // length is then (size + strokeWidth) inside edgeMarkerNode (mxMarker.js).
+    // Was a strokeWidth-derived heuristic (max(7, sw*5)).
+    var endSize = number(style.endSize, 6);
+    var startSize = number(style.startSize, 6);
     // drawio endFill/startFill default to filled (1); '0' => hollow outline.
     var endFilled = String(style.endFill) !== '0';
     var startFilled = String(style.startFill) !== '0';
@@ -5608,18 +5898,32 @@
       ? solid(style.endFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
     var startArrowFill = isPaintable(style.startFillColor)
       ? solid(style.startFillColor, opacity(style, 'strokeOpacity')) : arrowFill;
+    // Markers are computed BEFORE the line because the mxMarker factories
+    // recede the endpoint (pe) — the polyline must stop behind the marker,
+    // not bisect it (visible on endFill=0 hollow markers).
+    var endRes = null, startRes = null;
     if (style.endArrow && style.endArrow !== 'none') {
-      var endNode = edgeMarkerNode(style.endArrow, points[points.length - 2],
-        points[points.length - 1], arrowSize, stroke, endArrowFill, cell.id, notices, endFilled);
-      if (Array.isArray(endNode)) endNode.forEach(function(n) { if (n) paint.push(n); });
-      else if (endNode) paint.push(endNode);
+      endRes = edgeMarkerNode(style.endArrow, points[points.length - 2],
+        points[points.length - 1], endSize, stroke, endArrowFill, cell.id,
+        notices, endFilled, false);
     }
     if (style.startArrow && style.startArrow !== 'none') {
-      var startNode = edgeMarkerNode(style.startArrow, points[1], points[0],
-        arrowSize, stroke, startArrowFill, cell.id, notices, startFilled);
-      if (Array.isArray(startNode)) startNode.forEach(function(n) { if (n) paint.push(n); });
-      else if (startNode) paint.push(startNode);
+      startRes = edgeMarkerNode(style.startArrow, points[1], points[0],
+        startSize, stroke, startArrowFill, cell.id, notices, startFilled, true);
     }
+    var linePts = points.slice();
+    if (startRes && startRes.pe) linePts[0] = startRes.pe;
+    if (endRes && endRes.pe) linePts[linePts.length - 1] = endRes.pe;
+    paint.push({
+      kind: 'path',
+      d: edgePath(linePts, boolish(style.rounded), boolish(style.curved), number(style.arcSize, 20) / 2),
+      fill: null,
+      stroke: stroke
+    });
+    // drawio paints the source marker first, then the target marker, both
+    // after the line (mxConnector.paintEdgeShape).
+    if (startRes) startRes.nodes.forEach(function (n) { if (n) paint.push(n); });
+    if (endRes) endRes.nodes.forEach(function (n) { if (n) paint.push(n); });
 
     var label = plainLabel(graph, cell);
     if (label !== '') {

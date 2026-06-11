@@ -153,8 +153,14 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
   assert.equal(paint[0].kind, 'path');
   assert.match(paint[0].d, / C 50 0 50 0 50 10 /); // edge corner radius = arcSize/2 = 10 (drawio mxPolyline)
   assert.deepEqual(paint[0].stroke.paint, { type: 'solid', color: '#123456', alpha: 1 });
+  // mxMarker block (sw=2, size=6): tip offset = sw*1.118 = 2.236 behind the
+  // endpoint, triangle length size+sw = 8, half-width (size+sw)/2 = 4, and the
+  // LINE recedes to y = 50 - 8 - 2.236 = 39.764 (mxMarker.js:61-70).
   assert.equal(paint[1].fill.color, '#123456');
-  assert.match(paint[1].d, /^M 50 50 L /);
+  assert.ok(paint[1].stroke, 'filled markers fillAndStroke (mxMarker.js:86-93)');
+  assert.equal(paint[1].d, 'M 50 47.764 L 46 39.764 L 54 39.764 Z');
+  assert.match(paint[0].d, /L 50 39\.764$/,
+    'edge line must stop at the receded marker base, not bisect the marker');
   // The label is now a kind:'svg' node carrying the text inside the SVG source.
   assert.equal(paint[2].kind, 'svg');
   const labelSvg = decodeSvg(paint[2]);
@@ -746,7 +752,8 @@ test('endFill=0 renders a hollow arrowhead (no silent solid fill)', () => {
   };
   const solid = mk('').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
   const solidHead = solid[solid.length - 1];
-  assert.ok(solidHead.fill && !solidHead.stroke, 'default arrowhead is filled');
+  // drawio fillAndStroke()s filled markers (mxMarker.js:86-93): fill AND stroke.
+  assert.ok(solidHead.fill && solidHead.stroke, 'default arrowhead is filled and stroked');
   const hollow = mk('endFill=0;').contract.document.pages[0].paint.filter((n) => n.kind === 'path');
   const hollowHead = hollow[hollow.length - 1];
   assert.ok(!hollowHead.fill && hollowHead.stroke, 'endFill=0 arrowhead must be a stroked outline (hollow)');
@@ -768,9 +775,11 @@ test('endFillColor colors the arrowhead independently of the edge stroke', () =>
 });
 
 test('genuinely unsupported markers still raise a loud notice', () => {
-  const result = oneEdgeMarker('halfCircle');
+  // halfCircle/async/circlePlus are now rendered faithfully; an UNREGISTERED
+  // marker type (plugin marker) must still take the loud placeholder path.
+  const result = oneEdgeMarker('manyOptional');
   assert.ok(result.notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
-    'halfCircle (quad-curve marker) must still be loudly noticed, not silently wrong');
+    'an unimplemented marker type must be loudly noticed, not silently wrong');
 });
 
 // ---- sketch fills: hachure/cross-hatch/dots emit kind:'svg' with clip ------
@@ -1280,7 +1289,10 @@ function oneEdge(style, pts, label = '', off) {
 test('edges: straight, polyline, orthogonal, rounded, arrows, labels, default stroke', () => {
   const straight = oneEdge({ strokeColor: '#000000' },
     [{ x: 0, y: 0 }, { x: 100, y: 0 }]);
-  assert.equal(straight.contract.document.pages[0].paint[0].d, 'M -10 -20 L 90 -20');
+  // Default edge gets the classic arrowhead, whose mxMarker factory RECEDES
+  // the line endpoint by (size+sw)*3/4 + sw*1.118 = 5.25 + 1.118 = 6.368
+  // (size=6, sw=1) so the line stops behind the marker: 90 - 6.368 = 83.632.
+  assert.equal(straight.contract.document.pages[0].paint[0].d, 'M -10 -20 L 83.632 -20');
   assertSchemaValid(straight.contract, 'straight edge');
 
   const ortho = oneEdge({ strokeColor: '#111111' },
@@ -2794,9 +2806,10 @@ for (const shape of COVERAGE_BUILTIN_SHAPES) {
 // Every standard edge marker must render faithfully; exotic ones stay loud.
 const COVERAGE_MARKERS_OK = ['classic', 'classicThin', 'block', 'blockThin',
   'open', 'openThin', 'oval', 'diamond', 'diamondThin', 'dash', 'cross',
-  'circle', 'ERone', 'ERmandOne', 'ERmany', 'ERoneToMany', 'none'];
-const COVERAGE_MARKERS_LOUD = ['circlePlus', 'async', 'ERzeroToOne',
-  'ERzeroToMany', 'halfCircle', 'baseDash'];
+  'circle', 'circlePlus', 'halfCircle', 'async', 'openAsync', 'doubleBlock',
+  'baseDash', 'ERone', 'ERmandOne', 'ERmany', 'ERoneToMany', 'ERzeroToOne',
+  'ERzeroToMany', 'none'];
+const COVERAGE_MARKERS_LOUD = ['manyOptional'];
 test('object type: standard edge markers render faithfully (no notice)', () => {
   for (const m of COVERAGE_MARKERS_OK) {
     const r = oneEdge({ strokeColor: '#000000', endArrow: m },
