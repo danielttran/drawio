@@ -37,6 +37,10 @@ class StubServices final : public EngineServices {
     return {p};
   }
 
+  // Un-hide the 4-arg options overload (the base default forwards here);
+  // without this, callers holding a StubServices* would not see it.
+  using EngineServices::render_preview;
+
   Result<PreviewOutput, ContractError> render_preview(
       const BakedDocument&, const std::map<std::string, std::string>&,
       double) override {

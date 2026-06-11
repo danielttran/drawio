@@ -57,7 +57,16 @@ struct Frame {
 // without bound. Control frames are always tiny; preview PNGs are a few MB.
 inline constexpr std::uint32_t kMaxFrameLen = 64u * 1024u * 1024u;
 
-[[nodiscard]] std::vector<std::uint8_t> encode_frame(
+// Largest payload encode_frame accepts: frameLen covers frameType(1) +
+// streamId(4) + payload, so anything bigger would emit a frame the peer's
+// decoder kills the transport on. Enforced BEFORE emission, never after.
+inline constexpr std::size_t kMaxFramePayload =
+    static_cast<std::size_t>(kMaxFrameLen) - 5u;
+
+// std::nullopt <=> payload > kMaxFramePayload. Callers must refuse loudly
+// (typed Error control frame / fatal diagnostic) instead of emitting a frame
+// that corrupts the transport for the peer.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> encode_frame(
     FrameType type, std::uint32_t stream_id,
     const std::vector<std::uint8_t>& payload);
 

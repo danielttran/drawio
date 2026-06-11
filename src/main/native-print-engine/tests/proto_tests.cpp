@@ -28,7 +28,7 @@ std::vector<std::uint8_t> bytes(const std::string& s) {
 
 TEST_CASE("frame codec round-trips control and binary frames", "[proto][frame]") {
   const auto payload = bytes("{\"op\":\"Ping\"}");
-  const auto wire = proto::encode_frame(FrameType::Control, 0, payload);
+  const auto wire = *proto::encode_frame(FrameType::Control, 0, payload);
 
   // [uint32 frameLen][uint8 type][uint32 streamId][payload]; frameLen covers
   // type + streamId + payload.
@@ -46,7 +46,7 @@ TEST_CASE("frame codec round-trips control and binary frames", "[proto][frame]")
 
 TEST_CASE("binary frame correlates by streamId", "[proto][frame]") {
   const std::vector<std::uint8_t> png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A};
-  const auto wire = proto::encode_frame(FrameType::Binary, 42, png);
+  const auto wire = *proto::encode_frame(FrameType::Binary, 42, png);
   FrameDecoder dec;
   dec.feed(wire);
   auto f = dec.next();
@@ -57,8 +57,8 @@ TEST_CASE("binary frame correlates by streamId", "[proto][frame]") {
 }
 
 TEST_CASE("decoder reassembles frames split across feeds", "[proto][frame]") {
-  const auto a = proto::encode_frame(FrameType::Control, 1, bytes("\"a\""));
-  const auto b = proto::encode_frame(FrameType::Control, 2, bytes("\"bb\""));
+  const auto a = *proto::encode_frame(FrameType::Control, 1, bytes("\"a\""));
+  const auto b = *proto::encode_frame(FrameType::Control, 2, bytes("\"bb\""));
   std::vector<std::uint8_t> stream;
   stream.insert(stream.end(), a.begin(), a.end());
   stream.insert(stream.end(), b.begin(), b.end());
@@ -95,7 +95,7 @@ TEST_CASE("decoder rejects out-of-range and unknown frames loudly",
     CHECK(dec.failed());
   }
   SECTION("unknown frame type") {
-    auto wire = proto::encode_frame(FrameType::Control, 0, bytes("x"));
+    auto wire = *proto::encode_frame(FrameType::Control, 0, bytes("x"));
     wire[4] = 0x09;  // corrupt the type byte
     FrameDecoder dec;
     dec.feed(wire);
@@ -234,7 +234,7 @@ TEST_CASE("mock host and mock engine complete a handshake over the codec",
   pv.set("minor", Json::number(proto::kProtoMinor));
   hello.set("proto", std::move(pv));
   const auto host_out =
-      proto::encode_frame(FrameType::Control, 0, proto::encode_control(hello));
+      *proto::encode_frame(FrameType::Control, 0, proto::encode_control(hello));
 
   // Engine decodes, gates, handshakes.
   FrameDecoder engine_dec;
@@ -267,7 +267,7 @@ TEST_CASE("mock host and mock engine complete a handshake over the codec",
   ok.set("supportedSchemaMajor", Json::number(SupportedMajor));
   ok.set("supportedSchemaMinor", Json::number(SupportedMinor));
   const auto engine_out =
-      proto::encode_frame(FrameType::Control, 0, proto::encode_control(ok));
+      *proto::encode_frame(FrameType::Control, 0, proto::encode_control(ok));
 
   // Host decodes HelloOk.
   FrameDecoder host_dec;
@@ -315,4 +315,82 @@ TEST_CASE("JSON parser refuses malformed numbers instead of prefix-parsing",
   CHECK(good.value().items()[1].as_number() == 0.0);
   CHECK(good.value().items()[2].as_number() == 1000.0);
   CHECK(good.value().items()[3].as_number() == 0.25);
+}
+
+TEST_CASE("\\uXXXX surrogate pairs decode to 4-byte UTF-8 in control payloads",
+          "[proto][json][utf8]") {
+  // JSON.stringify of a mergeData value containing U+1F600 (grinning face)
+  // emits a surrogate-pair escape; it must decode to F0 9F 98 80, not two
+  // 3-byte CESU-8 units.
+  const auto r = Json::parse(R"({"v":"\ud83d\ude00"})");
+  REQUIRE(r.has_value());
+  CHECK(r.value().get("v")->as_string() == "\xF0\x9F\x98\x80");
+
+  // Lone surrogates have no valid UTF-8 form: substituted with U+FFFD,
+  // matching the contract loader -- visibly degraded, never byte-invalid.
+  const std::string replacement = "\xEF\xBF\xBD";
+  const auto high = Json::parse(R"(["\ud800"])");
+  REQUIRE(high.has_value());
+  CHECK(high.value().items()[0].as_string() == replacement);
+
+  const auto low = Json::parse(R"(["\udc00x"])");
+  REQUIRE(low.has_value());
+  CHECK(low.value().items()[0].as_string() == replacement + "x");
+
+  // High surrogate followed by a non-surrogate escape: both survive.
+  const auto split = Json::parse(R"(["\ud83dA"])");
+  REQUIRE(split.has_value());
+  CHECK(split.value().items()[0].as_string() == replacement + "A");
+}
+
+TEST_CASE("encode_frame refuses an over-limit payload before emission",
+          "[proto][frame][hardening]") {
+  // A payload > kMaxFrameLen-5 used to encode a frame whose length prefix
+  // the peer's decoder rejects, killing the transport. The encoder must
+  // refuse BEFORE emission instead.
+  std::vector<std::uint8_t> oversize(proto::kMaxFramePayload + 1, 0x00);
+  CHECK_FALSE(
+      proto::encode_frame(FrameType::Binary, 1, oversize).has_value());
+
+  // Exactly at the limit still encodes and decodes.
+  std::vector<std::uint8_t> at_limit(1024, 0x42);
+  const auto wire = proto::encode_frame(FrameType::Binary, 1, at_limit);
+  REQUIRE(wire.has_value());
+  FrameDecoder dec;
+  dec.feed(*wire);
+  auto f = dec.next();
+  REQUIRE(f.has_value());
+  CHECK(f->payload == at_limit);
+  CHECK_FALSE(dec.failed());
+}
+
+TEST_CASE("raw control characters inside JSON strings are refused",
+          "[proto][json][hardening]") {
+  // JSON.parse rejects unescaped chars < 0x20; JSON.stringify always escapes
+  // them, so producers are unaffected by tightening.
+  CHECK_FALSE(Json::parse(std::string("[\"a\x01") + "b\"]").has_value());
+  CHECK_FALSE(Json::parse("[\"line\nbreak\"]").has_value());
+  CHECK_FALSE(Json::parse(std::string("[\"\x1f\"]")).has_value());
+  // The escaped forms remain valid.
+  const auto ok = Json::parse(R"(["a\u0001b\n"])");
+  REQUIRE(ok.has_value());
+  CHECK(ok.value().items()[0].as_string() == "a\x01"
+                                             "b\n");
+}
+
+TEST_CASE("serialized numbers round-trip exactly, including near-DBL_MAX",
+          "[proto][json][numbers]") {
+  for (const double v : {1.7976931348623157e308, 0.1, -2.2250738585072014e-308,
+                         123456.789012345, 1e-9}) {
+    Json msg = Json::object();
+    msg.set("n", Json::number(v));
+    const auto round = Json::parse(msg.serialize());
+    INFO("value: " << v << " wire: " << msg.serialize());
+    REQUIRE(round.has_value());
+    CHECK(round.value().get("n")->as_number() == v);
+  }
+  // Integers stay decimal-point-free (stable, diff-friendly).
+  Json whole = Json::object();
+  whole.set("n", Json::number(300.0));
+  CHECK(whole.serialize() == "{\"n\":300}");
 }

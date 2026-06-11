@@ -3,8 +3,9 @@
  * Native UI). Adds File > Native Print, bakes the diagram via the exporter,
  * talks to the broker over same-origin HTTP, and enforces the §3.7
  * DegradationNotice acknowledgment gate: the Print button stays disabled
- * until every notice is acknowledged, and any input change re-arms it
- * (INV-5: what the operator approves is what prints).
+ * until every notice is acknowledged, and any pixel-affecting input change
+ * re-arms it (INV-5: what the operator approves is what prints; Copies only
+ * repeats the approved sheet, so it never re-arms).
  */
 (function waitForDraw(tries) {
   tries = tries || 0;
@@ -74,9 +75,6 @@
       ui.showError('Native Print', 'Exporter not loaded.', 'OK');
       return;
     }
-    var contract = null;
-    var exporterNotices = [];
-
     var root = el('div', { style:
       'padding:10px;font-family:Helvetica,Arial;font-size:13px;width:720px;' +
       'max-height:560px;overflow:auto' });
@@ -289,7 +287,9 @@
     root.appendChild(btnRow);
 
     var printers = [];
-    var acks = [];      // one bool per notice; Print enabled when all true
+    var acks = [];       // one bool per notice; Print enabled when all true
+    var ackedKinds = []; // notice kind per ack slot — sent to the broker so
+                         // bake-and-print only refuses UNacknowledged kinds
 
     function selectedStock() {
       var p = printers[printerSel.selectedIndex];
@@ -333,44 +333,12 @@
       };
     }
 
-    // The contract depends on the chosen paper, so re-bake on every paper
-    // (and printer) change — not just re-preview the stale single bake.
-    // Returns false if the bake hard-failed (e.g. NativePrintFatal): the
-    // contract is cleared, the operator is told loudly, and the caller must
-    // NOT preview/print a stale or partial page (WYSIWYG-or-loud).
-    // Returns a Promise<bool>. First resolves external (http) image URLs into
-    // embedded data URIs via a bake-time fetch (so URL-referenced images print
-    // their real pixels instead of a placeholder notice), then bakes. The
-    // resolve step is best-effort: any failure yields an empty map and the bake
-    // proceeds (unfetchable images stay loudly noticed — never silently wrong).
-    function rebake() {
-      var ex = window.NativePrintExporter;
-      if (!ex || !ex.buildResult) return Promise.resolve(true);
-      // Pre-fetch external image URLs so cells with http(s):// style.image are
-      // embedded as data URIs before baking; plain PNG/JPEG/GIF external URLs
-      // are resolved via fetch.
-      var resolve = ex.embedExternalImages
-        ? ex.embedExternalImages(ui.editor.graph).catch(function () { return {}; })
-        : Promise.resolve({});
-      return resolve.then(function (resolvedImages) {
-        try {
-          var r = ex.buildResult(ui.editor.graph, paperPx(),
-            { resolvedImages: resolvedImages, headless: true });
-          contract = r.contract;
-          exporterNotices = r.notices || [];
-          runSupportProbe();
-          return true;
-        } catch (e) {
-          contract = null;
-          exporterNotices = [];
-          rearm();
-          status.textContent = 'Bake failed: ' + e.message;
-          ui.showError('Native Print',
-            'Bake failed — nothing was printed.\n' + e.message, 'OK');
-          return false;
-        }
-      });
-    }
+    // NOTE: the dialog does NOT bake locally. The broker bakes the raw
+    // diagram XML headlessly for BOTH preview and print (the same low-level
+    // path the unattended service uses), and its bake notices come back on
+    // the bake-and-preview reply — they are the single source of truth for
+    // the ack list below. An earlier in-dialog bake built a contract that
+    // was never sent and double-counted its notices against the broker's.
 
     function refreshGate() {
       var allAck = acks.length === 0 || acks.every(Boolean);
@@ -402,8 +370,11 @@
     // no warning. The engine may still emit them on the wire for audit.
     function showNotices(notices) {
       acks = [];
+      ackedKinds = [];
       noticeBox.innerHTML = '';
-      var combined = (exporterNotices || []).concat(notices || []);
+      // Single source: the broker's reply already carries bake + engine
+      // notices (vite.config.mjs bake-and-preview concatenates them once).
+      var combined = notices || [];
       var degradations = [], infos = [];
       combined.forEach(function (n) {
         var sev = severityOf(n.kind);
@@ -427,6 +398,7 @@
         degradations.forEach(function (n) {
           var idx = acks.length;       // index BEFORE push == this ack's slot
           acks.push(false);
+          ackedKinds.push(n.kind);     // kind for the broker-side ack gate
           var line = el('div', { style: 'margin:4px 0' });
           var cb = el('input', { type: 'checkbox' });
           cb.addEventListener('change', function () {
@@ -493,16 +465,19 @@
         'Custom… (set physical dimensions)'));
       if (p && p.defaultStockId) stockSel.value = p.defaultStockId;
       customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
-      rearm(); rebake().then(function (ok) { if (ok) doPreview(); });
+      runSupportProbe(); doPreview();
     });
     stockSel.addEventListener('change', function () {
       customRow.style.display = (stockSel.value === 'custom') ? '' : 'none';
-      rearm(); rebake().then(function (ok) { if (ok) doPreview(); });
+      runSupportProbe(); doPreview();
     });
-    function onCustomDim() { rearm(); rebake().then(function (ok) { if (ok) doPreview(); }); }
+    function onCustomDim() { runSupportProbe(); doPreview(); }
     customW.addEventListener('change', onCustomDim);
     customH.addEventListener('change', onCustomDim);
-    copies.addEventListener('change', rearm);
+    // Copies deliberately does NOT re-arm: it changes how many identical
+    // sheets come out, not a single pixel of what the operator approved.
+    // Re-arming here disabled Print permanently (nothing ever re-ran the
+    // preview after a copies change).
 
     cancelBtn.addEventListener('click', function () { ui.hideDialog(); });
 
@@ -523,11 +498,20 @@
       status.textContent = 'Sending to printer…';
       // Headless-only: send the raw diagram XML; the broker bakes it low-level
       // and forwards the contract to the engine. Zero browser dependency.
+      // §3.7 ack gate, honored end-to-end: the kinds the operator ticked are
+      // forwarded so the broker refuses ONLY unacknowledged degradations.
+      // (Print is only enabled when every ack box is ticked, so ackedKinds
+      // is exactly the set of approved kinds.)
+      var acknowledgedKinds = [];
+      ackedKinds.forEach(function (k, i) {
+        if (acks[i] && acknowledgedKinds.indexOf(k) < 0) acknowledgedKinds.push(k);
+      });
       var printRpc = rpc({ action: 'bake-and-print',
         drawioXml: getDiagramXml(),
         printerId: printers[printerSel.selectedIndex].id,
         stockId: sid,
-        copies: parseInt(copies.value, 10) || 1 });
+        copies: parseInt(copies.value, 10) || 1,
+        acknowledgedKinds: acknowledgedKinds });
       printRpc.then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';

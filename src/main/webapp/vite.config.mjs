@@ -284,6 +284,19 @@ function nativePrintBroker() {
   };
 }
 
+// §3.7 dialog ack gate, broker side. The dialog collects per-kind operator
+// acknowledgments for DEGRADATION-severity bake notices; bake-and-print
+// honors them by refusing ONLY degradation notices whose kind the operator
+// did NOT tick. Info/silent notices never block. Exported (and pure) so the
+// gating decision is unit-testable without a dev server; the UNATTENDED
+// service (tools/native-print-service) deliberately does NOT use this — it
+// stays strict and refuses every degradation notice.
+export function unacknowledgedDegradations(notices, severityOf, acknowledgedKinds) {
+  const acked = new Set(Array.isArray(acknowledgedKinds) ? acknowledgedKinds : []);
+  return (notices || []).filter(
+    (n) => severityOf(n.kind) === 'degradation' && !acked.has(n.kind));
+}
+
 // Browser-facing RPCs. The browser never speaks frames or parses contracts;
 // it sends {action, ...} and the broker maps to engine ops.
 async function handleRpc(body) {
@@ -348,15 +361,18 @@ async function handleRpc(body) {
       const m = await loadBakeModule();
       const result = await m.bake(drawioXml, { unattended: false, keepPx: true });
       // Refuse on DEGRADATION-severity notices only (the exporter-owned
-      // noticeSeverity taxonomy, same gate as the unattended service).
-      // Refusing on ANY notice — including info-severity ones like an
-      // expected edge clip — made nearly every faithful job fail.
-      const blocking = (result.notices || []).filter(
-        (n) => m.noticeSeverity(n.kind) === 'degradation');
+      // noticeSeverity taxonomy). Refusing on ANY notice — including
+      // info-severity ones like an expected edge clip — made nearly every
+      // faithful job fail. Kinds the operator explicitly acknowledged in the
+      // dialog (body.acknowledgedKinds, §3.7 ack gate) are honored: the
+      // whole point of collecting acks is that an acknowledged degradation
+      // may print. The unattended service keeps its strict no-ack gate.
+      const blocking = unacknowledgedDegradations(
+        result.notices, m.noticeSeverity, body.acknowledgedKinds);
       if (blocking.length > 0) {
         return {
           result: 'Error', error: 'BakeNotices',
-          detail: `bake produced ${blocking.length} degradation notice(s)`,
+          detail: `bake produced ${blocking.length} unacknowledged degradation notice(s)`,
           notices: blocking
         };
       }

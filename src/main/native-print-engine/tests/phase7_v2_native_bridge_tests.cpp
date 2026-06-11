@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -446,4 +447,23 @@ TEST_CASE("D4: v2 bridge NativePrintTarget with um contract_units_per_inch scale
 TEST_CASE("D4: units_per_inch helper is consistent with px=96 and um=25400") {
   CHECK(units_per_inch("px") == 96.0);
   CHECK(units_per_inch("um") == 25400.0);
+}
+
+TEST_CASE("Phase 7: NaN/Inf custom paper dimensions are refused by the"
+          " DEVMODE merge", "[phase7][devmode][hardening]") {
+  // NaN compares false against <=0, so NaN/Inf paper dims sailed past the
+  // positivity guard straight into the printer DEVMODE.
+  const print_engine::DevModeSnapshot driver_default{};
+  const double nan_v = std::numeric_limits<double>::quiet_NaN();
+  const double inf_v = std::numeric_limits<double>::infinity();
+  for (const auto& [w, h] : {std::pair{nan_v, 76.2}, std::pair{101.6, nan_v},
+                             std::pair{inf_v, 76.2}, std::pair{101.6, -inf_v}}) {
+    INFO("w: " << w << " h: " << h);
+    const auto merged = build_merged_dev_mode(driver_default, w, h);
+    REQUIRE_FALSE(merged);
+    CHECK(merged.error().code ==
+          print_engine::ContractErrorCode::PrintDeviceError);
+  }
+  // Finite positive dims still merge.
+  CHECK(build_merged_dev_mode(driver_default, 101.6, 76.2).has_value());
 }

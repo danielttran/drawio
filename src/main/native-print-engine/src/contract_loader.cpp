@@ -34,6 +34,35 @@ struct JsonValue {
 // nesting limits; real contracts are a handful of levels deep.
 constexpr std::size_t kMaxNestingDepth = 512;
 
+// Strict JSON number grammar (RFC 8259), matching proto.cpp and JSON.parse:
+// rejects shapes from_chars would accept but JSON forbids -- leading zeros
+// ("01"), a bare trailing dot ("1."), bare exponents ("1e") and '+' prefixes.
+// bake emits JSON.stringify output, which never produces these.
+[[nodiscard]] bool is_valid_json_number(std::string_view t) {
+  std::size_t k = 0;
+  if (k < t.size() && t[k] == '-') ++k;
+  if (k >= t.size()) return false;
+  if (t[k] == '0') {
+    ++k;
+  } else if (t[k] >= '1' && t[k] <= '9') {
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  } else {
+    return false;
+  }
+  if (k < t.size() && t[k] == '.') {
+    ++k;
+    if (k >= t.size() || t[k] < '0' || t[k] > '9') return false;
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  }
+  if (k < t.size() && (t[k] == 'e' || t[k] == 'E')) {
+    ++k;
+    if (k < t.size() && (t[k] == '+' || t[k] == '-')) ++k;
+    if (k >= t.size() || t[k] < '0' || t[k] > '9') return false;
+    while (k < t.size() && t[k] >= '0' && t[k] <= '9') ++k;
+  }
+  return k == t.size();
+}
+
 class JsonParser {
 public:
   explicit JsonParser(std::string_view input) : input_(input) {}
@@ -192,6 +221,12 @@ private:
         return value;
       }
       if (ch != '\\') {
+        // Raw (unescaped) control characters are invalid JSON (RFC 8259);
+        // JSON.parse rejects them and JSON.stringify always escapes them, so
+        // accepting them here read DIFFERENT documents than the JS validator.
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          throw std::runtime_error("raw control character in string");
+        }
         value.push_back(ch);
         continue;
       }
@@ -325,6 +360,12 @@ private:
     // is also locale-independent (stod silently truncates "10.5" -> 10
     // under an LC_NUMERIC comma locale if a future host initializes one).
     const std::string_view token = input_.substr(start, pos_ - start);
+    // Same strict grammar as JSON.parse (and proto.cpp): from_chars alone
+    // accepts non-JSON shapes like "01" and "1." that the JS validator
+    // refuses, so the two sides would disagree on contract validity.
+    if (!is_valid_json_number(token)) {
+      throw std::runtime_error("invalid number literal");
+    }
     double parsed = 0.0;
     const auto [ptr, ec] =
         std::from_chars(token.data(), token.data() + token.size(), parsed);
@@ -560,19 +601,28 @@ private:
 
   std::vector<unsigned char> bytes;
   for (std::size_t index = 0; index < value.size(); index += 4) {
+    const bool pad2 = value[index + 2] == '=';
+    const bool pad3 = value[index + 3] == '=';
+    // '=' is legal only as TRAILING padding: in the final quartet, and a
+    // padded 3rd char forces a padded 4th. Mid-stream '=' ("QQ==QQ==") or
+    // '=' followed by data ("QQ=B") previously synthesized garbage bytes.
+    const bool last_quartet = index + 4 == value.size();
+    if ((pad2 || pad3) && (!last_quartet || (pad2 && !pad3))) {
+      return std::nullopt;
+    }
     const int a = decode_char(value[index]);
     const int b = decode_char(value[index + 1]);
-    const int c = value[index + 2] == '=' ? -1 : decode_char(value[index + 2]);
-    const int d = value[index + 3] == '=' ? -1 : decode_char(value[index + 3]);
-    if (a < 0 || b < 0 || (value[index + 2] != '=' && c < 0) || (value[index + 3] != '=' && d < 0)) {
+    const int c = pad2 ? -1 : decode_char(value[index + 2]);
+    const int d = pad3 ? -1 : decode_char(value[index + 3]);
+    if (a < 0 || b < 0 || (!pad2 && c < 0) || (!pad3 && d < 0)) {
       return std::nullopt;
     }
 
     bytes.push_back(static_cast<unsigned char>((a << 2) | (b >> 4)));
-    if (value[index + 2] != '=') {
+    if (!pad2) {
       bytes.push_back(static_cast<unsigned char>(((b & 0x0f) << 4) | (c >> 2)));
     }
-    if (value[index + 3] != '=') {
+    if (!pad3) {
       bytes.push_back(static_cast<unsigned char>(((c & 0x03) << 6) | d));
     }
   }
@@ -1618,6 +1668,16 @@ const char* to_string(ContractErrorCode code) noexcept {
   return "UnknownContractError";
 }
 
+// GCC 13 emits a -Wmaybe-uninitialized FALSE POSITIVE here: once
+// JsonParser::parse() is inlined, the std::variant move-constructor chain for
+// the JsonValue temporary inside Result::ok() is flagged as "may be used
+// uninitialized" (gcc bug 109561 class). The value is always initialized by
+// parse_value() before the move; MSVC (/W4 /WX, the canonical build) and
+// clang agree. Suppressed for this one function only.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 ContractLoadResult load_baked_contract(std::string_view json) {
   auto parsed = JsonParser(json).parse();
   if (!parsed) {
@@ -1632,6 +1692,9 @@ ContractLoadResult load_baked_contract(std::string_view json) {
 
   return validate_root(*root);
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 double units_per_inch(const std::string& units) noexcept {
   if (units == "um") { return 25400.0; }

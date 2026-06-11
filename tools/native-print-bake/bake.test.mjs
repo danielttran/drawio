@@ -124,6 +124,36 @@ test('pxContractToUm: stroke width is scaled', () => {
   assert.ok(Math.abs(pathNode.stroke.width - 25400 / 96) < 0.001);
 });
 
+test('pxContractToUm: merge shrinkFloorPx and rich indentPx are scaled', () => {
+  const px = {
+    schema: { major: 1, minor: 0 },
+    document: { units: 'px', pages: [{ id: 'p1', size: { w: 200, h: 100 }, tiles: [{ origin: { x: 0, y: 0 }, size: { w: 200, h: 100 } }],
+      paint: [
+        { kind: 'text', box: { x: 0, y: 0, w: 100, h: 50 },
+          font: { family: 'Arial', sizePx: 12, weight: 400, italic: false, color: '#000000' },
+          align: { h: 'left', v: 'top' },
+          content: { type: 'merge', key: 'k', sample: 's', maxLen: 10,
+            wrap: 'word', overflow: 'shrink', shrinkFloorPx: 6 } },
+        { kind: 'text', box: { x: 0, y: 0, w: 100, h: 50 },
+          font: { family: 'Arial', sizePx: 12, weight: 400, italic: false, color: '#000000' },
+          align: { h: 'left', v: 'top' },
+          content: { type: 'rich', paragraphs: [{ align: 'left', indentPx: 24,
+            runs: [{ text: 'x', fontFamily: 'Arial', sizePx: 12, weight: 400,
+              italic: false, underline: false, strikethrough: false,
+              color: '#000000' }] }] } }
+      ] }] }
+  };
+  const um = pxContractToUm(px);
+  const [mergeNode, richNode] = um.document.pages[0].paint;
+  // 6 px * (25400/96) = 1587.5 um
+  assert.equal(mergeNode.content.shrinkFloorPx, 1587.5);
+  // 24 px * (25400/96) = 6350 um
+  assert.equal(richNode.content.paragraphs[0].indentPx, 6350);
+  // non-merge/non-rich inputs untouched: original objects not mutated
+  assert.equal(px.document.pages[0].paint[0].content.shrinkFloorPx, 6);
+  assert.equal(px.document.pages[0].paint[1].content.paragraphs[0].indentPx, 24);
+});
+
 // --- drawio-parser ---
 
 test('parseDrawio: simple fixture parses to expected cells', async () => {

@@ -651,6 +651,7 @@ void straight_rgba_to_premul_bgra(const std::uint8_t* src,
 Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                                              const RenderTrace& trace,
                                              ISvgRasterizer* svg_rasterizer,
+                                             double raster_dpi,
                                              bool edge_crisp = false) {
   if (edge_crisp) {
     g.SetSmoothingMode(Gdiplus::SmoothingModeHighSpeed);
@@ -684,6 +685,9 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
     } else if (c.kind == EmittedKind::Path) {
       const Affine a = affine_for(c.contract_box, c.device_box);
       Gdiplus::GraphicsPath path;
+      // SVG semantics: fill-rule nonzero (GDI+ default Alternate = even-odd
+      // would hollow out same-winding subpaths the preview fills solid).
+      path.SetFillMode(Gdiplus::FillModeWinding);
       Gdiplus::PointF cur(0, 0), start(0, 0);
       for (const auto& pc : c.path_commands) {
         add_path_command(path, pc, a, cur, start);
@@ -1120,8 +1124,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                 "(host transcribes HTML labels before bake)";
           } else {
             const SvgRasterResult rr = svg_rasterizer->render(
-                decoded, target_w, target_h,
-                static_cast<double>(g.GetDpiX()));
+                decoded, target_w, target_h, raster_dpi);
             // Promote to size_t BEFORE multiplying so a 64K x 64K SVG
             // cannot wrap uint32 (the ABI lets the backend return up-to-
             // 32-bit dimensions; the buffer is in host address space).
@@ -1418,7 +1421,7 @@ class Win32Services final : public EngineServices {
         Gdiplus::GraphicsState state = g.Save();
         g.TranslateTransform(0.0f, static_cast<Gdiplus::REAL>(y_offset));
         auto drawn = draw_trace(g, tiles[index].trace, svg_rasterizer_.get(),
-                                opts.edge_crisp);
+                                dpi, opts.edge_crisp);
         g.Restore(state);
         if (!drawn) {
           return Result<PreviewOutput, ContractError>::err(drawn.error());
@@ -1615,7 +1618,7 @@ class Win32Services final : public EngineServices {
                 static_cast<Gdiplus::REAL>(-band_y - phys_off_y));
             gb.SetTransform(&world);
             auto drawn = draw_trace(gb, tile.trace, svg_rasterizer_.get(),
-                                    opts.edge_crisp);
+                                    dpi_x, opts.edge_crisp);
             if (!drawn) {
               aborted = true;
               fail_detail = "draw failed at copy=" + std::to_string(copy + 1) +

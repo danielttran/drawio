@@ -14,6 +14,8 @@
 #include "print_engine/proto_adapter.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <optional>
 #include <vector>
 
 #if defined(_WIN32)
@@ -25,11 +27,41 @@
 
 namespace {
 
+// Transport-fatal exit: one human-readable line on stderr (never protocol
+// data), then a nonzero exit code so supervisors see the failure. A silent
+// rc=0 here made transport corruption indistinguishable from clean shutdown.
+[[noreturn]] void die_transport(const char* cause) {
+  std::fprintf(stderr, "native-print-engine: fatal: %s\n", cause);
+  std::exit(2);
+}
+
 void write_all(const std::vector<std::uint8_t>& bytes) {
-  if (!bytes.empty()) {
-    std::fwrite(bytes.data(), 1, bytes.size(), stdout);
+  // Loop until every byte is written: a short fwrite that was ignored left a
+  // TRUNCATED frame on the wire — transport corruption for the peer. On any
+  // write/flush failure the process must stop, loudly, never continue.
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    const std::size_t wrote =
+        std::fwrite(bytes.data() + offset, 1, bytes.size() - offset, stdout);
+    if (wrote == 0) {
+      die_transport("stdout write failed; outbound frame truncated");
+    }
+    offset += wrote;
   }
-  std::fflush(stdout);
+  if (std::fflush(stdout) != 0) {
+    die_transport("stdout flush failed; outbound frame may be truncated");
+  }
+}
+
+// Encode + write one frame; an over-limit payload is refused by
+// encode_frame BEFORE emission (emitting it would kill the peer's decoder).
+void write_frame(print_engine::proto::FrameType type, std::uint32_t stream_id,
+                 const std::vector<std::uint8_t>& payload) {
+  const auto frame = print_engine::proto::encode_frame(type, stream_id, payload);
+  if (!frame.has_value()) {
+    die_transport("outbound payload exceeds the frame size limit");
+  }
+  write_all(*frame);
 }
 
 // Read whatever is currently available (blocks only until >=1 byte, EOF, or
@@ -81,16 +113,14 @@ int main() {
         err.set("error",
                 Json::str(to_wire(ProtoErrorKind::EngineInternalError)));
         err.set("detail", Json::str("malformed control payload"));
-        write_all(encode_frame(FrameType::Control, 0, encode_control(err)));
+        write_frame(FrameType::Control, 0, encode_control(err));
         continue;
       }
 
       DispatchResult out = dispatcher.handle(parsed.value());
-      write_all(
-          encode_frame(FrameType::Control, 0, encode_control(out.control)));
+      write_frame(FrameType::Control, 0, encode_control(out.control));
       if (out.has_binary) {
-        write_all(encode_frame(FrameType::Binary, out.binary_stream_id,
-                               out.binary));
+        write_frame(FrameType::Binary, out.binary_stream_id, out.binary);
       }
       if (out.shutdown) {
         shutting_down = true;
@@ -98,8 +128,15 @@ int main() {
       }
     }
 
-    if (shutting_down || decoder.failed()) {
-      break;  // ShutdownAck sent, or transport corrupt -> exit loudly
+    if (shutting_down) {
+      break;  // ShutdownAck sent -> clean exit
+    }
+    if (decoder.failed()) {
+      // Transport corrupt: name the cause on stderr and exit nonzero so the
+      // supervisor never mistakes this for a clean shutdown.
+      std::fprintf(stderr, "native-print-engine: fatal: transport corrupt: %s\n",
+                   decoder.error().c_str());
+      return 2;
     }
   }
 
