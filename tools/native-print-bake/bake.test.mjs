@@ -2527,3 +2527,261 @@ test('audit: ink-extent anchoring keeps outside-positioned labels on the page', 
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Round-2 audit regression tests: shape fidelity fixes verified against
+// Shapes.js / mxgraph shape sources (structural assertions on the baked
+// contract, px units). Each test pins the exact geometry/paint drawio uses.
+// ---------------------------------------------------------------------------
+
+function auditProbe(style, w = 100, h = 60) {
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="160"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="${style}" parent="1">
+      <mxGeometry x="0" y="0" width="${w}" height="${h}" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel>`;
+  return bake(xml, { keepPx: true });
+}
+const decodeSvgNode = (n) => Buffer.from(n.source, 'base64').toString('utf8');
+
+test('audit2: note geometry — size default 30, fold stroked open path, no invented shade fill', async () => {
+  const { contract, notices } = await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // NoteShape: s = max(0, min(w, min(h, size=30))) — pentagon corner cut at 30px
+  assert.ok(svg.includes('M 0 0 L 70 0 L 100 30 L 100 60 L 0 60 L 0 0 Z'),
+    'note body pentagon must cut the corner at size=30 (NoteShape default), got: ' + svg);
+  // fold = OPEN path (w-s,0)->(w-s,s)->(w,s) stroked in strokeColor
+  assert.match(svg, /<path d="M 70 0 L 70 30 L 100 30" fill="none" stroke="#d6b656"/,
+    'fold must be the stroked open path in strokeColor');
+  // darkOpacity defaults 0: NO filled fold triangle, no shaded fill
+  assert.ok(!/M 70 0 L 70 30 L 100 30 Z/.test(svg), 'no fold triangle fill at darkOpacity=0');
+  assert.ok(!/#e5dab7|#ccc2a3/.test(svg), 'no invented shadeHex fold fill');
+});
+
+test('audit2: note darkOpacity fills the fold triangle black/white at |op| alpha', async () => {
+  const pos = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;darkOpacity=0.3;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(pos, /<path d="M 70 0 L 70 30 L 100 30 Z" fill="#000000" fill-opacity="0.3" stroke="none"\/>/,
+    'darkOpacity=0.3 fills the fold triangle black at 0.3');
+  const neg = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;darkOpacity=-0.4;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(neg, /<path d="M 70 0 L 70 30 L 100 30 Z" fill="#ffffff" fill-opacity="0.4" stroke="none"\/>/,
+    'darkOpacity<0 fills white at |op|');
+});
+
+test('audit2: note body fill honors fillOpacity/opacity multiplicatively', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;opacity=50;fillOpacity=50;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(svg, /fill="#fff2cc" fill-opacity="0.25"/, 'fill-opacity = opacity * fillOpacity = 0.25');
+});
+
+test('audit2: note2 paints the dog-ear exactly like note (NoteShape2 extends NoteShape)', async () => {
+  const note = await auditProbe('shape=note;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  const note2 = await auditProbe('shape=note2;fillColor=#FFF2CC;strokeColor=#D6B656;');
+  assert.equal(note2.notices.length, 0, 'note2 must not degrade');
+  assert.equal(decodeSvgNode(note2.contract.document.pages[0].paint[0]),
+    decodeSvgNode(note.contract.document.pages[0].paint[0]),
+    'note2 must bake byte-identically to note (was a plain rectangle)');
+});
+
+test('audit2: note flipH mirrors the fold within the box', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=note;flipH=1;fillColor=#FFF2CC;strokeColor=#D6B656;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(svg, /<g transform="translate\(100,0\) scale\(-1,1\)">/,
+    'flipH must mirror the note shape (was silently ignored)');
+});
+
+test('audit2: process honors fixedSize, and rounded=1 rounds the background + widens the inset', async () => {
+  const { contract, notices } = await auditProbe('shape=process;fixedSize=1;size=12;rounded=1;arcSize=20;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0, 'rounded process must round faithfully, not notice');
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // inset = max(min(w,12), min(w*0.2,h*0.2)=12) = 12 (absolute px, fixedSize)
+  assert.match(svg, /<line x1="12" y1="0" x2="12" y2="60"/, 'left inset line at 12px (fixedSize absolute)');
+  assert.match(svg, /<line x1="88" y1="0" x2="88" y2="60"/, 'right inset line at w-12');
+  // rounded background: arc radius min(w,h)*arcSize/100 = 12
+  assert.match(svg, /<path d="M 12 0 L 88 0 A 12 12 0 0 1 100 12/, 'rounded-rect background, r=12');
+  // relative default still works: size=0.2 -> inset 20
+  const rel = decodeSvgNode((await auditProbe('shape=process;size=0.2;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(rel, /<line x1="20" y1="0"/, 'relative size=0.2 -> inset w*0.2=20');
+});
+
+test('audit2: cloud is the exact mxCloud silhouette', async () => {
+  const { contract, notices } = await auditProbe('shape=cloud;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const d = contract.document.pages[0].paint[0].d;
+  // mxCloud.redrawPath, w=100 h=60: M(25,15) C(5,15)(0,30)(16,33) ...
+  assert.equal(d,
+    'M 25 15 C 5 15 0 30 16 33 C 0 39.6 18 54 31 48 C 40 60 70 60 80 48 ' +
+    'C 100 48 100 36 87.5 30 C 100 18 80 6 62.5 12 C 50 3 30 3 25 15 Z',
+    'cloud must match mxCloud.js:45-55 exactly');
+});
+
+test('audit2: actor is the exact mxActor silhouette (single path)', async () => {
+  const { contract, notices } = await auditProbe('shape=actor;fillColor=#ffffff;strokeColor=#000000;', 60, 90);
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 90 C 0 54 0 36 30 36 C 10 36 10 0 30 0 C 50 0 50 36 30 36 C 60 36 60 54 60 90 Z',
+    'actor must match mxActor.js:77-87 exactly (width=w/3, shoulders at 2h/5)');
+});
+
+test('audit2: doubleEllipse margin = min(3+strokewidth, min(w/5,h/5)) and honors margin=', async () => {
+  const def = (await auditProbe('shape=doubleEllipse;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  // strokeWidth 1 -> margin 4: inner ellipse from (4,30) rx 46 ry 26
+  assert.ok(def.includes('M 4 30 A 46 26 0 1 0 96 30'), `default margin must be 4 (3+sw), got: ${def}`);
+  const m8 = (await auditProbe('shape=doubleEllipse;margin=8;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  assert.ok(m8.includes('M 8 30 A 42 22 0 1 0 92 30'), `margin=8 style key must be honored, got: ${m8}`);
+});
+
+test('audit2: singleArrow body is arrowWidth*h FULL height (not 2x), arrowSize honored', async () => {
+  const { contract, notices } = await auditProbe('shape=singleArrow;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  // aw=0.3*60=18 -> at=21 ab=39; as=0.2*100=20 (Shapes.js SingleArrowShape)
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 21 L 80 21 L 80 0 L 100 30 L 80 60 L 80 39 L 0 39 Z');
+  const custom = (await auditProbe('shape=singleArrow;arrowWidth=0.5;arrowSize=0.1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0].d;
+  assert.equal(custom, 'M 0 15 L 90 15 L 90 0 L 100 30 L 90 60 L 90 45 L 0 45 Z',
+    'arrowWidth/arrowSize style keys must be honored');
+});
+
+test('audit2: doubleArrow geometry matches DoubleArrowShape', async () => {
+  const { contract, notices } = await auditProbe('shape=doubleArrow;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  // aw=18 at=21 ab=39 as=20
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 30 L 20 0 L 20 21 L 80 21 L 80 0 L 100 30 L 80 60 L 80 39 L 20 39 L 20 60 Z');
+});
+
+test('audit2: rounded singleArrow rounds via addPoints (no notice, quadratic corners)', async () => {
+  const { contract, notices } = await auditProbe('shape=singleArrow;rounded=1;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0, 'rounded singleArrow must round, not notice');
+  assert.match(contract.document.pages[0].paint[0].d, / C /, 'rounded corners present (Q->C converted)');
+});
+
+test('audit2: plus is a rect background + stroke-only inset plus lines (PlusShape)', async () => {
+  const { contract, notices } = await auditProbe('shape=plus;fillColor=#ffffff;strokeColor=#000000;', 60, 60);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'plus is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  assert.match(svg, /<rect x="0" y="0" width="60" height="60" fill="#ffffff" stroke="#000000"/,
+    'full rect background (was a filled Greek cross)');
+  // border = min(w/5,h/5)+1 = 13
+  assert.match(svg, /<path d="M 30 13 L 30 47 M 13 30 L 47 30" fill="none" stroke="#000000"/,
+    'stroke-only plus lines inset by border=13');
+});
+
+test('audit2: cylinder2 cap uses absolute size (default 15) with arcs + stroke-only inner lid', async () => {
+  const { contract, notices } = await auditProbe('shape=cylinder2;fillColor=#ffffff;strokeColor=#000000;', 100, 120);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'cylinder2 is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  assert.ok(svg.includes('M 0 15 A 50 15 0 0 1 50 0 A 50 15 0 0 1 100 15 L 100 105 A 50 15 0 0 1 50 120 A 50 15 0 0 1 0 105 Z'),
+    'body per CylinderShape (size=15 absolute), got: ' + svg);
+  assert.match(svg, /<path d="M 100 15 A 50 15 0 0 1 50 30 A 50 15 0 0 1 0 15" fill="none"/,
+    'inner lid is stroke-only at 2*size');
+});
+
+test('audit2: cylinder3 honors size= and lid=0 (downward top arc, no inner lid)', async () => {
+  const svg = decodeSvgNode((await auditProbe('shape=cylinder3;size=40;lid=0;fillColor=#ffffff;strokeColor=#000000;', 100, 120))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 0 0 A 50 40 0 0 0 50 40 A 50 40 0 0 0 100 0 L 100 80'),
+    'lid=0 top edge is the sweep-0 arc pair, got: ' + svg);
+  assert.ok(!svg.includes('fill="none"') || !/A 50 40 0 0 1 50 80/.test(svg),
+    'no inner lid stroke when lid=0');
+  assert.equal((svg.match(/<path/g) || []).length, 1, 'lid=0 -> single body path, no inner lid');
+});
+
+test('audit2: isoCube2 hexagon body + stroke-only interior edges (isoAngle honored)', async () => {
+  const { contract, notices } = await auditProbe('shape=isoCube2;fillColor=#ffffff;strokeColor=#000000;', 80, 100);
+  assert.equal(notices.length, 0);
+  const node = contract.document.pages[0].paint[0];
+  assert.equal(node.kind, 'svg', 'isoCube2 is multi-paint -> kind:svg');
+  const svg = decodeSvgNode(node);
+  // isoAngle 15 -> isoH = min(80*tan(15*PI/200), 50) = 80*tan(0.23562) = 19.206
+  assert.match(svg, /<path d="M 40 0 L 80 19\.206 L 80 80\.794 L 40 100 L 0 80\.794 L 0 19\.206 Z"/,
+    'IsoCubeShape2 hexagonal body');
+  assert.match(svg, /<path d="M 0 19\.206 L 40 38\.413 L 80 19\.206 M 40 38\.413 L 40 100" fill="none"/,
+    'stroke-only interior edges');
+});
+
+test('audit2: corner/tee are FILLED polygons with dx/dy; crossbar is end bars + middle line', async () => {
+  const corner = await auditProbe('shape=corner;fillColor=#ff0000;strokeColor=#000000;');
+  assert.equal(corner.notices.length, 0);
+  const cn = corner.contract.document.pages[0].paint[0];
+  assert.equal(cn.d, 'M 0 0 L 100 0 L 100 20 L 20 20 L 20 60 L 0 60 Z', 'CornerShape polygon (dx=dy=20)');
+  assert.ok(cn.fill && cn.fill.color === '#ff0000', 'corner is FILLED (was a bare polyline)');
+  const tee = await auditProbe('shape=tee;dx=30;dy=10;fillColor=#ff0000;strokeColor=#000000;');
+  assert.equal(tee.contract.document.pages[0].paint[0].d,
+    'M 0 0 L 100 0 L 100 10 L 65 10 L 65 60 L 35 60 L 35 10 L 0 10 Z', 'TeeShape polygon honors dx/dy');
+  const bar = await auditProbe('shape=crossbar;strokeColor=#000000;fillColor=none;');
+  assert.equal(bar.contract.document.pages[0].paint[0].d,
+    'M 0 0 L 0 60 M 100 0 L 100 60 M 0 30 L 100 30', 'CrossbarShape: end bars + middle line (was a plus)');
+});
+
+test('audit2: rounded=1 rounds every ported polygon shape faithfully (no notice, no square corners)', async () => {
+  for (const shape of ['card', 'manualInput', 'loopLimit', 'offPageConnector', 'corner', 'tee',
+    'hexagon', 'parallelogram', 'step', 'trapezoid', 'singleArrow', 'doubleArrow']) {
+    const { contract, notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
+    assert.equal(notices.length, 0, `rounded ${shape} must round faithfully, not notice`);
+    const d = contract.document.pages[0].paint[0].d;
+    assert.match(d, / C /, `rounded ${shape} must contain rounded (curve) corners`);
+  }
+});
+
+test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout/zigzag)', async () => {
+  for (const shape of ['folder', 'callout', 'zigzag']) {
+    const { notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
+    assert.ok(notices.some((n) => /rounded corners on/.test(n.detail && n.detail.detail || '')),
+      `rounded ${shape} must emit a loud notice (not silently square)`);
+  }
+});
+
+test('audit2: step includes the left notch point (StepShape exact polygon)', async () => {
+  const { contract } = await auditProbe('shape=step;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 80 0 L 100 30 L 80 60 L 0 60 L 20 30 Z',
+    'StepShape points incl. (s, h/2) notch');
+});
+
+test('audit2: gradient fills carry fill-opacity on every svg-emission path', async () => {
+  // plain gradient cell
+  const g1 = decodeSvgNode((await auditProbe('fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(g1, /fill="url\(#g\d*\)" fill-opacity="0.4"/, 'gradient cell carries fill-opacity');
+  // rotated gradient cell (separate emission path)
+  const g2 = decodeSvgNode((await auditProbe('rotation=30;fillColor=#dae8fc;gradientColor=#7ea6e0;opacity=50;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(g2, /fill="url\(#g\d*\)" fill-opacity="0.5"/, 'rotated gradient cell carries fill-opacity');
+  // swimlane header gradient (regionFillNode)
+  const sw = (await auditProbe('swimlane;startSize=20;fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint.find((n) => n.kind === 'svg' && /linearGradient/.test(decodeSvgNode(n)));
+  assert.match(decodeSvgNode(sw), /fill="url\(#r\w*\)" fill-opacity="0.4"/, 'swimlane header gradient carries fill-opacity');
+  // note gradient
+  const ng = decodeSvgNode((await auditProbe('shape=note;fillColor=#dae8fc;gradientColor=#7ea6e0;fillOpacity=40;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(ng, /fill="url\(#ngrad\)" fill-opacity="0.4"/, 'note gradient carries fill-opacity');
+});
+
+test('audit2: flipH/flipV apply to builtinShapeSvg and swimlane branches', async () => {
+  const proc = decodeSvgNode((await auditProbe('shape=process;flipH=1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(proc, /<g transform="translate\(100,0\) scale\(-1,1\)">/, 'builtinShapeSvg flipH mirrors content');
+  const cyl = decodeSvgNode((await auditProbe('shape=cylinder3;flipV=1;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(cyl, /<g transform="translate\(0,60\) scale\(1,-1\)">/, 'cylinder3 flipV mirrors content');
+  // swimlane flipV: header (and its divider) moves to the bottom edge
+  const lane = (await auditProbe('swimlane;flipV=1;startSize=20;fillColor=#dae8fc;strokeColor=#6c8ebf;'))
+    .contract.document.pages[0].paint;
+  const headerFill = lane.find((n) => n.kind === 'path' && n.fill);
+  assert.equal(headerFill.d, 'M 0 60 L 100 60 L 100 40 L 0 40 Z',
+    'flipV swimlane header fill sits at the bottom (40..60)');
+  const divider = lane.filter((n) => n.kind === 'path' && !n.fill).map((n) => n.d);
+  assert.ok(divider.includes('M 0 40 L 100 40'), 'divider line at the flipped header boundary');
+});

@@ -194,10 +194,12 @@
     // Helper: fill SVG attr using current state
     function stateFillAttr() {
       if (!isPaintable(state.fillColor)) return ' fill="none"';
-      if (gradId) return ' fill="url(#' + gradId + ')"';
-      var c = hex(state.fillColor);
+      // Gradient fills carry the canvas alpha too (mxSvgCanvas2D.updateFill
+      // sets fill-opacity regardless of gradient).
       var a = state.alpha;
-      return ' fill="' + c + '"' + (a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '');
+      var aAttr = a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '';
+      if (gradId) return ' fill="url(#' + gradId + ')"' + aAttr;
+      return ' fill="' + hex(state.fillColor) + '"' + aAttr;
     }
 
     // Helper: stroke SVG attrs using current state
@@ -948,10 +950,12 @@
     if (!isPaintable(style.fillColor)) return null;
     if (isPaintable(style.gradientColor)) {
       var gid = 'r' + stableGradId(style.fillColor, style.gradientColor);
+      var rfa = opacity(style, 'fillOpacity');
       var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
         hex(style.gradientColor), style.gradientDirection) + '</defs>' +
         '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
-        '" fill="url(#' + gid + ')"/>';
+        '" fill="url(#' + gid + ')"' +
+        (rfa < 1 ? ' fill-opacity="' + fmt(rfa) + '"' : '') + '/>';
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + fmt(rbox.w) +
         '" height="' + fmt(rbox.h) + '">' + inner + '</svg>';
       return { kind: 'svg', box: { x: rbox.x, y: rbox.y, w: rbox.w, h: rbox.h },
@@ -1006,10 +1010,13 @@
 
   function fillSvgAttr(style, gradId) {
     if (!isPaintable(style.fillColor)) return ' fill="none"';
-    if (isPaintable(style.gradientColor) && gradId) return ' fill="url(#' + gradId + ')"';
-    var c = hex(style.fillColor);
+    // mxSvgCanvas2D.updateFill sets fill-opacity = alpha * fillAlpha for BOTH
+    // solid and gradient fills (mxSvgCanvas2D.js:1056) — a gradient cell with
+    // fillOpacity/opacity previously printed fully opaque.
     var a = opacity(style, 'fillOpacity');
-    return ' fill="' + c + '"' + (a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '');
+    var aAttr = a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '';
+    if (isPaintable(style.gradientColor) && gradId) return ' fill="url(#' + gradId + ')"' + aAttr;
+    return ' fill="' + hex(style.fillColor) + '"' + aAttr;
   }
 
   function strokeSvgAttrs(style) {
@@ -2450,11 +2457,15 @@
     return boolish(style.rounded) ? number(style.arcSize, 20) / 2 : 0;
   }
 
-  // Common sharp-cornered polygon shapes drawio rounds via mxShape.addPoints
-  // but the headless bake still renders square. rhombus/triangle round
-  // faithfully (oracle-verified) and are NOT listed; these emit a loud notice
-  // when rounded=1 so a rounded setting is never a silent divergence.
-  var ROUNDED_NOT_YET = { hexagon: 1, parallelogram: 1, step: 1, trapezoid: 1 };
+  // drawio isRoundable() shapes whose headless port does NOT yet round
+  // faithfully: these emit a loud notice when rounded=1 so a rounded setting
+  // is never a silent divergence. All straight-line polygon shapes (rhombus,
+  // triangle, hexagon, parallelogram, step, trapezoid, card, manualInput,
+  // loopLimit, offPageConnector, corner, tee, singleArrow, doubleArrow) and
+  // process round faithfully via roundedPoly/roundedRectPath and are NOT
+  // listed. folder/callout/zigzag mix curves or multi-part paint with the
+  // rounding and are not practically portable in this pass — loud, not silent.
+  var ROUNDED_NOT_YET = { folder: 1, callout: 1, zigzag: 1 };
 
   function ellipsePath(x, y, w, h) {
     var rx = w / 2, ry = h / 2, cx = x + rx, cy = y + ry;
@@ -2490,36 +2501,42 @@
   }
 
   function cloudPath(x, y, w, h) {
-    return 'M ' + p(x + w * 0.25, y + h * 0.75) +
-      ' C ' + p(x - w * 0.05, y + h * 0.72) + ' ' + p(x, y + h * 0.35) + ' ' + p(x + w * 0.25, y + h * 0.38) +
-      ' C ' + p(x + w * 0.28, y + h * 0.08) + ' ' + p(x + w * 0.62, y + h * 0.08) + ' ' + p(x + w * 0.65, y + h * 0.36) +
-      ' C ' + p(x + w * 0.95, y + h * 0.28) + ' ' + p(x + w * 1.07, y + h * 0.68) + ' ' + p(x + w * 0.78, y + h * 0.75) +
-      ' C ' + p(x + w * 0.66, y + h * 0.95) + ' ' + p(x + w * 0.38, y + h * 0.95) + ' ' + p(x + w * 0.25, y + h * 0.75) + ' Z';
+    // Exact mxCloud.redrawPath silhouette (mxCloud.js:45-55). The previous
+    // hand-drawn approximation was a visibly different cloud outline.
+    return 'M ' + p(x + 0.25 * w, y + 0.25 * h) +
+      ' C ' + p(x + 0.05 * w, y + 0.25 * h) + ' ' + p(x, y + 0.5 * h) + ' ' + p(x + 0.16 * w, y + 0.55 * h) +
+      ' C ' + p(x, y + 0.66 * h) + ' ' + p(x + 0.18 * w, y + 0.9 * h) + ' ' + p(x + 0.31 * w, y + 0.8 * h) +
+      ' C ' + p(x + 0.4 * w, y + h) + ' ' + p(x + 0.7 * w, y + h) + ' ' + p(x + 0.8 * w, y + 0.8 * h) +
+      ' C ' + p(x + w, y + 0.8 * h) + ' ' + p(x + w, y + 0.6 * h) + ' ' + p(x + 0.875 * w, y + 0.5 * h) +
+      ' C ' + p(x + w, y + 0.3 * h) + ' ' + p(x + 0.8 * w, y + 0.1 * h) + ' ' + p(x + 0.625 * w, y + 0.2 * h) +
+      ' C ' + p(x + 0.5 * w, y + 0.05 * h) + ' ' + p(x + 0.3 * w, y + 0.05 * h) + ' ' + p(x + 0.25 * w, y + 0.25 * h) + ' Z';
   }
 
-  // doubleEllipse: outer ellipse + inner ellipse (concentric, inset by margin each side)
-  function doubleEllipsePath(x, y, w, h) {
-    var margin = Math.min(w, h) * 0.1 + 2;
-    return ellipsePath(x, y, w, h) + ' ' +
-      ellipsePath(x + margin, y + margin, w - 2 * margin, h - 2 * margin);
+  // doubleEllipse: outer ellipse + inner ellipse (concentric, inset by margin
+  // each side). mxDoubleEllipse.paintForeground: margin = getValue(style,
+  // 'margin', min(3 + strokewidth, min(w/5, h/5))) — the previous
+  // min(w,h)*0.1+2 was a different inset and ignored the margin style key.
+  function doubleEllipsePath(style, x, y, w, h) {
+    var sw = Math.max(0, number(style && style.strokeWidth, 1));
+    var margin = number(style && style.margin,
+      Math.min(3 + sw, Math.min(w / 5, h / 5)));
+    var d = ellipsePath(x, y, w, h);
+    if (w - 2 * margin > 0 && h - 2 * margin > 0) {
+      d += ' ' + ellipsePath(x + margin, y + margin, w - 2 * margin, h - 2 * margin);
+    }
+    return d;
   }
 
-  // actor: head (top circle) + body (trapezoid from shoulders down)
+  // actor: exact mxActor.redrawPath silhouette (mxActor.js:77-87) — a single
+  // closed path (rounded head blending into shoulders), not the previous
+  // separate-circle-plus-trapezoid approximation.
   function actorPath(x, y, w, h) {
-    var headR = Math.min(w / 4, h / 4);
-    var headCx = x + w / 2, headCy = y + headR;
-    // Head circle as ellipse path
-    var head = ellipsePath(headCx - headR, headCy - headR, headR * 2, headR * 2);
-    // Body: trapezoid below the head
-    var shoulderY = headCy + headR;
-    var bodyH = h - shoulderY + y;
-    var halfW = w / 2;
-    var halfBodyW = halfW * 0.8;
-    var body = 'M ' + p(x + w / 2 - halfBodyW, shoulderY) +
-      ' L ' + p(x + w / 2 + halfBodyW, shoulderY) +
-      ' L ' + p(x + w, y + h) +
-      ' L ' + p(x, y + h) + ' Z';
-    return head + ' ' + body;
+    var width = w / 3;
+    return 'M ' + p(x, y + h) +
+      ' C ' + p(x, y + 3 * h / 5) + ' ' + p(x, y + 2 * h / 5) + ' ' + p(x + w / 2, y + 2 * h / 5) +
+      ' C ' + p(x + w / 2 - width, y + 2 * h / 5) + ' ' + p(x + w / 2 - width, y) + ' ' + p(x + w / 2, y) +
+      ' C ' + p(x + w / 2 + width, y) + ' ' + p(x + w / 2 + width, y + 2 * h / 5) + ' ' + p(x + w / 2, y + 2 * h / 5) +
+      ' C ' + p(x + w, y + 2 * h / 5) + ' ' + p(x + w, y + 3 * h / 5) + ' ' + p(x + w, y + h) + ' Z';
   }
 
   // swimlane: rectangle with a header bar + divider line.
@@ -2715,21 +2732,34 @@
       ' L ' + p(x + w / 2, y + h) + ' L ' + p(x, y + h - s) + ' Z';
   }
 
-  function singleArrowPath(x, y, w, h) {
-    var aw = Math.min(h * 0.35, w * 0.3), as = Math.min(w * 0.25, w);
-    return 'M ' + p(x, y + h / 2 - aw) + ' L ' + p(x + w - as, y + h / 2 - aw) +
-      ' L ' + p(x + w - as, y) + ' L ' + p(x + w, y + h / 2) +
-      ' L ' + p(x + w - as, y + h) + ' L ' + p(x + w - as, y + h / 2 + aw) +
-      ' L ' + p(x, y + h / 2 + aw) + ' Z';
+  // SingleArrowShape (Shapes.js): aw = h*clamp01(arrowWidth, default 0.3) is
+  // the FULL body height (the old code used it as a half-height, printing a
+  // 2x-too-thick body and ignoring arrowWidth/arrowSize/rounded);
+  // as = w*clamp01(arrowSize, default 0.2). Rounded via addPoints with
+  // arcSize = LINE_ARCSIZE(20)/2 (roundedPoly/polyArcSize).
+  function singleArrowPath(style, x, y, w, h) {
+    var aw = h * clamp01(number(style.arrowWidth, 0.3));
+    var as = w * clamp01(number(style.arrowSize, 0.2));
+    var at = (h - aw) / 2, ab = at + aw;
+    return roundedPoly([
+      { x: x, y: y + at }, { x: x + w - as, y: y + at }, { x: x + w - as, y: y },
+      { x: x + w, y: y + h / 2 }, { x: x + w - as, y: y + h },
+      { x: x + w - as, y: y + ab }, { x: x, y: y + ab }
+    ], polyArcSize(style), true);
   }
 
-  function doubleArrowPath(x, y, w, h) {
-    var aw = Math.min(h * 0.35, w * 0.25), as = Math.min(w * 0.22, w / 2);
-    return 'M ' + p(x, y + h / 2) + ' L ' + p(x + as, y) + ' L ' + p(x + as, y + h / 2 - aw) +
-      ' L ' + p(x + w - as, y + h / 2 - aw) + ' L ' + p(x + w - as, y) +
-      ' L ' + p(x + w, y + h / 2) + ' L ' + p(x + w - as, y + h) +
-      ' L ' + p(x + w - as, y + h / 2 + aw) + ' L ' + p(x + as, y + h / 2 + aw) +
-      ' L ' + p(x + as, y + h) + ' Z';
+  // DoubleArrowShape (Shapes.js): same arrowWidth/arrowSize defaults as
+  // singleArrow, head on both ends, roundable via addPoints.
+  function doubleArrowPath(style, x, y, w, h) {
+    var aw = h * clamp01(number(style.arrowWidth, 0.3));
+    var as = w * clamp01(number(style.arrowSize, 0.2));
+    var at = (h - aw) / 2, ab = at + aw;
+    return roundedPoly([
+      { x: x, y: y + h / 2 }, { x: x + as, y: y }, { x: x + as, y: y + at },
+      { x: x + w - as, y: y + at }, { x: x + w - as, y: y },
+      { x: x + w, y: y + h / 2 }, { x: x + w - as, y: y + h },
+      { x: x + w - as, y: y + ab }, { x: x + as, y: y + ab }, { x: x + as, y: y + h }
+    ], polyArcSize(style), true);
   }
 
   function crossPath(x, y, w, h, szIn) {
@@ -2798,8 +2828,15 @@
     }
     if (shape === 'cylinder') return cylinderPath(x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
-    if (shape === 'hexagon') return hexagonPath(x, y, w, h, shapeSize(style, w, 0.25, 1, 20, w * 0.5));
-    if (shape === 'doubleEllipse') return doubleEllipsePath(x, y, w, h);
+    if (shape === 'hexagon') {
+      var hxS = shapeSize(style, w, 0.25, 1, 20, w * 0.5);
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x + hxS, y: y }, { x: x + w - hxS, y: y }, { x: x + w, y: y + h / 2 },
+        { x: x + w - hxS, y: y + h }, { x: x + hxS, y: y + h }, { x: x, y: y + h / 2 }
+      ], polyArcSize(style), true);
+      return hexagonPath(x, y, w, h, hxS);
+    }
+    if (shape === 'doubleEllipse') return doubleEllipsePath(style, x, y, w, h);
     if (shape === 'actor') return actorPath(x, y, w, h);
     if (shape === 'swimlane') return swimlanePath(style, x, y, w, h);
     if (shape === 'line') return linePath(x, y, w, h);
@@ -2807,31 +2844,80 @@
     if (shape === 'arrowConnector') return arrowConnectorPath(x, y, w, h);
     if (shape === 'connector' || shape === 'tableLine' || shape === 'wire' || shape === 'filledEdge' || shape === 'pipe') return connectorPath(x, y, w, h);
     if (shape === 'isoRectangle') return isoRectanglePath(x, y, w, h);
-    if (shape === 'isoCube' || shape === 'isoCube2') return isoCubePath(x, y, w, h);
+    // isoCube2 is a different shape (IsoCubeShape2) handled by builtinShapeSvg
+    // (fill body + stroke-only interior edges); only plain isoCube stays here.
+    if (shape === 'isoCube') return isoCubePath(x, y, w, h);
     if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h);
     if (shape === 'dataStorage') return dataStoragePath(x, y, w, h, shapeSize(style, w, 0.1, 1, 20, w));
     if (shape === 'document') return documentPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.3))));
-    if (shape === 'trapezoid') return trapezoidPath(x, y, w, h, shapeSize(style, w, 0.2, 0.5, 20, w * 0.5));
-    if (shape === 'manualInput') return manualInputPath(x, y, w, h, Math.min(h, number(style.size, 30)));
+    if (shape === 'trapezoid') {
+      var tzS = shapeSize(style, w, 0.2, 0.5, 20, w * 0.5);
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x, y: y + h }, { x: x + tzS, y: y }, { x: x + w - tzS, y: y }, { x: x + w, y: y + h }
+      ], polyArcSize(style), true);
+      return trapezoidPath(x, y, w, h, tzS);
+    }
+    if (shape === 'manualInput') {
+      var miS = Math.min(h, number(style.size, 30));
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x, y: y + h }, { x: x, y: y + miS }, { x: x + w, y: y }, { x: x + w, y: y + h }
+      ], polyArcSize(style), true);
+      return manualInputPath(x, y, w, h, miS);
+    }
     if (shape === 'internalStorage') return internalStoragePath(x, y, w, h, number(style.dx, 20), number(style.dy, 20));
-    if (shape === 'offPageConnector') return offPageConnectorPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.375))));
-    if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(x, y, w, h);
-    if (shape === 'doubleArrow') return doubleArrowPath(x, y, w, h);
+    if (shape === 'offPageConnector') {
+      var opS = h * Math.max(0, Math.min(1, number(style.size, 0.375)));
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h - opS },
+        { x: x + w / 2, y: y + h }, { x: x, y: y + h - opS }
+      ], polyArcSize(style), true);
+      return offPageConnectorPath(x, y, w, h, opS);
+    }
+    if (shape === 'singleArrow' || shape === 'flexArrow' || shape === 'mermaidBlockArrow') return singleArrowPath(style, x, y, w, h);
+    if (shape === 'doubleArrow') return doubleArrowPath(style, x, y, w, h);
     if (shape === 'cross') return crossPath(x, y, w, h, Math.min(w, h) * Math.max(0, Math.min(1, number(style.size, 0.2))));
     if (shape === 'display') return displayPath(x, y, w, h, Math.max(0, number(style.size, 0.25)) * w);
     if (shape === 'delay') return delayPath(x, y, w, h);
-    if (shape === 'loopLimit') return loopLimitPath(x, y, w, h, Math.min(w / 2, Math.min(h, number(style.size, 20))));
-    if (shape === 'parallelogram') return parallelogramPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
-    if (shape === 'step') return stepPath(x, y, w, h, shapeSize(style, w, 0.2, 1, 20, w));
+    if (shape === 'loopLimit') {
+      var llS = Math.min(w / 2, Math.min(h, number(style.size, 20)));
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x + llS, y: y }, { x: x + w - llS, y: y }, { x: x + w, y: y + llS * 0.8 },
+        { x: x + w, y: y + h }, { x: x, y: y + h }, { x: x, y: y + llS * 0.8 }
+      ], polyArcSize(style), true);
+      return loopLimitPath(x, y, w, h, llS);
+    }
+    if (shape === 'parallelogram') {
+      var pgS = shapeSize(style, w, 0.2, 1, 20, w);
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x, y: y + h }, { x: x + pgS, y: y }, { x: x + w, y: y }, { x: x + w - pgS, y: y + h }
+      ], polyArcSize(style), true);
+      return parallelogramPath(x, y, w, h, pgS);
+    }
+    if (shape === 'step') {
+      // StepShape points (Shapes.js): (0,0)(w-s,0)(w,h/2)(w-s,h)(0,h)(s,h/2) —
+      // including the left notch at (s, h/2), roundable via addPoints.
+      var stS = shapeSize(style, w, 0.2, 1, 20, w);
+      return roundedPoly([
+        { x: x, y: y }, { x: x + w - stS, y: y }, { x: x + w, y: y + h / 2 },
+        { x: x + w - stS, y: y + h }, { x: x, y: y + h }, { x: x + stS, y: y + h / 2 }
+      ], polyArcSize(style), true);
+    }
     if (shape === 'callout') return calloutPath(x, y, w, h);
     if (shape === 'tape') return tapePath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.4))));
-    if (shape === 'card') return cardPath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 30)))));
+    if (shape === 'card') {
+      var cdS = Math.max(0, Math.min(w, Math.min(h, number(style.size, 30))));
+      if (boolish(style.rounded)) return roundedPoly([
+        { x: x + cdS, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h },
+        { x: x, y: y + h }, { x: x, y: y + cdS }
+      ], polyArcSize(style), true);
+      return cardPath(x, y, w, h, cdS);
+    }
     if (shape === 'cube') return cubePath(x, y, w, h, Math.max(0, Math.min(w, Math.min(h, number(style.size, 20)))));
-    if (shape === 'note' || shape === 'note2') return rectPath(x, y, w, h);
-    if (shape === 'cylinder2' || shape === 'cylinder3') return cylinderPath(x, y, w, h);
+    // note/note2 (dog-ear), plus, cylinder2/cylinder3 and isoCube2 are
+    // multi-paint shapes handled before shapePath (noteInner/builtinShapeSvg);
+    // no silent single-path flattening here.
     if (shape === 'umlState') return roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12);
     if (shape === 'transparent') return rectPath(x, y, w, h);
-    if (shape === 'plus') return crossPath(x, y, w, h);
     if (shape === 'ext' || shape === 'message' || shape === 'umlFrame') return rectPath(x, y, w, h);
     if (shape === 'umlBoundary' || shape === 'umlEntity' || shape === 'umlControl' || shape === 'lollipop' || shape === 'waypoint') return ellipsePath(x, y, w, h);
     if (shape === 'umlDestroy') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h) + ' M ' + p(x + w, y) + ' L ' + p(x, y + h);
@@ -2842,9 +2928,34 @@
     if (shape === 'link') return 'M ' + p(x, y + h / 2) + ' C ' + p(x + w / 3, y) + ' ' + p(x + 2 * w / 3, y + h) + ' ' + p(x + w, y + h / 2);
     if (shape === 'curlyBracket') return 'M ' + p(x + w, y) + ' C ' + p(x, y) + ' ' + p(x + w, y + h / 2) + ' ' + p(x, y + h / 2) + ' C ' + p(x + w, y + h / 2) + ' ' + p(x, y + h) + ' ' + p(x + w, y + h);
     if (shape === 'parallelMarker') return 'M ' + p(x + w * 0.25, y) + ' L ' + p(x + w * 0.25, y + h) + ' M ' + p(x + w * 0.75, y) + ' L ' + p(x + w * 0.75, y + h);
-    if (shape === 'corner') return 'M ' + p(x, y) + ' L ' + p(x, y + h) + ' L ' + p(x + w, y + h);
-    if (shape === 'crossbar') return 'M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2) + ' M ' + p(x + w / 2, y) + ' L ' + p(x + w / 2, y + h);
-    if (shape === 'tee') return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' M ' + p(x + w / 2, y) + ' L ' + p(x + w / 2, y + h);
+    if (shape === 'corner') {
+      // CornerShape (Shapes.js): FILLED L-polygon, dx/dy default 20 clamped to
+      // [0,w]/[0,h], roundable via addPoints. Was a bare 3-point polyline.
+      var cnDx = Math.max(0, Math.min(w, number(style.dx, 20)));
+      var cnDy = Math.max(0, Math.min(h, number(style.dy, 20)));
+      return roundedPoly([
+        { x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + cnDy },
+        { x: x + cnDx, y: y + cnDy }, { x: x + cnDx, y: y + h }, { x: x, y: y + h }
+      ], polyArcSize(style), true);
+    }
+    if (shape === 'crossbar') {
+      // CrossbarShape (Shapes.js): end bars + middle line — (0,0)-(0,h),
+      // (w,0)-(w,h), (0,h/2)-(w,h/2). Was drawn as a plus.
+      return 'M ' + p(x, y) + ' L ' + p(x, y + h) +
+        ' M ' + p(x + w, y) + ' L ' + p(x + w, y + h) +
+        ' M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
+    }
+    if (shape === 'tee') {
+      // TeeShape (Shapes.js): FILLED T-polygon, dx/dy default 20, roundable.
+      var teDx = Math.max(0, Math.min(w, number(style.dx, 20)));
+      var teDy = Math.max(0, Math.min(h, number(style.dy, 20)));
+      return roundedPoly([
+        { x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + teDy },
+        { x: x + (w + teDx) / 2, y: y + teDy }, { x: x + (w + teDx) / 2, y: y + h },
+        { x: x + (w - teDx) / 2, y: y + h }, { x: x + (w - teDx) / 2, y: y + teDy },
+        { x: x, y: y + teDy }
+      ], polyArcSize(style), true);
+    }
     if (shape === 'or' || shape === 'xor' || shape === 'orEllipse' || shape === 'sumEllipse' || shape === 'lineEllipse') return ellipsePath(x, y, w, h);
     if (shape === 'sortShape') return rhombusPath(x, y, w, h) + ' M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
     if (shape === 'collate') return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w / 2, y + h / 2) + ' Z M ' + p(x, y + h) + ' L ' + p(x + w, y + h) + ' L ' + p(x + w / 2, y + h / 2) + ' Z';
@@ -2958,31 +3069,66 @@
   // NOTE: north/south on a non-square note rotate about centre and may slightly
   // overspill; the note in practice is square, so this is faithful here.
   function noteInner(style, w, h, fillOverride, opacityOverride) {
-    var s = Math.max(0, Math.min(w / 2, Math.min(h / 2, number(style.size, 15))));
+    // NoteShape (Shapes.js): s = max(0, min(w, min(h, size))), size default 30.
+    var s = Math.max(0, Math.min(w, Math.min(h, number(style.size, 30))));
+    // darkOpacity (NoteShape.prototype.darkOpacity = 0), clamped to [-1, 1].
+    var op = Math.max(-1, Math.min(1, number(style.darkOpacity, 0)));
     var penta = 'M 0 0 L ' + fmt(w - s) + ' 0 L ' + fmt(w) + ' ' + fmt(s) +
-      ' L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' Z';
-    var fold = 'M ' + fmt(w - s) + ' 0 L ' + fmt(w - s) + ' ' + fmt(s) +
+      ' L ' + fmt(w) + ' ' + fmt(h) + ' L 0 ' + fmt(h) + ' L 0 0 Z';
+    var foldTri = 'M ' + fmt(w - s) + ' 0 L ' + fmt(w - s) + ' ' + fmt(s) +
       ' L ' + fmt(w) + ' ' + fmt(s) + ' Z';
+    var foldLine = 'M ' + fmt(w - s) + ' 0 L ' + fmt(w - s) + ' ' + fmt(s) +
+      ' L ' + fmt(w) + ' ' + fmt(s);
     var content;
     if (fillOverride) {
       content = '<path d="' + penta + '" fill="' + fillOverride + '"' +
         (opacityOverride != null ? ' fill-opacity="' + fmt(opacityOverride) + '"' : '') +
         ' stroke="none"/>';
     } else {
-      var fillC = isPaintable(style.fillColor) ? hex(style.fillColor) : '#ffffff';
+      // Body: fillAndStroke honoring fill-opacity (= opacity * fillOpacity,
+      // mxSvgCanvas2D.updateFill) and the gradient when set.
       var defs = '', fillAttr;
-      if (isPaintable(style.gradientColor)) {
-        defs = '<defs>' + linearGradDef('ngrad', fillC, hex(style.gradientColor), style.gradientDirection) + '</defs>';
-        fillAttr = ' fill="url(#ngrad)"';
+      var nfa = opacity(style, 'fillOpacity');
+      var nfaAttr = nfa < 1 ? ' fill-opacity="' + fmt(nfa) + '"' : '';
+      if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
+        defs = '<defs>' + linearGradDef('ngrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        fillAttr = ' fill="url(#ngrad)"' + nfaAttr;
+      } else if (isPaintable(style.fillColor)) {
+        fillAttr = ' fill="' + hex(style.fillColor) + '"' + nfaAttr;
       } else {
-        fillAttr = ' fill="' + fillC + '"';
+        fillAttr = ' fill="none"';
       }
-      content = defs + '<path d="' + penta + '"' + fillAttr + strokeSvgAttrs(style) + '/>' +
-        '<path d="' + fold + '" fill="' + shadeHex(fillC, 0.9) + '" stroke="none"/>';
+      content = defs + '<path d="' + penta + '"' + fillAttr + strokeSvgAttrs(style) + '/>';
+      // Fold (NoteShape paint order): the closed triangle is FILLED only when
+      // darkOpacity != 0 — black for op>0, white for op<0, at |op| fill alpha —
+      // then the open fold path is STROKED in the strokeColor.
+      if (op !== 0) {
+        content += '<path d="' + foldTri + '" fill="' + (op < 0 ? '#ffffff' : '#000000') +
+          '" fill-opacity="' + fmt(Math.abs(op)) + '" stroke="none"/>';
+      }
+      content += '<path d="' + foldLine + '" fill="none"' + strokeSvgAttrs(style) + '/>';
     }
+    // flipH/flipV mirror the shape inside its box (mxShape.updateTransform);
+    // applied innermost, before the direction rotation — the same order as the
+    // stencil path (flip transform in the pre-direction space). Labels stay
+    // unflipped (drawio flips the shape, never the label text).
+    content = flipWrapSvg(content, w, h, style);
     var dir = style.direction || 'east';
     var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
     if (deg) content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) + ')">' + content + '</g>';
+    return content;
+  }
+
+  // Mirror inner-SVG content within a (0,0)→(w,h) viewport for flipH/flipV.
+  // translate(w,0) scale(-1,1) / translate(0,h) scale(1,-1), matching the
+  // stencil implementation (exporter stencil Step 12).
+  function flipWrapSvg(content, w, h, style) {
+    if (boolish(style.flipH) || boolish(style.stencilFlipH)) {
+      content = '<g transform="translate(' + fmt(w) + ',0) scale(-1,1)">' + content + '</g>';
+    }
+    if (boolish(style.flipV) || boolish(style.stencilFlipV)) {
+      content = '<g transform="translate(0,' + fmt(h) + ') scale(1,-1)">' + content + '</g>';
+    }
     return content;
   }
 
@@ -3005,11 +3151,80 @@
       }).join('');
     }
     if (shape === 'process' || shape === 'process2') {
-      // Rectangle + two vertical inset lines — ProcessShape, Shapes.js (default size=0.1)
-      var pInset = Math.round(w * Math.max(0, Math.min(1, number(style.size, 0.1))));
-      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
+      // Rectangle + two vertical inset lines — ProcessShape, Shapes.js.
+      // fixedSize=1: inset is absolute px clamped to [0,w]; else relative
+      // (default size=0.1). rounded=1 enlarges the inset to at least the
+      // corner radius factor f = arcSize/100 (default RECTANGLE_ROUNDING_
+      // FACTOR*100 = 15), and the background is a rounded rect.
+      var pInsetRaw = number(style.size, 0.1);
+      var pInset = boolish(style.fixedSize)
+        ? Math.max(0, Math.min(w, pInsetRaw))
+        : w * Math.max(0, Math.min(1, pInsetRaw));
+      var pRounded = boolish(style.rounded);
+      if (pRounded) {
+        var pF = number(style.arcSize, 15) / 100;
+        pInset = Math.max(pInset, Math.min(w * pF, h * pF));
+      }
+      pInset = Math.round(pInset);
+      var pBg = pRounded
+        ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
+        : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      return pBg +
         '<line x1="' + fmt(pInset) + '" y1="0" x2="' + fmt(pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>' +
         '<line x1="' + fmt(w - pInset) + '" y1="0" x2="' + fmt(w - pInset) + '" y2="' + fmt(h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'plus') {
+      // PlusShape (Shapes.js) extends mxRectangleShape: full rect background
+      // (honoring rounded= like a normal rect) + STROKE-ONLY plus lines inset
+      // by border = min(w/5, h/5) + 1. Previously printed as a filled Greek
+      // cross silhouette.
+      var plB = Math.min(w / 5, h / 5) + 1;
+      var plBg = boolish(style.rounded)
+        ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
+        : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      return plBg +
+        '<path d="M ' + p(w / 2, plB) + ' L ' + p(w / 2, h - plB) +
+        ' M ' + p(plB, h / 2) + ' L ' + p(w - plB, h / 2) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'cylinder2' || shape === 'cylinder3') {
+      // CylinderShape / CylinderShape3 (Shapes.js): size is ABSOLUTE px
+      // (default 15) clamped to h*0.5; size=0 degrades to a plain rect.
+      // Body fillAndStroke; the inner lid arc is STROKE-ONLY. cylinder3
+      // supports lid=0 (default on): the top edge becomes a downward arc
+      // (sweep 0) and the inner lid stroke is omitted.
+      var cySz = Math.max(0, Math.min(h * 0.5, number(style.size, 15)));
+      if (cySz === 0) {
+        return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      }
+      var cyLid = shape !== 'cylinder3' ||
+        (String(style.lid) !== '0' && String(style.lid) !== 'false');
+      var cyR = fmt(w * 0.5) + ' ' + fmt(cySz) + ' 0 0 ';
+      var cyTop = cyLid
+        ? 'M ' + p(0, cySz) + ' A ' + cyR + '1 ' + p(w / 2, 0) + ' A ' + cyR + '1 ' + p(w, cySz)
+        : 'M ' + p(0, 0) + ' A ' + cyR + '0 ' + p(w / 2, cySz) + ' A ' + cyR + '0 ' + p(w, 0);
+      var cyBody = cyTop +
+        ' L ' + p(w, h - cySz) +
+        ' A ' + cyR + '1 ' + p(w / 2, h) +
+        ' A ' + cyR + '1 ' + p(0, h - cySz) + ' Z';
+      var cyOut = '<path d="' + cyBody + '"' + fill + strk + '/>';
+      if (cyLid) {
+        cyOut += '<path d="M ' + p(w, cySz) + ' A ' + cyR + '1 ' + p(w / 2, 2 * cySz) +
+          ' A ' + cyR + '1 ' + p(0, cySz) + '" fill="none"' + strk + '/>';
+      }
+      return cyOut;
+    }
+    if (shape === 'isoCube2') {
+      // IsoCubeShape2 (Shapes.js): isoAngle (default 15) clamped to
+      // [0.01, 94] then * PI/200; isoH = min(w*tan(isoAngle), h*0.5).
+      // Hexagonal body fillAndStroke + STROKE-ONLY interior edges.
+      var icA = Math.max(0.01, Math.min(94, number(style.isoAngle, 15))) * Math.PI / 200;
+      var icH = Math.min(w * Math.tan(icA), h * 0.5);
+      var icBody = 'M ' + p(w * 0.5, 0) + ' L ' + p(w, icH) + ' L ' + p(w, h - icH) +
+        ' L ' + p(w * 0.5, h) + ' L ' + p(0, h - icH) + ' L ' + p(0, icH) + ' Z';
+      var icFg = 'M ' + p(0, icH) + ' L ' + p(w * 0.5, 2 * icH) + ' L ' + p(w, icH) +
+        ' M ' + p(w * 0.5, 2 * icH) + ' L ' + p(w * 0.5, h);
+      return '<path d="' + icBody + '"' + fill + strk + '/>' +
+        '<path d="' + icFg + '" fill="none"' + strk + '/>';
     }
     if (shape === 'smileyFace') {
       // Face circle + 2 eyes + crescent/line mouth — SmileyFaceShape, Shapes.js
@@ -4354,11 +4569,11 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
     }
-    // LOUD-OR-FAITHFUL for rounded corners: rhombus/triangle round faithfully
-    // (verified by the differential oracle); these other sharp-cornered
-    // polygons are not yet rounded headlessly, so a rounded=1 setting would
-    // print square — never silently. (Rectangles round via roundedRectPath;
-    // ellipse/curved shapes have no corners to round.)
+    // LOUD-OR-FAITHFUL for rounded corners: polygon shapes round faithfully
+    // via roundedPoly (mxShape.addPoints port); the few curve/multi-part
+    // shapes in ROUNDED_NOT_YET would print square corners on rounded=1 —
+    // never silently. (Rectangles round via roundedRectPath; ellipse/curved
+    // shapes have no corners to round.)
     if (boolish(style.rounded) && ROUNDED_NOT_YET[style.shape]) {
       notices.push(degradation('ExporterUnsupportedShape',
         'rounded corners on "' + style.shape + '" are printed with square ' +
@@ -4687,10 +4902,16 @@
           var dirInvBI = (dirBI === 'north' || dirBI === 'south');
           var pwBI0 = dirInvBI ? box.h : box.w, phBI0 = dirInvBI ? box.w : box.h;
           var rawBI = dirInvBI ? builtinShapeSvg(style, pwBI0, phBI0) : builtinContent;
+          // flipH/flipV apply in the direction-swapped (pw x ph) space, like
+          // the stencil path ("flip transform must use cw/ch"). Labels stay
+          // unflipped. Previously flips were silently ignored here.
+          rawBI = flipWrapSvg(rawBI, pwBI0, phBI0, style);
           builtinContent = '<g transform="rotate(' + fmt(dirDegBI) + ' ' +
             fmt(box.w / 2) + ' ' + fmt(box.h / 2) + ') translate(' +
             fmt((box.w - pwBI0) / 2) + ' ' + fmt((box.h - phBI0) / 2) + ')">' +
             rawBI + '</g>';
+        } else {
+          builtinContent = flipWrapSvg(builtinContent, box.w, box.h, style);
         }
         var rotDegBI = number(style.rotation, 0);
         if (rotDegBI) {
@@ -4745,8 +4966,9 @@
       }
 
       // Note shape (folded-corner sticky note). Handle before shapePath, which
-      // would flatten the dog-ear to a plain rectangle.
-      if (style.shape === 'note') {
+      // would flatten the dog-ear to a plain rectangle. note2 (NoteShape2,
+      // Shapes.js) paints identically to note — only its label margins differ.
+      if (style.shape === 'note' || style.shape === 'note2') {
         if (boolish(style.shadow)) {
           var nsp = shadowParams(style);
           paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, nsp.color, nsp.alpha),
@@ -4776,11 +4998,34 @@
         var swBody = String(style.swimlaneBody) !== '0';   // default 1
         var swR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
         var bx = box.x, by = box.y, bw = box.w, bh = box.h;
+        // flipH/flipV mirror the swimlane geometry within its box (header moves
+        // to the opposite side), exactly like mxShape.updateTransform; the
+        // label text stays upright but follows the flipped header
+        // (mxSwimlane.getLabelBounds). Previously silently ignored.
+        var swFH = boolish(style.flipH) || boolish(style.stencilFlipH);
+        var swFV = boolish(style.flipV) || boolish(style.stencilFlipV);
+        var swFlipBox = function (b) {
+          return (swFH || swFV) ? {
+            x: swFH ? 2 * bx + bw - b.x - b.w : b.x,
+            y: swFV ? 2 * by + bh - b.y - b.h : b.y, w: b.w, h: b.h } : b;
+        };
+        var swStart = paint.length;
         // header fill (faithful gradient when gradientColor is set)
         if (swFill) {
-          var swHB = swH ? { x: bx, y: by, w: bw, h: swSz }
-                         : { x: bx, y: by, w: swSz, h: bh };
-          var swHN = regionFillNode(style, swHB);
+          // Gradient headers come back as kind:'svg' (skipped by the path-flip
+          // loop below) so their box is pre-flipped here; solid headers come
+          // back as kind:'path' and are flipped by the loop like the rest.
+          var swHB0 = swH ? { x: bx, y: by, w: bw, h: swSz }
+                          : { x: bx, y: by, w: swSz, h: bh };
+          var swHB = isPaintable(style.gradientColor) ? swFlipBox(swHB0) : swHB0;
+          // mirroring also mirrors the gradient axis
+          var swGD = style.gradientDirection;
+          if (swFH && (swGD === 'east' || swGD === 'west')) swGD = swGD === 'east' ? 'west' : 'east';
+          if (swFV && (swGD == null || swGD === 'south' || swGD === 'north')) {
+            swGD = (swGD === 'north') ? 'south' : 'north';
+          }
+          var swHN = regionFillNode(swGD === style.gradientDirection ? style
+            : Object.assign({}, style, { gradientDirection: swGD }), swHB);
           if (swHN) paint.push(swHN);
         }
         // body fill (swimlaneFillColor; default none = transparent)
@@ -4830,9 +5075,18 @@
             d: swH ? ('M ' + p(bx + bw, by + swSz) + ' L ' + p(bx + bw, by + bh))
                    : ('M ' + p(bx + swSz, by) + ' L ' + p(bx + bw, by)) });
         }
+        // Mirror the geometry path nodes about the box centre for flipH/flipV.
+        // (The header-fill svg node was already emitted at its flipped box.)
+        if (swFH || swFV) {
+          for (var swI = swStart; swI < paint.length; swI++) {
+            if (paint[swI].kind === 'path') {
+              paint[swI].d = flipPathD(paint[swI].d, bx + bw / 2, by + bh / 2, swFH, swFV);
+            }
+          }
+        }
         if (label !== '') {
-          var swLB = swH ? { x: bx, y: by, w: bw, h: swSz }
-                         : { x: bx, y: by, w: swSz, h: bh };
+          var swLB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
+                                    : { x: bx, y: by, w: swSz, h: bh });
           var swLBn = labelBoxNode(style, swLB);
           if (swLBn) paint.push(swLBn);
           paint.push(labelTextNode(graph, cell, state, style, swLB, label, notices, resolved));

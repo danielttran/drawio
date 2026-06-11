@@ -159,3 +159,90 @@ TEST_CASE("D4: units_per_inch returns 96 for px") {
 TEST_CASE("D4: units_per_inch returns 25400 for um") {
   CHECK(units_per_inch("um") == 25400.0);
 }
+
+TEST_CASE("deeply nested contract JSON is a typed syntax error, not a crash") {
+  // 100k nested arrays: a recursive-descent parser without a depth guard
+  // overflows the stack here and kills the engine process.
+  const std::string deep(100000, '[');
+  const auto result = load_baked_contract(deep);
+
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == ContractErrorCode::ContractSyntaxError);
+  CHECK(result.error().message == "nesting depth exceeded");
+}
+
+TEST_CASE("nesting under the depth ceiling still parses") {
+  // Sanity: the guard refuses pathological depth, not ordinary documents.
+  std::string nested(100, '[');
+  nested += "1";
+  nested += std::string(100, ']');
+  const auto result = load_baked_contract(nested);
+
+  REQUIRE_FALSE(result);  // an array root is a shape error, not a syntax error
+  CHECK(result.error().code == ContractErrorCode::ContractShapeError);
+}
+
+namespace {
+
+std::string static_text_contract(const std::string& raw_line_json) {
+  return
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"page-1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[)"
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},"font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"static","lines":[")"
+    + raw_line_json +
+    R"("]}})"
+    R"(]}]}})";
+}
+
+} // namespace
+
+TEST_CASE("\\uXXXX escapes decode to UTF-8 including surrogate pairs") {
+  // JSON.stringify output: "A", U+00E9, U+4E2D and a U+1F600 surrogate pair.
+  const auto result = load_baked_contract(
+    static_text_contract(R"(\u0041\u00e9\u4e2d\ud83d\ude00)"));
+
+  REQUIRE(result);
+  REQUIRE(result.value().pages[0].paint.size() == 1);
+  const auto& lines = result.value().pages[0].paint[0].static_lines;
+  REQUIRE(lines.size() == 1);
+  CHECK(lines[0] == "A\xC3\xA9\xE4\xB8\xAD\xF0\x9F\x98\x80");
+}
+
+TEST_CASE("\\uXXXX control-character escapes from JSON.stringify decode") {
+  const auto result = load_baked_contract(static_text_contract(R"(a\u0007b)"));
+
+  REQUIRE(result);
+  CHECK(result.value().pages[0].paint[0].static_lines[0] == "a\x07"
+                                                            "b");
+}
+
+TEST_CASE("lone surrogate escapes substitute U+FFFD instead of refusing") {
+  // JSON.parse accepts lone surrogates; they have no valid UTF-8 form, so the
+  // loader substitutes U+FFFD (EF BF BD) -- visible, never a silent refusal.
+  const std::string replacement = "\xEF\xBF\xBD";
+
+  const auto high = load_baked_contract(static_text_contract(R"(\ud800)"));
+  REQUIRE(high);
+  CHECK(high.value().pages[0].paint[0].static_lines[0] == replacement);
+
+  const auto low = load_baked_contract(static_text_contract(R"(\udc00x)"));
+  REQUIRE(low);
+  CHECK(low.value().pages[0].paint[0].static_lines[0] == replacement + "x");
+
+  // High surrogate followed by a non-surrogate escape: both survive.
+  const auto split = load_baked_contract(static_text_contract(R"(\ud83d\u0041)"));
+  REQUIRE(split);
+  CHECK(split.value().pages[0].paint[0].static_lines[0] == replacement + "A");
+
+  // High surrogate followed by a plain character.
+  const auto plain = load_baked_contract(static_text_contract(R"(\ud83dZ)"));
+  REQUIRE(plain);
+  CHECK(plain.value().pages[0].paint[0].static_lines[0] == replacement + "Z");
+}
+
+TEST_CASE("truncated \\u escape is a typed syntax error") {
+  const auto result = load_baked_contract(static_text_contract(R"(\u00)"));
+
+  REQUIRE_FALSE(result);
+  CHECK(result.error().code == ContractErrorCode::ContractSyntaxError);
+}

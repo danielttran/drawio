@@ -28,6 +28,12 @@ struct JsonValue {
   Storage storage;
 };
 
+// Recursion ceiling for the recursive-descent parser. Without it a contract
+// of ~1M nested '[' overflows the stack and kills the engine process instead
+// of producing a typed ContractSyntaxError. 512 matches practical JSON.parse
+// nesting limits; real contracts are a handful of levels deep.
+constexpr std::size_t kMaxNestingDepth = 512;
+
 class JsonParser {
 public:
   explicit JsonParser(std::string_view input) : input_(input) {}
@@ -87,6 +93,16 @@ private:
   }
 
   JsonValue parse_value() {
+    if (depth_ >= kMaxNestingDepth) {
+      throw std::runtime_error("nesting depth exceeded");
+    }
+    ++depth_;
+    JsonValue value = parse_value_inner();
+    --depth_;
+    return value;
+  }
+
+  JsonValue parse_value_inner() {
     skip_ws();
     const char ch = peek();
     if (ch == '{') {
@@ -202,9 +218,79 @@ private:
         case 't':
           value.push_back('\t');
           break;
+        case 'u':
+          append_utf8(value, parse_unicode_escape());
+          break;
         default:
           throw std::runtime_error("unsupported string escape");
       }
+    }
+  }
+
+  unsigned int read_hex4() {
+    unsigned int code = 0;
+    for (int digit = 0; digit < 4; ++digit) {
+      const char ch = consume();
+      code <<= 4;
+      if (ch >= '0' && ch <= '9') {
+        code |= static_cast<unsigned int>(ch - '0');
+      } else if (ch >= 'a' && ch <= 'f') {
+        code |= static_cast<unsigned int>(ch - 'a' + 10);
+      } else if (ch >= 'A' && ch <= 'F') {
+        code |= static_cast<unsigned int>(ch - 'A' + 10);
+      } else {
+        throw std::runtime_error("invalid \\u escape hex digit");
+      }
+    }
+    return code;
+  }
+
+  // Decodes the 4 hex digits after "\u", combining UTF-16 surrogate pairs
+  // into the supplementary code point. JSON.stringify emits these for any
+  // non-BMP character, so refusing them rejected valid producer output.
+  //
+  // Lone surrogates: JSON.parse accepts them and yields a lone UTF-16 code
+  // unit, but that has NO valid UTF-8 encoding for the engine's byte
+  // strings. We substitute U+FFFD (replacement character) like the exporter
+  // does -- visibly degraded, never byte-invalid, never a silent refusal of
+  // an otherwise-valid contract.
+  unsigned int parse_unicode_escape() {
+    unsigned int code = read_hex4();
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      if (pos_ + 1 < input_.size() && input_[pos_] == '\\' && input_[pos_ + 1] == 'u') {
+        const std::size_t saved = pos_;
+        pos_ += 2;
+        const unsigned int low = read_hex4();
+        if (low >= 0xDC00 && low <= 0xDFFF) {
+          return 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        }
+        // Valid escape but not a low surrogate: leave it for the main loop
+        // and replace the lone high surrogate.
+        pos_ = saved;
+      }
+      return 0xFFFD;
+    }
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+      return 0xFFFD;  // lone low surrogate
+    }
+    return code;
+  }
+
+  static void append_utf8(std::string& out, unsigned int code) {
+    if (code < 0x80) {
+      out.push_back(static_cast<char>(code));
+    } else if (code < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else if (code < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
     }
   }
 
@@ -254,6 +340,7 @@ private:
 
   std::string_view input_;
   std::size_t pos_ = 0;
+  std::size_t depth_ = 0;
 };
 
 [[nodiscard]] ContractError error(ContractErrorCode code, std::string path, std::string message) {

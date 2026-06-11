@@ -3,7 +3,10 @@
 #include "print_engine/contract_loader.hpp"
 
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -24,16 +27,48 @@ Json proto_echo() {
   return p;
 }
 
+// Range-checked wire-number reader. as_number() values come straight off the
+// wire; static_cast of an out-of-range double to an integer type is UB, so
+// every numeric request field must pass through here before any cast.
+// nullopt => caller refuses loudly with a typed error (C1: never coerce).
+std::optional<double> checked_wire_number(const Json& value, double min_value,
+                                          double max_value,
+                                          bool require_integral) {
+  if (value.type() != Json::Type::Number) {
+    return std::nullopt;
+  }
+  const double n = value.as_number();
+  if (!std::isfinite(n) || n < min_value || n > max_value) {
+    return std::nullopt;
+  }
+  if (require_integral && std::floor(n) != n) {
+    return std::nullopt;
+  }
+  return n;
+}
+
 // mergeData object -> KEY/value string map (engine P3 IMergeSource input §4).
-std::map<std::string, std::string> read_merge(const Json& request) {
+// Non-string values are refused loudly: as_string()'s "" fallback turned
+// {"qty":5} into a silent blank print (the C1 class).
+Result<std::map<std::string, std::string>, std::string> read_merge(
+    const Json& request) {
+  using R = Result<std::map<std::string, std::string>, std::string>;
   std::map<std::string, std::string> merge;
   const Json* md = request.get("mergeData");
-  if (md != nullptr && md->is_object()) {
-    for (const auto& kv : md->object_pairs()) {
-      merge[kv.first] = kv.second.as_string();
-    }
+  if (md == nullptr || md->type() == Json::Type::Null) {
+    return R::ok(std::move(merge));  // absent/null: unambiguously "no data"
   }
-  return merge;
+  if (!md->is_object()) {
+    return R::err("mergeData must be an object of string values");
+  }
+  for (const auto& kv : md->object_pairs()) {
+    if (kv.second.type() != Json::Type::String) {
+      return R::err("mergeData value for key \"" + kv.first +
+                    "\" must be a string");
+    }
+    merge[kv.first] = kv.second.as_string();
+  }
+  return R::ok(std::move(merge));
 }
 
 const char* contract_kind_to_wire(const PaintNodeSummary& node) {
@@ -142,10 +177,21 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
     case Op::Hello: {
       ProtoVersion peer;
       if (const Json* p = request.get("proto"); p != nullptr) {
-        peer.major =
-            static_cast<std::uint32_t>(p->get("major") ? p->get("major")->as_number() : 0);
-        peer.minor =
-            static_cast<std::uint32_t>(p->get("minor") ? p->get("minor")->as_number() : 0);
+        constexpr double kMaxVersion = 2147483647.0;  // 0..INT32_MAX
+        const Json* major = p->get("major");
+        const Json* minor = p->get("minor");
+        const auto major_n = major != nullptr
+                                 ? checked_wire_number(*major, 0.0, kMaxVersion, true)
+                                 : std::optional<double>(0.0);
+        const auto minor_n = minor != nullptr
+                                 ? checked_wire_number(*minor, 0.0, kMaxVersion, true)
+                                 : std::optional<double>(0.0);
+        if (!major_n.has_value() || !minor_n.has_value()) {
+          return error_reply(request, ProtoErrorKind::ProtoHandshakeError,
+                             "proto.major/minor must be integers in 0..2147483647");
+        }
+        peer.major = static_cast<std::uint32_t>(*major_n);
+        peer.minor = static_cast<std::uint32_t>(*minor_n);
       }
       const auto hs = session_.on_hello(peer);
       if (!hs.ok) {
@@ -284,10 +330,31 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
         return error_reply(request, map_contract_error(loaded.error().code),
                            loaded.error().message);
       }
-      const double dpi =
-          request.get("dpi") ? request.get("dpi")->as_number(300.0) : 300.0;
-      auto out =
-          services_.render_preview(loaded.value(), read_merge(request), dpi);
+      double dpi = 300.0;
+      if (const Json* dpi_field = request.get("dpi")) {
+        // Positive and bounded: a wire value like 1e300 must not reach the
+        // renderer's pixel-size math.
+        const auto checked = checked_wire_number(*dpi_field, 1.0, 10000.0, false);
+        if (!checked.has_value()) {
+          return error_reply(request, ProtoErrorKind::ContractValidationError,
+                             "dpi must be a number in 1..10000");
+        }
+        dpi = *checked;
+      }
+      auto merge = read_merge(request);
+      if (!merge.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           merge.error());
+      }
+      // INV-5: the preview honors the same per-job render options as Print
+      // ("aa":"crisp"), or a crisp job previews antialiased while the paper
+      // is gridfit/thresholded.
+      PrintRenderOptions preview_opts;
+      if (const Json* aa = request.get("aa")) {
+        preview_opts.edge_crisp = (aa->as_string() == "crisp");
+      }
+      auto out = services_.render_preview(loaded.value(), merge.value(), dpi,
+                                          preview_opts);
       if (!out.has_value()) {
         return error_reply(request, map_contract_error(out.error().code),
                            out.error().message);
@@ -335,15 +402,29 @@ DispatchResult ProtoDispatcher::handle(const Json& request) {
           request.get("printerId") ? request.get("printerId")->as_string() : "";
       const std::string stock_id =
           request.get("stockId") ? request.get("stockId")->as_string() : "";
-      const int copies = static_cast<int>(
-          request.get("copies") ? request.get("copies")->as_number(1.0) : 1.0);
+      int copies = 1;
+      if (const Json* copies_field = request.get("copies")) {
+        // >=1 and sanely bounded: an out-of-int-range double cast is UB and
+        // a million-copy request is never intentional.
+        const auto checked = checked_wire_number(*copies_field, 1.0, 999.0, true);
+        if (!checked.has_value()) {
+          return error_reply(request, ProtoErrorKind::ContractValidationError,
+                             "copies must be an integer in 1..999");
+        }
+        copies = static_cast<int>(*checked);
+      }
       PrintRenderOptions opts;
       if (const Json* aa = request.get("aa")) {
         opts.edge_crisp = (aa->as_string() == "crisp");
       }
+      auto merge = read_merge(request);
+      if (!merge.has_value()) {
+        return error_reply(request, ProtoErrorKind::ContractValidationError,
+                           merge.error());
+      }
 
       print_in_flight_ = true;
-      auto out = services_.print(loaded.value(), read_merge(request),
+      auto out = services_.print(loaded.value(), merge.value(),
                                  printer_id, stock_id, copies, opts);
       print_in_flight_ = false;
       if (!out.has_value()) {

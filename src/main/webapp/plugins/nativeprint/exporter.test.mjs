@@ -119,7 +119,7 @@ test('exporter bakes common vertex shapes as real paths', () => {
   assert.equal(paths[1], 'M 70 0 L 90 10 L 70 20 L 50 10 Z');
   assert.match(paths[2], / A 3 3 0 0 1 /); // rounded-rect radius = 15% of min side (drawio default)
   assert.match(paths[3], /^M 0 46 C /); // cylinder cap = min(40, h/5) (drawio mxCylinder)
-  assert.match(paths[4], /^M 60 62\.5 C /);
+  assert.match(paths[4], /^M 60 47\.5 C /); // cloud starts at (0.25w, 0.25h) (mxCloud.redrawPath)
 });
 
 test('exporter emits routed edges with rounded corners arrowheads and labels', () => {
@@ -382,7 +382,7 @@ const SUPPORTED_SHAPES = [
   ['triangle west', { shape: 'triangle', direction: 'west' }, /^M 80 40 L 0 20 L 80 0 Z$/],
   ['triangle north', { shape: 'triangle', direction: 'north' }, /^M 0 40 L 40 0 L 80 40 Z$/],
   ['cylinder', { shape: 'cylinder' }, /^M 0 [\d.]+ C /],
-  ['cloud', { shape: 'cloud' }, /^M 20 30 C /],
+  ['cloud', { shape: 'cloud' }, /^M 20 10 C /], // (0.25w, 0.25h) — exact mxCloud silhouette
   ['label', { shape: 'label' }, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/],
   ['switch', { shape: 'switch' }, /^M 0 0 C [\d.]+ [\d.]+ [\d.]+ [\d.]+ 80 0 C /],
   ['default (no shape)', {}, /^M 0 0 L 80 0 L 80 40 L 0 40 Z$/]

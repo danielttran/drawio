@@ -26,7 +26,7 @@ import { randomBytes } from 'node:crypto';
 // the unattended service.  The import is lazy so dev startup still works even
 // if the bake tooling is temporarily absent (loud error on the first request
 // that needs it, never a silent wrong contract).
-async function headlessBake(xml, opts) {
+async function loadBakeModule() {
   // Dev: reload exporter.js + the bake on every request so edits are picked up
   // WITHOUT restarting the dev server. The broker process otherwise
   // module-caches them, serving stale bakes (the browser being fresh does not
@@ -37,7 +37,11 @@ async function headlessBake(xml, opts) {
     delete require.cache[require.resolve(join(currentDir, 'plugins/nativeprint/exporter.js'))];
   } catch (e) { /* ignore */ }
   const bakePath = join(currentDir, '..', '..', '..', 'tools', 'native-print-bake', 'bake.mjs');
-  const m = await import('file://' + bakePath.replace(/\\/g, '/') + '?v=' + Date.now());
+  return import('file://' + bakePath.replace(/\\/g, '/') + '?v=' + Date.now());
+}
+
+async function headlessBake(xml, opts) {
+  const m = await loadBakeModule();
   return m.bake(xml, { ...opts, keepPx: true });
 }
 
@@ -299,21 +303,33 @@ async function handleRpc(body) {
       return { result: 'Error', error: 'BrokerError', detail: 'missing drawioXml' };
     }
     let contract;
+    let bakeNotices = [];
     try {
       const result = await headlessBake(drawioXml, { unattended: false });
       contract = result.contract;
+      bakeNotices = result.notices || [];
     } catch (e) {
       return { result: 'Error', error: 'BakeError', detail: String(e.message || e) };
     }
     return withContractFile(contract, async (file) => {
-      const { msg, blob } = await engine.request({
+      const previewMsg = {
         op: 'RenderPreview', contractRef: { path: file },
-        mergeData: mergeData || {}, dpi: dpi || 150 });
-      if (msg.result === 'PreviewResult' && blob) {
-        const token = randomBytes(8).toString('hex');
-        previews.set(token, blob);
-        if (previews.size > 8) previews.delete(previews.keys().next().value);
-        msg.previewUrl = '/native-print/preview?token=' + token;
+        mergeData: mergeData || {}, dpi: dpi || 150 };
+      // D6 AA control: a crisp print must preview crisp (INV-5).
+      if (body.aa === 'crisp') previewMsg.aa = 'crisp';
+      const { msg, blob } = await engine.request(previewMsg);
+      if (msg.result === 'PreviewResult') {
+        // Degradation notices from the BAKE must reach the dialog's
+        // showNotices/ack gate too, not just engine-time notices —
+        // dropping them here meant the operator approved a print the bake
+        // had already flagged as degraded.
+        msg.notices = bakeNotices.concat(msg.notices || []);
+        if (blob) {
+          const token = randomBytes(8).toString('hex');
+          previews.set(token, blob);
+          if (previews.size > 8) previews.delete(previews.keys().next().value);
+          msg.previewUrl = '/native-print/preview?token=' + token;
+        }
       }
       return msg;
     });
@@ -329,12 +345,19 @@ async function handleRpc(body) {
     }
     let contract;
     try {
-      const result = await headlessBake(drawioXml, { unattended: false });
-      if (result.notices && result.notices.length > 0) {
+      const m = await loadBakeModule();
+      const result = await m.bake(drawioXml, { unattended: false, keepPx: true });
+      // Refuse on DEGRADATION-severity notices only (the exporter-owned
+      // noticeSeverity taxonomy, same gate as the unattended service).
+      // Refusing on ANY notice — including info-severity ones like an
+      // expected edge clip — made nearly every faithful job fail.
+      const blocking = (result.notices || []).filter(
+        (n) => m.noticeSeverity(n.kind) === 'degradation');
+      if (blocking.length > 0) {
         return {
           result: 'Error', error: 'BakeNotices',
-          detail: `bake produced ${result.notices.length} notice(s)`,
-          notices: result.notices
+          detail: `bake produced ${blocking.length} degradation notice(s)`,
+          notices: blocking
         };
       }
       contract = result.contract;
@@ -342,9 +365,12 @@ async function handleRpc(body) {
       return { result: 'Error', error: 'BakeError', detail: String(e.message || e) };
     }
     return withContractFile(contract, async (file) => {
-      const { msg } = await engine.request({
+      const printMsg = {
         op: 'Print', contractRef: { path: file },
-        mergeData: mergeData || {}, printerId, stockId, copies: copies || 1 });
+        mergeData: mergeData || {}, printerId, stockId, copies: copies || 1 };
+      // D6 AA control: forward per-job edge-crisp to the engine.
+      if (body.aa === 'crisp') printMsg.aa = 'crisp';
+      const { msg } = await engine.request(printMsg);
       return msg;
     });
   }

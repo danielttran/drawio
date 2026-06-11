@@ -91,6 +91,40 @@ test('wrong schema major exits 1 with a precise diagnostic', async () => {
   assert.match(r.stdout, /\$\.schema\.major: must be 1/);
 });
 
+test('missing schema minor exits 1 (engine require_int\'s schema.minor)', async () => {
+  const c = minimalValid();
+  delete c.schema.minor;
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\$\.schema\.minor: must be a non-negative integer/);
+});
+
+test('negative schema minor exits 1', async () => {
+  const c = minimalValid();
+  c.schema.minor = -1;
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\$\.schema\.minor: must be a non-negative integer/);
+});
+
+test('single-stop gradient passes (engine accepts >= 1 stop)', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].fill = {
+    type: 'linear',
+    stops: [{ offset: 0.5, color: '#336699', alpha: 1 }]
+  };
+  const r = await run(c);
+  assert.equal(r.code, 0, r.stdout);
+});
+
+test('zero-stop gradient exits 1', async () => {
+  const c = minimalValid();
+  c.document.pages[0].paint[0].fill = { type: 'radial', stops: [] };
+  const r = await run(c);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /\.stops: gradient needs >= 1 stop/);
+});
+
 test('unknown units exits 1 (mm)', async () => {
   const c = minimalValid();
   c.document.units = 'mm';

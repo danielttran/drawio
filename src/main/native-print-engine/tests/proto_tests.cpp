@@ -280,3 +280,39 @@ TEST_CASE("mock host and mock engine complete a handshake over the codec",
   CHECK(reply_json.value().get("supportedSchemaMajor")->as_number() ==
         static_cast<double>(SupportedMajor));
 }
+
+TEST_CASE("JSON parser refuses deep nesting with a typed error, not a crash",
+          "[proto][json][hardening]") {
+  // 100k nested arrays: without a depth guard this recursion overflows the
+  // stack and kills the engine process instead of failing loudly.
+  const std::string deep(100000, '[');
+  const auto r = Json::parse(deep);
+  REQUIRE_FALSE(r.has_value());
+  CHECK(r.error() == "nesting depth exceeded");
+
+  // Ordinary nesting depth still parses.
+  std::string shallow(100, '[');
+  shallow += "1";
+  shallow += std::string(100, ']');
+  CHECK(Json::parse(shallow).has_value());
+}
+
+TEST_CASE("JSON parser refuses malformed numbers instead of prefix-parsing",
+          "[proto][json][hardening]") {
+  // std::stod parsed a prefix and ignored the rest ("1-2" -> 1, "1.5e" ->
+  // 1.5); each of these must now be a loud parse error.
+  for (const std::string bad :
+       {"[1-2]", "[1.5e]", "[01]", "[1.2.3]", "[-]", "[1e]", "[1.]",
+        "[00]", "[1e+]", "[--1]", "[1e999]"}) {
+    INFO("input: " << bad);
+    CHECK_FALSE(Json::parse(bad).has_value());
+  }
+
+  // Valid JSON numbers still parse to exact values.
+  const auto good = Json::parse("[-0.5e+2,0,1e3,0.25,-0]");
+  REQUIRE(good.has_value());
+  CHECK(good.value().items()[0].as_number() == -50.0);
+  CHECK(good.value().items()[1].as_number() == 0.0);
+  CHECK(good.value().items()[2].as_number() == 1000.0);
+  CHECK(good.value().items()[3].as_number() == 0.25);
+}
