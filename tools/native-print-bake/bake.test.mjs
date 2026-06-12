@@ -4349,7 +4349,28 @@ test('audit7: zero/negative-extent cells match drawio (hairline / nothing)', asy
   const ln = lineC.document.pages[0].paint.find((n) => n.kind === 'path');
   assert.ok(ln && /^M 10 10 L 90 10$/.test(ln.d), `hairline expected: ${ln && ln.d}`);
   assert.equal(ln.fill, null);
+  // The LABEL still renders for a degenerate body (drawio mxText does).
+  const { contract: lblC } = await bake(page(80, 0).replace('style=', 'value="DIV" style='), { keepPx: true });
+  assert.ok(lblC.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /DIV/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'zero-extent cell keeps its label');
   // negative width: drawio paints nothing.
   const { contract: negC } = await bake(page(-80, 40), { keepPx: true });
   assert.equal(negC.document.pages[0].paint.length, 0, 'negative extent paints nothing');
+});
+
+test('audit7: shadow ink composes with the shape opacity (createShadow clone semantics)', async () => {
+  // mxSvgCanvas2D.createShadow clones the painted node (keeping its own
+  // fill-opacity) and applies shadowAlpha on top: opacity=50 + shadow=1
+  // prints a 0.25*0.5 = 0.125 shadow, not a flat 0.25.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;shadow=1;opacity=50;" parent="1"><mxGeometry x="40" y="40" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const shadow = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#000000');
+  assert.ok(shadow, 'shadow present');
+  assert.ok(Math.abs(shadow.fill.alpha - 0.125) < 0.001,
+    `shadow alpha composes: got ${shadow.fill.alpha}`);
 });

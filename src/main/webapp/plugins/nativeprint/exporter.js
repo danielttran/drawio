@@ -2700,9 +2700,15 @@
     // SHADOW_OPACITY=0.25, SHADOWCOLOR='#000000'; offsets stay 2,3) — the
     // earlier #808080@1 matched mxgraph-the-library, not what the drawio
     // editor actually shows.
+    // mxSvgCanvas2D.createShadow CLONES the painted node (which keeps its
+    // own fill/stroke-opacity from the shape's opacity style) and sets the
+    // clone's group opacity to shadowAlpha — so the effective shadow ink is
+    // shadowAlpha * shape alpha. A flat shadowAlpha printed translucent
+    // shapes' shadows twice as dark as the editor.
     return {
       color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#000000',
-      alpha: number(style && style.shadowOpacity, 0.25),
+      alpha: number(style && style.shadowOpacity, 0.25) *
+        (style ? opacity(style, 'opacity') : 1),
       dx: number(style && style.shadowOffsetX, 2),
       dy: number(style && style.shadowOffsetY, 3)
     };
@@ -5826,9 +5832,9 @@
         return;
       }
       var degenStroke = strokeOf(style);
+      var dgx = (state.x - origin.x) / scale;
+      var dgy = (state.y - origin.y) / scale;
       if (degenStroke && (state.width > 0 || state.height > 0)) {
-        var dgx = (state.x - origin.x) / scale;
-        var dgy = (state.y - origin.y) / scale;
         paint.push({
           kind: 'path',
           d: 'M ' + fmt(dgx) + ' ' + fmt(dgy) + ' L ' +
@@ -5836,6 +5842,16 @@
           fill: null,
           stroke: degenStroke
         });
+      }
+      // The LABEL still renders in drawio (mxText ignores the degenerate
+      // body) — e.g. a labelled horizontal divider line. Dropping it here
+      // was a silent text loss.
+      if (label !== '') {
+        labelNodes(graph, cell, state, style,
+          { x: dgx, y: dgy, w: Math.max(0, state.width / scale),
+            h: Math.max(0, state.height / scale) },
+          label, notices, resolved)
+          .forEach(function (n) { paint.push(n); });
       }
       return;
     }
