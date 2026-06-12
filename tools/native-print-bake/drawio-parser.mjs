@@ -772,8 +772,12 @@ function parseModel(modelXml) {
   const modelOpen = /<mxGraphModel([^>]*)>/i.exec(modelXml);
   const modelAttrs = modelOpen ? parseAttrs(modelOpen[1]) : {};
 
-  const pageW = parseFloat(modelAttrs.pageWidth  || 0) || 0;
-  const pageH = parseFloat(modelAttrs.pageHeight || 0) || 0;
+  // View > Page Scale: the on-canvas page covers pageFormat * pageScale
+  // model units (drawio computes page breaks as pageFormat*pageScale).
+  // Ignoring it printed files authored at != 100% page scale mis-fit.
+  const pageScale = parseFloat(modelAttrs.pageScale || 1) || 1;
+  const pageW = (parseFloat(modelAttrs.pageWidth  || 0) || 0) * pageScale;
+  const pageH = (parseFloat(modelAttrs.pageHeight || 0) || 0) * pageScale;
 
   const cells = parseCells(modelXml);
 

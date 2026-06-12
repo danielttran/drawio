@@ -147,7 +147,10 @@ async function renderFile(drawioPath, outPng) {
   const contract = result.contract;
 
   console.log(`  exporter notices: ${notices.length}`);
-  notices.forEach(n => console.log('   ', n.kind, n.message || ''));
+  // Notice detail lives at n.detail.detail (exporter) or n.detail (wire);
+  // n.message never existed, so the reason text was silently dropped.
+  notices.forEach(n => console.log('   ', n.kind,
+    (n.detail && (n.detail.detail || n.detail)) || ''));
 
   const client = new EngineClient(ENGINE);
 

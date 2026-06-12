@@ -92,7 +92,15 @@ const graph = buildGraph(pageData.cells, pageData.paper);
 let resolvedImages = {};
 if (typeof exporter.embedExternalImages === 'function')
   resolvedImages = await exporter.embedExternalImages(graph, localFileFetch, null, null).catch(() => ({}));
-const { contract } = exporter.buildResult(graph, pageData.paper, { resolvedImages });
+// Surface bake notices: this probe previously discarded them entirely, so
+// a degraded render previewed with no hint of WHY it diverged.
+const { contract, notices } = exporter.buildResult(graph, pageData.paper, { resolvedImages });
+if (notices && notices.length) {
+  console.error(`bake notices (${notices.length}):`);
+  for (const n of notices) {
+    console.error('  ', n.kind, (n.detail && (n.detail.detail || n.detail)) || '');
+  }
+}
 
 const client = new EngineClient();
 const { msg: h } = await client.request({ op: 'Hello', proto: { major: 1, minor: 0 } });

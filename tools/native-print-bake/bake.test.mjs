@@ -623,7 +623,9 @@ test('bake: pages option selects subset of pages', async () => {
   </mxfile>`;
   const { contract } = await bake(xml, { pages: [1] }); // only second page
   assert.equal(contract.document.pages.length, 1);
-  assert.equal(contract.document.pages[0].id, 'page-1'); // ordinal from selected set
+  // DOCUMENT ordinal, not selection index: notices' pageId must point at
+  // the real document page (selecting [1] = the file's second page).
+  assert.equal(contract.document.pages[0].id, 'page-2');
 });
 
 test('D5: unattended mode succeeds for supported browser-free flowchart shape', async () => {
@@ -3980,4 +3982,10 @@ test('audit7: flipH on a GIF image cell reaches the printed SVG (non-PNG flip)',
   assert.ok(node, 'gif image baked as svg-wrapped node');
   assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /scale\(-1 1\)/,
     'flipH transform present');
+});
+
+test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
+  const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
+  await assert.rejects(() => bake(xml, { pages: [] }), RangeError);
 });
