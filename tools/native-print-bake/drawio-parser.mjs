@@ -432,7 +432,10 @@ function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
   const style = edge.style || {};
   const pxKey = isSource ? 'exitX' : 'entryX';
   const pyKey = isSource ? 'exitY' : 'entryY';
-  if (style[pxKey] != null || style[pyKey] != null) {
+  // mxGraph.getConnectionConstraint: a FIXED anchor needs BOTH coordinates;
+  // a lone exitX/entryX leaves the end FLOATING (the 0.5 default invented
+  // an anchor the editor does not draw).
+  if (style[pxKey] != null && style[pyKey] != null) {
     const px = parseFloat(style[pxKey] ?? 0.5);
     const py = parseFloat(style[pyKey] ?? 0.5);
     const dx = parseFloat(style[isSource ? 'exitDx' : 'entryDx'] || 0) || 0;
@@ -515,8 +518,9 @@ function edgePoints(cell, cells) {
   const literalTgt = (!tgtCell && g.targetPoint)
     ? { x: g.targetPoint.x + ax, y: g.targetPoint.y + ay } : null;
 
-  const hasExit = style.exitX != null || style.exitY != null;
-  const hasEntry = style.entryX != null || style.entryY != null;
+  // BOTH coordinates make a fixed anchor (mxGraph.getConnectionConstraint).
+  const hasExit = style.exitX != null && style.exitY != null;
+  const hasEntry = style.entryX != null && style.entryY != null;
 
   // Self-loop: mxGraphView.isLoopStyleEnabled -- source == target, fewer
   // than 2 hints, and (orthogonalLoop unset OR no fixed exit/entry point)
@@ -673,9 +677,27 @@ function computeBounds(cells) {
         parseFloat(st.endWidth) || 0,
         parseFloat(st.strokeWidth) || 1) / 2 + markerHalo;
       try {
-        for (const pt of edgePoints(cell, cells) || []) {
+        const pts = edgePoints(cell, cells) || [];
+        for (const pt of pts) {
           include(pt.x - halo, pt.y - halo);
           include(pt.x + halo, pt.y + halo);
+        }
+        // The edge's own LABEL extends the graph bounds too (drawio
+        // getGraphBounds includes label bboxes): an auto-fit page cropped
+        // dragged/long edge labels that stuck out past the route.
+        if (pts.length >= 2 && cell.value != null && String(cell.value) !== '') {
+          const fs2 = parseFloat(st.fontSize) || 12;
+          const text2 = String(cell.value).replace(/<[^>]+>/g, '');
+          const lw2 = Math.max(24, text2.length * fs2 * 0.65);
+          const lh2 = Math.max(fs2 * 1.4, text2.split('\n').length * fs2 * 1.25);
+          let mid = pts[Math.floor(pts.length / 2)];
+          if (pts.length % 2 === 0) {
+            const a = pts[pts.length / 2 - 1], b = pts[pts.length / 2];
+            mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          }
+          const offp = cell.geometry && cell.geometry.offset ? cell.geometry.offset : { x: 0, y: 0 };
+          include(mid.x + offp.x - lw2 / 2, mid.y + offp.y - lh2 / 2);
+          include(mid.x + offp.x + lw2 / 2, mid.y + offp.y + lh2 / 2);
         }
       } catch {
         const { ax, ay } = absolutePos(cell, cells);
