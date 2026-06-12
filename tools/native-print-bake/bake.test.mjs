@@ -4288,3 +4288,68 @@ test('audit7 shape: ext symbol0..n emit a LOUD ExporterUnsupportedShape notice',
   const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
   assert.match(svg, /<rect x="2" y="2" width="96" height="56"/, 'double rect still renders');
 });
+
+test('audit7: image clipPath/rounded crop reaches the printed SVG', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const page = (style) => `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;${style}image=data:image/png,${png};" parent="1"><mxGeometry x="10" y="10" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  // inset() crop -> svg-wrapped node with a clipPath rect at the crop window.
+  const { contract: cropC, notices: cropN } =
+    await bake(page('clipPath=inset(10% 20% 10% 20%);'), { keepPx: true });
+  assert.equal(cropN.length, 0);
+  const cropNode = cropC.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const cropSvg = Buffer.from(cropNode.source, 'base64').toString('utf8');
+  assert.match(cropSvg, /<clipPath id="imgclip\d+"><rect x="16" y="4" width="48" height="32"/,
+    `inset crop rect: ${cropSvg}`);
+  // rounded=1 -> synthetic inset(0 round r%) clip with rx.
+  const { contract: rndC } = await bake(page('rounded=1;'), { keepPx: true });
+  const rndNode = rndC.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.match(Buffer.from(rndNode.source, 'base64').toString('utf8'), /rx="/,
+    'rounded image carries a rounded clip');
+  // unsupported clip form -> full image + LOUD notice, never a silent wrong crop.
+  const { notices: polyN } = await bake(page('clipPath=polygon(0 0, 100% 0, 0 100%);'), { keepPx: true });
+  assert.ok(polyN.some((n) => /clipPath/.test(n.detail.detail)), 'polygon clip is loud');
+});
+
+test('audit7: shadow=1 on a STENCIL paints the offset recolored copy; sketch=1 is LOUD', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=mxgraph.basic.4_point_star;fillColor=#ff0000;shadow=1;" parent="1"><mxGeometry x="40" y="40" width="100" height="100" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0);
+  const svgs = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.equal(svgs.length, 2, 'shadow copy + stencil body');
+  const shadow = Buffer.from(svgs[0].source, 'base64').toString('utf8');
+  assert.match(shadow, /<g opacity="0.25">/);
+  assert.match(shadow, /#000000/);
+  assert.ok(!/#ff0000/.test(shadow), 'shadow copy is fully recolored');
+  // paddedSvgShapeNode grows the shadow viewport by the stroke halo, so
+  // compare with that slack: the offset is (2,3) +- pad.
+  assert.ok(Math.abs((svgs[1].box.x + 2) - svgs[0].box.x) < 1, 'offset ~(2,3)');
+
+  const { notices: skN } = await bake(xml.replace('shadow=1;', 'sketch=1;'), { keepPx: true });
+  assert.ok(skN.some((n) => /sketch=1/.test(n.detail.detail)), 'stencil sketch is loud');
+
+  const builtin = xml.replace('shape=mxgraph.basic.4_point_star;fillColor=#ff0000;shadow=1;',
+    'shape=process;sketch=1;fillStyle=hachure;fillColor=#ff0000;');
+  const { notices: biN } = await bake(builtin, { keepPx: true });
+  assert.ok(biN.some((n) => /sketch=1/.test(n.detail.detail)), 'builtin-branch sketch is loud');
+});
+
+test('audit7: zero/negative-extent cells match drawio (hairline / nothing)', async () => {
+  const page = (w, h) => `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="10" y="10" width="${w}" height="${h}" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  // h=0: a horizontal hairline, not a 1px-tall outlined rect.
+  const { contract: lineC } = await bake(page(80, 0), { keepPx: true });
+  const ln = lineC.document.pages[0].paint.find((n) => n.kind === 'path');
+  assert.ok(ln && /^M 10 10 L 90 10$/.test(ln.d), `hairline expected: ${ln && ln.d}`);
+  assert.equal(ln.fill, null);
+  // negative width: drawio paints nothing.
+  const { contract: negC } = await bake(page(-80, 40), { keepPx: true });
+  assert.equal(negC.document.pages[0].paint.length, 0, 'negative extent paints nothing');
+});

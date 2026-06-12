@@ -5194,7 +5194,60 @@
       (typeof style.image === 'string' && style.image !== '');
   }
 
-  function imageNode(style, box, parsed) {
+  // mxImageShape clip semantics: the `clipPath` style (drawio's Crop Image
+  // UI writes `inset(T% R% B% L%[ round RR%])`) and `rounded=1` (which
+  // appends/synthesizes the round clause from getArcSize) crop the drawn
+  // image. Returns null when no crop applies (with a loud notice for
+  // unsupported clip forms), or { defs, attr } to wrap the SVG <image>.
+  var imgClipCounter = 0;
+  function imageClipDecor(style, box, notices, cellId) {
+    var r = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+    var clip = typeof style.clipPath === 'string' && style.clipPath !== ''
+      ? String(style.clipPath) : null;
+    if (r > 0) {
+      var roundVal = ' round ' + (r * 100 / Math.min(box.w, box.h)) + '%';
+      if (clip != null && clip.substring(0, 5) === 'inset' && clip.indexOf('round') < 0) {
+        clip = clip.replace(')', roundVal + ')');
+      } else if (clip == null) {
+        clip = 'inset(0% 0% 0% 0%' + roundVal + ')';
+      }
+    }
+    if (clip == null) return null;
+    var m = /^inset\(\s*([^\s)]+)(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?\s*(?:round\s+([^\s)]+)\s*)?\)$/i
+      .exec(clip.trim());
+    if (!m) {
+      // circle()/ellipse()/polygon() crops have no headless port yet:
+      // print the FULL image with a loud notice, never a silent wrong crop.
+      if (notices) {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
+      }
+      return null;
+    }
+    var len = function (v, ref) {
+      if (v == null) return 0;
+      var n = parseFloat(v);
+      if (!Number.isFinite(n)) return 0;
+      return /%$/.test(v) ? n / 100 * ref : n;
+    };
+    // CSS inset(): 1-4 values per margin shorthand order T R B L.
+    var t = len(m[1], box.h);
+    var rr = len(m[2] != null ? m[2] : m[1], box.w);
+    var b = len(m[3] != null ? m[3] : m[1], box.h);
+    var l = len(m[4] != null ? m[4] : (m[2] != null ? m[2] : m[1]), box.w);
+    var rad = m[5] != null ? len(m[5], Math.min(box.w, box.h)) : 0;
+    var cw = Math.max(0, box.w - l - rr);
+    var ch = Math.max(0, box.h - t - b);
+    var id = 'imgclip' + (imgClipCounter++);
+    return {
+      defs: '<clipPath id="' + id + '"><rect x="' + fmt(l) + '" y="' + fmt(t) +
+        '" width="' + fmt(cw) + '" height="' + fmt(ch) +
+        (rad > 0 ? '" rx="' + fmt(rad) + '" ry="' + fmt(rad) : '') + '"/></clipPath>',
+      attr: ' clip-path="url(#' + id + ')"'
+    };
+  }
+
+  function imageNode(style, box, parsed, notices, cellId) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5207,7 +5260,8 @@
     var fh = boolish(style.imageFlipH) || boolish(style.flipH);
     var fv = boolish(style.imageFlipV) || boolish(style.flipV);
     var op = opacity(style, 'opacity');
-    if (op < 1) {
+    var clipDecor = imageClipDecor(style, box, notices, cellId);
+    if (op < 1 || clipDecor) {
       // kind:image has no opacity field in the frozen contract; route through an
       // svg <image opacity> so a translucent image (style opacity<100) prints
       // faithfully instead of fully opaque.
@@ -5217,8 +5271,11 @@
         fmt(fv ? box.h : 0) + ') scale(' + sx + ',' + sy + ')"' : '';
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
         'width="' + fmt(box.w) + '" height="' + fmt(box.h) + '">' +
+        (clipDecor ? '<defs>' + clipDecor.defs + '</defs>' : '') +
         '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-        '" preserveAspectRatio="' + fit + '" opacity="' + fmt(op) + '"' + tf +
+        '" preserveAspectRatio="' + fit + '"' +
+        (op < 1 ? ' opacity="' + fmt(op) + '"' : '') + tf +
+        (clipDecor ? clipDecor.attr : '') +
         ' xlink:href="data:image/png;base64,' + parsed.data + '"/></svg>';
       return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
     }
@@ -5238,7 +5295,7 @@
   // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
-  function dataUriImageSvgNode(mime, data, box, style) {
+  function dataUriImageSvgNode(mime, data, box, style, notices, cellId) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5250,8 +5307,10 @@
     }
     var fit = String(style && style.imageAspect) === '0'
       ? 'none' : 'xMidYMid meet';
+    var clipDecor2 = imageClipDecor(style || {}, box, notices, cellId);
     var img = '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '" preserveAspectRatio="' + fit + '" xlink:href="data:' + mime +
+      '" preserveAspectRatio="' + fit + '"' +
+      (clipDecor2 ? clipDecor2.attr : '') + ' xlink:href="data:' + mime +
       ';base64,' + data + '"/>';
     // mxShape.updateTransform applies flips to every image regardless of
     // format; the PNG path carries flipH/flipV on the contract node, but
@@ -5265,7 +5324,8 @@
     }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
       'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
-      '" height="' + fmt(box.h) + '">' + img + '</svg>';
+      '" height="' + fmt(box.h) + '">' +
+      (clipDecor2 ? '<defs>' + clipDecor2.defs + '</defs>' : '') + img + '</svg>';
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
@@ -5532,6 +5592,7 @@
     // remain byte-for-byte deterministic even when HTML labels contain flattened
     // foreignObject clip paths.
     richClipCounter = 0;
+    imgClipCounter = 0;
     // Native print renders every shape from its stencil geometry with zero
     // browser dependency — there is no live-DOM / rendered-SVG path. The
     // WYSIWYG guarantee holds by construction (faithful re-derivation or a loud
@@ -5754,6 +5815,30 @@
     if (emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, resolved, label)) {
       return;
     }
+    // Degenerate geometry, faithful to the editor: NEGATIVE extents paint
+    // nothing in drawio (invalid SVG rect attributes are ignored), a ZERO
+    // extent paints a hairline along the surviving dimension. The old
+    // Math.max(1,...) clamp silently inflated both into a 1px outlined box.
+    // (Edge child labels above are exempt: they carry 0x0 geometry by design
+    // and are laid out by the label renderer.)
+    if (!(state.width > 0 && state.height > 0)) {
+      if (state.width < 0 || state.height < 0) {
+        return;
+      }
+      var degenStroke = strokeOf(style);
+      if (degenStroke && (state.width > 0 || state.height > 0)) {
+        var dgx = (state.x - origin.x) / scale;
+        var dgy = (state.y - origin.y) / scale;
+        paint.push({
+          kind: 'path',
+          d: 'M ' + fmt(dgx) + ' ' + fmt(dgy) + ' L ' +
+            fmt(dgx + state.width / scale) + ' ' + fmt(dgy + state.height / scale),
+          fill: null,
+          stroke: degenStroke
+        });
+      }
+      return;
+    }
 
     // mxLabel with an image: a background rect + a SMALL icon (imageWidth/
     // imageHeight, positioned by imageAlign/imageVerticalAlign per
@@ -5777,8 +5862,8 @@
       var lImgSrc = (resolved && resolved[style.image]) || style.image;
       var lImg = parseImage(lImgSrc);
       var lMime = embeddableImageMime(lImg);
-      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg));
-      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style));
+      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg, notices, cell.id));
+      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style, notices, cell.id));
       else {
         notices.push(degradation('ExporterUnsupportedImage',
           'label image could not be embedded — placeholder box printed.', cell.id));
@@ -5873,13 +5958,13 @@
             aspect: 'preserve'
           });
         } else {
-          paint.push(imageNode(style, box, img));      // faithful — WYSIWYG
+          paint.push(imageNode(style, box, img, notices, cell.id));  // faithful — WYSIWYG
         }
       } else if (mime) {
         // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
         // -> build the SVG <image> from the bytes (no live-DOM dependency, so
         // it's faithful headless AND in-browser). No notice.
-        paint.push(dataUriImageSvgNode(mime, img.data, box, style));
+        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices, cell.id));
       } else {
         // Genuinely cannot embed faithfully (external URL that could not be
         // fetched — cross-origin without CORS, 404, offline; non-base64; or a
@@ -5989,6 +6074,26 @@
         }
         var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices, resolved);
         if (stencilSvg) {
+          // shadow=1 is canvas-level in drawio (every fill/stroke duplicated
+          // recolored + offset UNDER the shape, mxSvgCanvas2D createShadow)
+          // and applies to stencils too — it was silently dropped here.
+          if (boolish(style.shadow)) {
+            var shadowS = shadowParams(style);
+            var innerShadowS = stencilSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+            paint.push(paddedSvgShapeNode(
+              '<g opacity="' + fmt(shadowS.alpha) + '">' +
+              shadowRecolorSvg(innerShadowS, hex(shadowS.color)) + '</g>',
+              { x: box.x + shadowS.dx, y: box.y + shadowS.dy, w: box.w, h: box.h },
+              style));
+          }
+          // sketch=1 (roughjs hand-drawn texture + hachure/dots fills) has no
+          // headless port on the stencil branch: LOUD, never a silent clean
+          // print of a sketch-styled diagram.
+          if (boolish(style.sketch)) {
+            notices.push(degradation('ExporterUnsupportedShape',
+              'sketch=1 hand-drawn texture is not applied to stencil "' +
+              String(stencilName || style.shape) + '" (printed clean).', cell.id));
+          }
           var rotDegS = number(style.rotation, 0);
           if (rotDegS) {
             // Rotated stencil: expand viewport to axis-aligned bbox, rotate content and label
@@ -6076,6 +6181,14 @@
         // mxSvgCanvas2D.createShadow prepends its translate to the node
         // transform, so the offset does NOT rotate with the shape. Previously
         // shadow=1 was silently dropped on this branch.
+        // sketch=1 fills (hachure/dots/cross-hatch) render faithfully only
+        // on the generic single-path branch (sketchFillSvg); on this
+        // multi-element branch the texture was silently dropped -> LOUD.
+        if (boolish(style.sketch)) {
+          notices.push(degradation('ExporterUnsupportedShape',
+            'sketch=1 hand-drawn texture is not applied to shape "' +
+            String(style.shape) + '" (printed clean).', cell.id));
+        }
         var shadowBI = boolish(style.shadow) ? shadowParams(style) : null;
         var shadowContentBI = shadowBI
           ? '<g opacity="' + fmt(shadowBI.alpha) + '">' +
