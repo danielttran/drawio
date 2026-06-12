@@ -2901,8 +2901,10 @@ test('audit2: rounded=1 rounds every ported polygon shape faithfully (no notice,
   }
 });
 
-test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout/zigzag)', async () => {
-  for (const shape of ['folder', 'callout', 'zigzag']) {
+test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout)', async () => {
+  // zigzag left this list in audit7: rounded=1 now paints the faithful cubic
+  // wave (ZigzagShape rounded branch) — see 'audit7 shape: zigzag'.
+  for (const shape of ['folder', 'callout']) {
     const { notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
     assert.ok(notices.some((n) => /rounded corners on/.test(n.detail && n.detail.detail || '')),
       `rounded ${shape} must emit a loud notice (not silently square)`);
@@ -3988,4 +3990,301 @@ test('audit7: pages: [] is a loud refusal, never "print everything"', async () =
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
   await assert.rejects(() => bake(xml, { pages: [] }), RangeError);
+});
+
+// ---------------------------------------------------------------------------
+// audit7 registry shape fidelity: registered shapes that previously baked to a
+// WRONG silhouette with NO notice. Every expectation below is pinned against
+// the actual painter in src/main/webapp/js/grapheditor/Shapes.js (line refs in
+// each test). Probes use auditProbe (cell at page origin, keepPx).
+// ---------------------------------------------------------------------------
+
+test('audit7 shape: or is the D-shape M0,0 Q(w,0)(w,h/2) Q(w,h)(0,h) Z (Shapes.js:3639)', async () => {
+  const { contract, notices } = await auditProbe('shape=or;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 C 66.667 0 100 10 100 30 C 100 50 66.667 60 0 60 Z',
+    'or must be the OrShape D (was a full ellipse)');
+});
+
+test('audit7 shape: xor adds the concave back quad to (0,0) (Shapes.js:3658)', async () => {
+  const { contract, notices } = await auditProbe('shape=xor;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 C 66.667 0 100 10 100 30 C 100 50 66.667 60 0 60 C 33.333 40 33.333 20 0 0 Z',
+    'xor must be the XorShape crescent (was a full ellipse)');
+});
+
+test('audit7 shape: orEllipse paints BOTH mid lines over the ellipse (Shapes.js:3750)', async () => {
+  const { contract, notices } = await auditProbe('shape=orEllipse;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'ellipse body');
+  assert.ok(svg.includes('M 0 30 L 100 30'), 'horizontal mid line, got: ' + svg);
+  assert.ok(svg.includes('M 50 0 L 50 60'), 'vertical mid line, got: ' + svg);
+});
+
+test('audit7 shape: sumEllipse diagonals use the s2=0.145 inset (Shapes.js:3778)', async () => {
+  const { contract, notices } = await auditProbe('shape=sumEllipse;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 14.5 8.7 L 85.5 51.3'), 'main diagonal, got: ' + svg);
+  assert.ok(svg.includes('M 85.5 8.7 L 14.5 51.3'), 'anti diagonal, got: ' + svg);
+});
+
+test('audit7 shape: lineEllipse mid line follows line=vertical (Shapes.js:3983)', async () => {
+  const hor = decodeSvgNode((await auditProbe('shape=lineEllipse;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(hor.includes('M 0 30 L 100 30'), 'default mid line is horizontal, got: ' + hor);
+  const ver = decodeSvgNode((await auditProbe('shape=lineEllipse;line=vertical;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(ver.includes('M 50 0 L 50 60'), 'line=vertical mid line is vertical, got: ' + ver);
+});
+
+test('audit7 shape: tapeData = ellipse + bottom-center to bottom-right line (Shapes.js:3729)', async () => {
+  const { contract, notices } = await auditProbe('shape=tapeData;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'ellipse body (was a tape silhouette)');
+  assert.ok(svg.includes('M 50 60 L 100 60'), 'bottom tail line, got: ' + svg);
+});
+
+test('audit7 shape: dimension is the stroke-only double arrow (Shapes.js:3856)', async () => {
+  const { contract, notices } = await auditProbe('shape=dimension;fillColor=#ff00ff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // sw = strokeWidth/2 = 0.5; al = 10+2*sw = 11; cy = h - al/2 = 54.5
+  assert.ok(svg.includes('M 0 0 L 0 60'), 'left end bar, got: ' + svg);
+  assert.ok(svg.includes('M 100 0 L 100 60'), 'right end bar');
+  assert.ok(svg.includes('M 0.5 54.5 L 99.5 54.5'), 'dimension line at cy=h-al/2');
+  assert.ok(svg.includes('M 0.5 54.5 L 11.5 49'), 'left arrowhead upper');
+  assert.ok(svg.includes('M 99.5 54.5 L 88.5 60'), 'right arrowhead lower');
+  assert.ok(!/ff00ff/.test(svg), 'DimensionShape only ever strokes — fillColor must not paint');
+});
+
+test('audit7 shape: umlBoundary = bar + connector + offset ellipse (Shapes.js:2397)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlBoundary;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 0 15 L 0 45'), 'left bar h/4..3h/4, got: ' + svg);
+  assert.ok(svg.includes('M 0 30 L 16.667 30'), 'connector to w/6 at h/2');
+  assert.match(svg, /<ellipse cx="58.333" cy="30" rx="41.667" ry="30"/,
+    'ellipse occupies (w\\/6,0,5w\\/6,h), not the whole box');
+});
+
+test('audit7 shape: umlEntity underline runs w/8..7w/8 at the bottom (Shapes.js:2430)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlEntity;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'full ellipse body');
+  assert.ok(svg.includes('M 12.5 60 L 87.5 60'), 'bottom underline, got: ' + svg);
+});
+
+test('audit7 shape: umlControl = arrow strokes + lowered ellipse (Shapes.js:2479)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlControl;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // h/8*1.1 = 8.25 with h=60
+  assert.ok(svg.includes('M 37.5 8.25 L 62.5 0'), 'upper arrow stroke, got: ' + svg);
+  assert.match(svg, /<ellipse cx="50" cy="33.75" rx="50" ry="26.25"/, 'ellipse at (0,h/8,w,7h/8)');
+  assert.ok(svg.includes('M 37.5 8.25 L 62.5 15'), 'lower arrow stroke (paintForeground)');
+});
+
+test('audit7 shape: umlLifeline = header rect (size=40) + DASHED stem (Shapes.js:2530)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlLifeline;fillColor=#ffffff;strokeColor=#000000;', 100, 200);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="40"/,
+    'header rect is size tall, NOT the whole cell');
+  const stem = svg.match(/<path d="M 50 40 L 50 200"[^/]*\/>/);
+  assert.ok(stem, 'stem from header bottom to cell bottom, got: ' + svg);
+  assert.match(stem[0], /stroke-dasharray/, 'stem dashed by default (lifelineDashed=1)');
+  const solid = decodeSvgNode((await auditProbe('shape=umlLifeline;lifelineDashed=0;fillColor=#ffffff;strokeColor=#000000;', 100, 200))
+    .contract.document.pages[0].paint[0]);
+  const solidStem = solid.match(/<path d="M 50 40 L 50 200"[^/]*\/>/);
+  assert.ok(solidStem && !/stroke-dasharray/.test(solidStem[0]), 'lifelineDashed=0 stem is solid');
+});
+
+test('audit7 shape: umlLifeline participant=umlActor renders the actor header; unknown participant is LOUD', async () => {
+  const actor = await auditProbe('shape=umlLifeline;participant=umlActor;fillColor=#ffffff;strokeColor=#000000;', 40, 200);
+  assert.equal(actor.notices.length, 0, 'registered participant must render without notice');
+  const svg = decodeSvgNode(actor.contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse /, 'umlActor head ellipse painted as the header');
+  assert.ok(!/<rect /.test(svg), 'participant replaces the default header rect');
+  const unknown = await auditProbe('shape=umlLifeline;participant=noSuchShape;fillColor=#ffffff;strokeColor=#000000;', 40, 200);
+  assert.ok(unknown.notices.some((n) => n.kind === 'ExporterUnsupportedShape' &&
+    /participant/.test(n.detail.detail)), 'unknown participant must emit a LOUD notice');
+});
+
+test('audit7 shape: message = rect + STROKED envelope flap (Shapes.js:2325)', async () => {
+  const { contract, notices } = await auditProbe('shape=message;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="60"/, 'envelope body rect');
+  assert.match(svg, /<path d="M 0 0 L 50 30 L 100 0" fill="none"/,
+    'flap 0,0 -> w/2,h/2 -> w,0 stroked only');
+});
+
+test('audit7 shape: lollipop = size circle at top-center + stem (Shapes.js:3028)', async () => {
+  const { contract, notices } = await auditProbe('shape=lollipop;fillColor=#ffffff;strokeColor=#000000;', 30, 60);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="15" cy="5" rx="5" ry="5"/,
+    'size(10) circle at top-center, NOT a full-cell ellipse');
+  assert.match(svg, /<path d="M 15 10 L 15 60" fill="none"/, 'stem from circle to bottom');
+});
+
+test('audit7 shape: requires = stroke-only open arc (inset 2+sw) + stem (Shapes.js:3057)', async () => {
+  const { contract, notices } = await auditProbe('shape=requires;fillColor=#ff00ff;strokeColor=#000000;', 30, 60);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // sz=10, inset=2+1=3: stem (15,13)->(15,60); arc M 7 5 Q 7 13 15 13 Q 23 13 23 5
+  assert.ok(svg.includes('M 15 13 L 15 60'), 'stem below the arc, got: ' + svg);
+  assert.ok(svg.includes('M 7 5 Q 7 13 15 13 Q 23 13 23 5'), 'open half-arc quads');
+  assert.ok(!/ff00ff/.test(svg), 'RequiresShape only strokes — fillColor must not paint');
+});
+
+test('audit7 shape: waypoint is a dot filled with the STROKE color (Shapes.js:500)', async () => {
+  const { contract, notices } = await auditProbe('shape=waypoint;fillColor=#00ff00;strokeColor=#ff0000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = max(0, size-2) + 2*sw = 4 + 2 = 6 -> r=3 centered
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="3" ry="3" fill="#ff0000"/,
+    'dot diameter size-2+2sw filled with strokeColor (was a full-cell ellipse)');
+  assert.ok(!/00ff00/.test(svg), 'fillColor is never painted (drawio fills with NONE)');
+  const big = decodeSvgNode((await auditProbe('shape=waypoint;size=20;strokeWidth=2;strokeColor=#ff0000;', 40, 40))
+    .contract.document.pages[0].paint[0]);
+  assert.match(big, /<ellipse cx="20" cy="20" rx="11" ry="11"/, 'size/strokeWidth honored: (20-2)+2*2=22');
+});
+
+test('audit7 shape: transparent paints NOTHING (Shapes.js:1933)', async () => {
+  const { contract, notices } = await auditProbe('shape=transparent;fillColor=#ff0000;strokeColor=#00ff00;');
+  assert.equal(notices.length, 0, 'transparent is faithful as no-paint — no notice');
+  assert.equal(contract.document.pages[0].paint.length, 0,
+    'TransparentShape fills NONE and never strokes — zero ink');
+});
+
+test('audit7 shape: link VERTEX paints nothing (mxArrowConnector has no paintVertexShape)', async () => {
+  const { contract, notices } = await auditProbe('shape=link;fillColor=#ff0000;strokeColor=#00ff00;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint.length, 0,
+    'link as a vertex paints no body in drawio (was an invented S-curve)');
+});
+
+test('audit7 shape: curlyBracket is the NEVER-filled bracket polyline (Shapes.js:1535)', async () => {
+  const { contract, notices } = await auditProbe('shape=curlyBracket;fillColor=#ff00ff;strokeColor=#000000;', 20, 120);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = w*size(0.5) = 10; open polyline through (w,0)(s,0)(s,h/2)(0,h/2)(s,h/2)(s,h)(w,h)
+  assert.match(svg, /<path d="M 20 0 L 10 0 L 10 60 L 0 60 L 10 60 L 10 120 L 20 120" fill="none"/,
+    'bracket polyline (was a closed filled double-C), got: ' + svg);
+  assert.ok(!/ff00ff/.test(svg), 'CurlyBracketShape sets fill NULL — never filled');
+  const rounded = decodeSvgNode((await auditProbe('shape=curlyBracket;rounded=1;strokeColor=#000000;', 20, 120))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(/ d="[^"]*Q[^"]*" fill="none"/.test(rounded), 'rounded=1 rounds the corners via addPoints');
+});
+
+test('audit7 shape: zigzag starts/ends at h/2 with round(w/size)-1 waves (Shapes.js:5708)', async () => {
+  const { contract, notices } = await auditProbe('shape=zigzag;strokeColor=#000000;fillColor=none;', 100, 20);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // size=10: numFull = round(100/10)-1 = 9, halfWave=10, halfEnd=5; inset=sw=1
+  assert.match(svg,
+    /<path d="M 0 10 L 5 1 L 15 19 L 25 1 L 35 19 L 45 1 L 55 19 L 65 1 L 75 19 L 85 1 L 95 19 L 100 10" fill="none"/,
+    'zigzag teeth from the ported painter, got: ' + svg);
+  const filled = decodeSvgNode((await auditProbe('shape=zigzag;strokeColor=#000000;fillColor=#ffcc00;', 100, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.match(filled, /<rect x="0" y="0" width="100" height="20" fill="#ffcc00" stroke="none"/,
+    'background fill is a SEPARATE unstroked rect');
+  const wave = await auditProbe('shape=zigzag;rounded=1;strokeColor=#000000;fillColor=none;', 100, 20);
+  assert.equal(wave.notices.length, 0, 'rounded zigzag (wave) now renders faithfully — no notice');
+  assert.ok(/ d="M 0 10 C [^"]*" fill="none"/.test(decodeSvgNode(wave.contract.document.pages[0].paint[0])),
+    'rounded=1 paints the cubic wave');
+});
+
+test('audit7 shape: gitTag = tabInset/tabSize polygon + hole circle (Shapes.js:6424)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitTag;fillColor=#ffffff;strokeColor=#000000;', 60, 20);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // tabSize=8, tabInset=4: tabY1=8, tabY2=12 — NOT the old arrow-left pentagon
+  assert.ok(svg.includes('M 0 8 L 0 12 L 8 20 L 60 20 L 60 0 L 8 0 Z'),
+    'tag silhouette with the flat tab tip, got: ' + svg);
+  // holeColor falls back to the RESOLVED style fontColor (default.xml
+  // defaultVertex fontColor=default -> theme fg #000000), exactly like the
+  // live getValue(style,'holeColor', getValue(style,'fontColor','#333333')).
+  assert.match(svg, /<ellipse cx="4" cy="10" rx="1" ry="1" fill="#000000" stroke="#000000"/,
+    'pierce hole at (tabSize/2, h/2), holeSize=1, default = resolved fontColor');
+  const red = decodeSvgNode((await auditProbe('shape=gitTag;holeColor=#ff0000;fillColor=#ffffff;strokeColor=#000000;', 60, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.match(red, /<ellipse cx="4" cy="10" rx="1" ry="1" fill="#ff0000"/, 'holeColor= honored');
+  const noHole = decodeSvgNode((await auditProbe('shape=gitTag;holeSize=0;fillColor=#ffffff;strokeColor=#000000;', 60, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(!/<ellipse/.test(noHole), 'holeSize=0 suppresses the hole');
+});
+
+test('audit7 shape: gitMergeCommit inner 0.6-diameter circle in innerColor (Shapes.js:6488)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitMergeCommit;fillColor=#ffffff;strokeColor=#000000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="20" ry="20" fill="#ffffff"/, 'outer circle');
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="12" ry="12" fill="#ececff" stroke="#ececff"/,
+    'inner min(w,h)*0.6 circle in default innerColor #ECECFF');
+});
+
+test('audit7 shape: gitCherryPick eyes + stem in featureColor (Shapes.js:6519)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitCherryPick;fillColor=#1f2020;strokeColor=#000000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = min(w,h)/20 = 2; eyeR = 5.5; eyes at (cx±3s, cy+2s) = (14|26, 24)
+  assert.match(svg, /<ellipse cx="14" cy="24" rx="5.5" ry="5.5" fill="#ffffff"/, 'left eye');
+  assert.match(svg, /<ellipse cx="26" cy="24" rx="5.5" ry="5.5" fill="#ffffff"/, 'right eye');
+  assert.ok(/M 26 22 L 20 10/.test(svg) && /M 14 22 L 20 10/.test(svg),
+    'inverted-V stem lines to (cx, cy-5s), got: ' + svg);
+  assert.match(svg, /stroke-width="2"/, 'stem stroke width = 1*s');
+});
+
+test('audit7 shape: mindmapBang is the 14-arc starburst (Shapes.js:6575)', async () => {
+  const { contract, notices } = await auditProbe('shape=mindmapBang;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const d = contract.document.pages[0].paint[0].d;
+  // W=80 H=48 r=12 ox=8 oy=4.8; first top arc ends at (28, 0)
+  assert.ok(d.startsWith('M 8 4.8 A 12 12 0 0 0 28 0'),
+    'starburst starts at (ox,oy) with the first scallop arc, got: ' + d);
+  assert.equal((d.match(/A /g) || []).length, 14, '4+3+4+3 elliptical arcs');
+  assert.ok(/Z$/.test(d), 'closed silhouette');
+});
+
+test('audit7 shape: ishikawaHead bulges to quad ctrl (2w, h/2) (Shapes.js:6647)', async () => {
+  const { contract, notices } = await auditProbe('shape=ishikawaHead;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 0 60 C 133.333 40 133.333 20 0 0 Z',
+    'fish head: flat left edge + quadTo(2w,h/2) teardrop (was an ellipse)');
+});
+
+test('audit7 shape: mermaidOdd notches the LEFT side inward by h/4 (Shapes.js:6672)', async () => {
+  const { contract, notices } = await auditProbe('shape=mermaidOdd;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 15 30 L 0 60 L 100 60 L 100 0 Z',
+    'rect with the inward left chevron (was an ellipse)');
+});
+
+test('audit7 shape: ext;double=1 paints the inner rect at margin max(2,sw+1)+margin (Shapes.js:2220)', async () => {
+  const { contract, notices } = await auditProbe('shape=ext;double=1;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="60"/, 'outer rect');
+  assert.match(svg, /<rect x="2" y="2" width="96" height="56"/, 'inner rect at default margin 2');
+  const m3 = decodeSvgNode((await auditProbe('shape=ext;double=1;margin=3;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(m3, /<rect x="5" y="5" width="90" height="50"/, 'margin= style adds to the base margin');
+});
+
+test('audit7 shape: ext symbol0..n emit a LOUD ExporterUnsupportedShape notice', async () => {
+  const { contract, notices } = await auditProbe('shape=ext;double=1;symbol0=cloud;fillColor=#ffffff;strokeColor=#000000;');
+  assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape' &&
+    /symbol0/.test(n.detail.detail)), 'symbols must never be silently dropped');
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="2" y="2" width="96" height="56"/, 'double rect still renders');
 });
