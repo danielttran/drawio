@@ -3946,3 +3946,38 @@ test('audit7: labelWidth overrides the wrap width and aligns inside the cell', a
   assert.ok(lines(wide) < lines(narrow),
     `labelWidth=200 must wrap fewer lines than the 100px cell (${lines(wide)} vs ${lines(narrow)})`);
 });
+
+test('audit7: relative child of a ROTATED parent rotates around the parent center', async () => {
+  // mxGraphView.updateVertexState rotates a relative child's center about
+  // the parent center; the bake printed it at the unrotated spot while the
+  // parent body rotated away.
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="g" vertex="1" style="rounded=0;rotation=90;" parent="1"><mxGeometry x="100" y="100" width="200" height="100" as="geometry"/></mxCell>
+    <mxCell id="c" vertex="1" value="" style="rounded=0;fillColor=#ff0000;" parent="g"><mxGeometry x="1" y="1" relative="1" width="40" height="20" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const child = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#ff0000');
+  const xs = [...child.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const cx = (Math.min(...xs.map((p) => p[0])) + Math.max(...xs.map((p) => p[0]))) / 2;
+  const cy = (Math.min(...xs.map((p) => p[1])) + Math.max(...xs.map((p) => p[1]))) / 2;
+  // parent center (200,150); child unrotated center (320,210); rotated 90deg
+  // -> (200 - (210-150), 150 + (320-200)) = (140, 270).
+  assert.ok(Math.abs(cx - 140) < 0.5 && Math.abs(cy - 270) < 0.5,
+    `child center must rotate with the parent: got (${cx},${cy})`);
+});
+
+test('audit7: flipH on a GIF image cell reaches the printed SVG (non-PNG flip)', async () => {
+  const gif = 'R0lGODlhAQABAIAAAP8AAP///yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;flipH=1;image=data:image/gif,${gif};" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /image\/gif/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'gif image baked as svg-wrapped node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /scale\(-1 1\)/,
+    'flipH transform present');
+});

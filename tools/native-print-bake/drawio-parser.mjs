@@ -348,6 +348,25 @@ function absolutePos(cell, cells) {
       const relX = (parent.geometry.width  || 0) * (g.x || 0) + ox;
       const relY = (parent.geometry.height || 0) * (g.y || 0) + oy;
       const { ax: pax, ay: pay } = absolutePos(parent, cells);
+      // mxGraphView.updateVertexState: a RELATIVE child of a rotated parent
+      // rotates its CENTER around the parent center (absolute-geometry
+      // children stay put — the editor bakes rotation into their geometry).
+      // Without this the child printed at the unrotated spot while the
+      // parent body rotated away from it.
+      const pStyle = parent.resolvedStyle || parent.style || {};
+      const rot = parseFloat(pStyle.rotation || 0) || 0;
+      if (rot !== 0) {
+        const cw = g.width || 0, ch = g.height || 0;
+        const pcx = pax + (parent.geometry.width || 0) / 2;
+        const pcy = pay + (parent.geometry.height || 0) / 2;
+        const cx = pax + relX + cw / 2;
+        const cy = pay + relY + ch / 2;
+        const rad = rot * Math.PI / 180;
+        const cos = Math.cos(rad), sin = Math.sin(rad);
+        const dx = cx - pcx, dy = cy - pcy;
+        return { ax: pcx + dx * cos - dy * sin - cw / 2,
+                 ay: pcy + dx * sin + dy * cos - ch / 2 };
+      }
       return { ax: pax + relX, ay: pay + relY };
     }
   }

@@ -4924,12 +4924,22 @@
     }
     var fit = String(style && style.imageAspect) === '0'
       ? 'none' : 'xMidYMid meet';
+    var img = '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+      '" preserveAspectRatio="' + fit + '" xlink:href="data:' + mime +
+      ';base64,' + data + '"/>';
+    // mxShape.updateTransform applies flips to every image regardless of
+    // format; the PNG path carries flipH/flipV on the contract node, but
+    // this SVG-wrapped path (JPEG/GIF/SVG payloads) dropped them silently.
+    if (style && (boolish(style.flipH) || boolish(style.flipV))) {
+      img = '<g transform="translate(' +
+        fmt(boolish(style.flipH) ? box.w : 0) + ' ' +
+        fmt(boolish(style.flipV) ? box.h : 0) + ') scale(' +
+        (boolish(style.flipH) ? -1 : 1) + ' ' +
+        (boolish(style.flipV) ? -1 : 1) + ')">' + img + '</g>';
+    }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
       'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
-      '" height="' + fmt(box.h) + '">' +
-      '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '" preserveAspectRatio="' + fit + '" xlink:href="data:' + mime +
-      ';base64,' + data + '"/></svg>';
+      '" height="' + fmt(box.h) + '">' + img + '</svg>';
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
