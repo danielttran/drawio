@@ -129,9 +129,11 @@ pub extern "C" fn spe_svg_backend_id(name_buf: *mut c_char, name_buf_len: usize)
 }
 
 /// PASS 1: dimensions/length only. The rasterized buffer is exactly the
-/// caller's target box (the SVG is fit into it preserving aspect, transparent
-/// letterbox), so measure is stateless and never parses -- a parse failure
-/// surfaces loudly at render. Keeps the ABI stateless (purity/swap rule).
+/// caller's target box (the SVG is STRETCHED to fill it; aspect policy --
+/// preserve vs fill -- is the HOST's job, which requests the aspect-fit
+/// sub-rect size when preserving), so measure is stateless and never parses --
+/// a parse failure surfaces loudly at render. Keeps the ABI stateless
+/// (purity/swap rule).
 #[no_mangle]
 pub extern "C" fn spe_svg_measure(
     _svg: *const u8,
@@ -152,10 +154,20 @@ pub extern "C" fn spe_svg_measure(
         {
             return SPE_SVG_ERR_BAD_ARGS;
         }
+        // checked_mul: w*h*4 silently wrapped for absurd-but-representable
+        // targets (u32 max squared, or any large box on a 32-bit usize),
+        // reporting a tiny byte length the caller would then under-allocate.
+        let byte_len = match (target_w_px as usize)
+            .checked_mul(target_h_px as usize)
+            .and_then(|px| px.checked_mul(4))
+        {
+            Some(n) => n,
+            None => return SPE_SVG_ERR_BUFFER_TOO_SMALL,
+        };
         unsafe {
             *out_w = target_w_px;
             *out_h = target_h_px;
-            *out_byte_len = target_w_px as usize * target_h_px as usize * 4;
+            *out_byte_len = byte_len;
         }
         SPE_SVG_OK
     })
@@ -218,13 +230,23 @@ fn measure_text_inner(
         let ascent = face.ascender() as f32 * scale;
         let descent = -(face.descender() as f32 * scale); // positive
         let gap = face.line_gap() as f32 * scale;
+        // Fallback advance for characters the face cannot map: a renderer
+        // draws .notdef (tofu) for them, which still occupies horizontal
+        // space. Silently adding 0 understated the measured run and the
+        // caller's text box clipped every following glyph -- a silent
+        // divergence (C1). Use the face's .notdef advance; if even that is
+        // missing, 0.5em (the conventional tofu width).
+        let notdef_advance = face
+            .glyph_hor_advance(ttf_parser::GlyphId(0))
+            .map(|adv| adv as f32 * scale)
+            .unwrap_or(size_px * 0.5);
         let mut advance = 0.0f32;
         for ch in text.chars() {
-            if let Some(gid) = face.glyph_index(ch) {
-                if let Some(adv) = face.glyph_hor_advance(gid) {
-                    advance += adv as f32 * scale;
-                }
-            }
+            advance += face
+                .glyph_index(ch)
+                .and_then(|gid| face.glyph_hor_advance(gid))
+                .map(|adv| adv as f32 * scale)
+                .unwrap_or(notdef_advance);
         }
         Some(SpeTextMetrics {
             advance_px: advance,
@@ -345,7 +367,16 @@ pub extern "C" fn spe_svg_render(
         if target_w_px == 0 || target_h_px == 0 {
             return SPE_SVG_ERR_BAD_ARGS;
         }
-        let need = target_w_px as usize * target_h_px as usize * 4;
+        // checked_mul: see spe_svg_measure -- a wrapped `need` would pass the
+        // length check below and the pixel loop would write past the caller's
+        // buffer. Overflow is by definition "buffer cannot be big enough".
+        let need = match (target_w_px as usize)
+            .checked_mul(target_h_px as usize)
+            .and_then(|px| px.checked_mul(4))
+        {
+            Some(n) => n,
+            None => return SPE_SVG_ERR_BUFFER_TOO_SMALL,
+        };
         if out_pixels_len < need {
             return SPE_SVG_ERR_BUFFER_TOO_SMALL;
         }
@@ -405,18 +436,24 @@ pub extern "C" fn spe_svg_render(
             }
         };
 
-        // Fit the SVG into the target box preserving aspect (transparent
-        // letterbox); the host composites this into device_box.
+        // STRETCH the SVG to exactly the requested target box (independent
+        // x/y scale, no centering, no transparent letterbox). Aspect policy
+        // is the HOST's job: for aspect:"preserve" the host computes the
+        // aspect-fit sub-rect of the destination and requests THAT pixel
+        // size (so the blit stays strictly 1:1); for aspect:"fill" it
+        // requests the full box. The old shim-side preserve+letterbox made
+        // "fill" unreachable -- an SVG could never stretch, silently
+        // diverging from the contract's aspect enum (C1).
         let size = tree.size();
         let (sw, sh) = (size.width(), size.height());
         if sw <= 0.0 || sh <= 0.0 {
             write_err(err_buf, err_buf_len, "svg has zero intrinsic size");
             return SPE_SVG_ERR_PARSE;
         }
-        let scale = (target_w_px as f32 / sw).min(target_h_px as f32 / sh);
-        let tx = (target_w_px as f32 - sw * scale) * 0.5;
-        let ty = (target_h_px as f32 - sh * scale) * 0.5;
-        let transform = resvg::tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, tx, ty);
+        let scale_x = target_w_px as f32 / sw;
+        let scale_y = target_h_px as f32 / sh;
+        let transform =
+            resvg::tiny_skia::Transform::from_row(scale_x, 0.0, 0.0, scale_y, 0.0, 0.0);
 
         resvg::render(&tree, transform, &mut pixmap.as_mut());
 
@@ -457,6 +494,107 @@ pub extern "C" fn spe_svg_render(
 mod tests {
     use super::{contains_foreign_object, fontdb};
     use resvg::usvg::fontdb::Family;
+    use std::os::raw::c_char;
+
+    #[test]
+    fn render_stretches_a_2_to_1_svg_to_fill_a_square_target_no_letterbox_bars() {
+        // The old shim letterboxed (scale = min, centered): a 2:1 SVG in a
+        // 32x32 target left rows 0..7 and 24..31 fully transparent, so
+        // aspect:"fill" could never stretch. The shim now stretches to
+        // exactly the requested box; EVERY pixel must be opaque red.
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 10'>\
+                    <rect width='20' height='10' fill='red'/></svg>";
+        const W: u32 = 32;
+        const H: u32 = 32;
+        let mut px = vec![0u8; (W * H * 4) as usize];
+        let mut err = vec![0 as c_char; 256];
+        let st = super::spe_svg_render(
+            svg.as_ptr(),
+            svg.len(),
+            W,
+            H,
+            96.0,
+            px.as_mut_ptr(),
+            px.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        );
+        assert_eq!(st, super::SPE_SVG_OK);
+        for (i, p) in px.chunks_exact(4).enumerate() {
+            assert_eq!(
+                p[3], 255,
+                "pixel {i} is not opaque: letterbox-bar regression (shim must stretch)"
+            );
+            assert_eq!((p[0], p[1], p[2]), (255, 0, 0), "pixel {i} is not red");
+        }
+    }
+
+    #[test]
+    fn measure_overflowing_byte_length_is_a_typed_buffer_error_not_a_wrap() {
+        // u32::MAX * u32::MAX pixels fits usize on 64-bit but *4 overflows;
+        // on 32-bit it overflows immediately. Either way the typed buffer
+        // error must come back -- never a silently wrapped tiny byte_len.
+        let mut w = 0u32;
+        let mut h = 0u32;
+        let mut len = 0usize;
+        let st = super::spe_svg_measure(
+            std::ptr::null(),
+            0,
+            u32::MAX,
+            u32::MAX,
+            96.0,
+            &mut w,
+            &mut h,
+            &mut len,
+        );
+        assert_eq!(st, super::SPE_SVG_ERR_BUFFER_TOO_SMALL);
+    }
+
+    #[test]
+    fn unmapped_glyphs_count_a_fallback_advance_not_silently_zero() {
+        // Private-use code points are unmapped in every production face; a
+        // renderer still draws .notdef tofu for them, which takes space.
+        let mut base = super::SpeTextMetrics {
+            advance_px: 0.0,
+            ascent_px: 0.0,
+            descent_px: 0.0,
+            line_height_px: 0.0,
+        };
+        let probe = "A";
+        let st_probe = super::spe_text_measure(
+            std::ptr::null(),
+            400,
+            0,
+            16.0,
+            probe.as_ptr(),
+            probe.len(),
+            &mut base,
+        );
+        if st_probe != super::SPE_SVG_OK {
+            return; // no usable font installed: nothing to pin on this box
+        }
+        let tofu = "\u{E000}\u{E001}";
+        let mut m = super::SpeTextMetrics {
+            advance_px: 0.0,
+            ascent_px: 0.0,
+            descent_px: 0.0,
+            line_height_px: 0.0,
+        };
+        let st = super::spe_text_measure(
+            std::ptr::null(),
+            400,
+            0,
+            16.0,
+            tofu.as_ptr(),
+            tofu.len(),
+            &mut m,
+        );
+        assert_eq!(st, super::SPE_SVG_OK);
+        assert!(
+            m.advance_px > 0.0,
+            "unmapped glyphs must contribute a fallback (.notdef/0.5em) advance"
+        );
+    }
 
     #[test]
     fn foreign_object_guard_detects_unprefixed_and_prefixed_start_tags() {

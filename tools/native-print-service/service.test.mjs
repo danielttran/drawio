@@ -408,3 +408,36 @@ test('audit7: encodeFrame refuses oversize payloads with a typed error (C++ pari
   const frame = encodeFrame(FrameType.Control, 0, atLimit);
   assert.equal(frame.readUInt32LE(0), 64 * 1024 * 1024);
 });
+
+test('audit7: a bake refusal carries the FULL bake notice list (allNotices)', async () => {
+  const { svc, port } = await makeService();
+  // An unknown shape produces a degradation bake notice -> 422 refusal.
+  // The refusal must carry the full audit trail, not only the blocking
+  // subset (the bake's other notes were previously dropped on the floor).
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100">
+    <root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="X" style="shape=definitely-not-a-shape-xyz;" parent="1">
+        <mxGeometry x="10" y="10" width="80" height="30" as="geometry"/>
+      </mxCell>
+    </root>
+  </mxGraphModel>`;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/print`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: { kind: 'drawio', content: xml },
+        printerId: 'my-printer',
+        stockId: 'stock-a4'
+      })
+    });
+    assert.equal(res.status, 422);
+    const body = res.json();
+    assert.equal(body.code, 'BAKE_NOTICES');
+    assert.ok(body.notices.length > 0, 'blocking subset present');
+    assert.ok(Array.isArray(body.allNotices), 'full audit trail present');
+    assert.ok(body.allNotices.length >= body.notices.length);
+  } finally {
+    await svc.stop();
+  }
+});
