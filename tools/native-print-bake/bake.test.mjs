@@ -1399,7 +1399,7 @@ test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () =
   // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4).
   // drawio uses SHADOWCOLOR #808080 at SHADOW_OPACITY 1, offset
   // (SHADOW_OFFSET_X=2, SHADOW_OFFSET_Y=3), with per-cell overrides.
-  const xml = `<mxGraphModel pageWidth="200" pageHeight="150"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ffffff;shadow=1;" parent="1"><mxGeometry x="40" y="40" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1433,7 +1433,7 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   // built-in shapePath shapes (triangle, parallelogram, ...), so a flipped
   // triangle printed un-flipped. The geometry is now mirrored about the box
   // centre (the label stays upright, matching drawio).
-  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+  const mk = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1454,7 +1454,7 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   // rotation + flip: the flip must STILL be applied (not silently dropped) and
   // the label must stay upright. The flip is baked into the rotated path
   // (flipPathD), so the rotated SVG differs from rotation-only.
-  const mkLbl = (style) => `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+  const mkLbl = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" value="T" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="80" y="60" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1490,7 +1490,7 @@ test('image: cell opacity is applied (frozen contract has no image opacity field
 test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async () => {
   // REGRESSION: edge bend rounding used a hardcoded radius 8; drawio rounds with
   // (style.arcSize || LINE_ARCSIZE=20)/2 = 10 by default (every rounded edge).
-  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
     <mxCell id="b" vertex="1" parent="1"><mxGeometry x="300" y="220" width="60" height="40" as="geometry"/></mxCell>
@@ -1529,7 +1529,7 @@ test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () =
   // REGRESSION: cylinder cap was min(0.18h, 0.28w) (width-dependent, wrong
   // proportion). drawio getCylinderSize = min(maxHeight=40, h/5).
   // 200x100 cylinder -> cap = min(40, 20) = 20: top ellipse passes through y=20.
-  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=cylinder;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="200" height="100" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1545,7 +1545,7 @@ test('shape: size proportion matches drawio (parallelogram/step/card + size/fixe
   // (parallelogram/trapezoid 0.25w, step 0.22w, card min(0.18w,0.35h)) and
   // ignored the size/fixedSize style. drawio: relative w*(size||0.2) or absolute
   // min(w,size) under fixedSize; card = min(w,h,size||30).
-  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+  const mk = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${style}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1564,7 +1564,7 @@ test('shape: flowchart document/dataStorage/manualInput/loopLimit match drawio g
   // REGRESSION (WYSIWYG): these flowchart shapes had wrong size proportions and,
   // for dataStorage (was a parallelogram, should be a curved D) and loopLimit
   // (was a pentagon peak, should be a cut-corner hexagon), the WRONG geometry.
-  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+  const mk = (sh) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1608,7 +1608,7 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
   // REGRESSION (WYSIWYG): cube had the 3D depth in the WRONG direction
   // (top-left vs drawio top-right); delay used one cubic (drawio two
   // quadratics); offPageConnector shoulder was 0.65h (drawio h - 0.375h).
-  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+  const mk = (sh) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="80" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1624,7 +1624,7 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
 test('shape: cross honors size attr; datastore top cap matches drawio', async () => {
   // REGRESSION: cross ignored the size style (default 0.2 was correct);
   // datastore top-cap control point was 0 (drawio -dy/3).
-  const mk = (st) => `<mxGraphModel pageWidth="200" pageHeight="160"><root>
+  const mk = (st) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${st}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="100" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1766,7 +1766,7 @@ test('edge: entityRelationEdgeStyle routes with horizontal exit/entry (not a str
   // REGRESSION (WYSIWYG): entity-relation edges (common in ER diagrams) routed
   // as a straight diagonal — only orthogonal/elbow were routed. drawio's
   // mxEdgeStyle.EntityRelation exits/enters horizontally from the side centres.
-  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
     <mxCell id="b" vertex="1" parent="1"><mxGeometry x="280" y="220" width="80" height="40" as="geometry"/></mxCell>
@@ -2509,7 +2509,7 @@ test('audit: floating edge from an ellipse starts on the ellipse arc, not the bb
 });
 
 test('audit: exitX/exitY honors the terminal rotation (mxGraph.getConnectionPoint)', async () => {
-  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="A" vertex="1" parent="1" style="rounded=0;rotation=90;"><mxGeometry x="0" y="0" width="120" height="40" as="geometry"/></mxCell>
     <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="300" y="300" width="80" height="40" as="geometry"/></mxCell>
@@ -3625,11 +3625,50 @@ test('audit5: plain vertex direction= follows mxShape.getShapeRotation exactly',
   const d = nodes.find((n) => n.kind === 'path').d;
   const pts = [...d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
   const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
-  assert.equal(Math.min(...xs), 0); assert.equal(Math.max(...xs), 100);
-  assert.equal(Math.min(...ys), 0); assert.equal(Math.max(...ys), 60);
+  // Page-relative anchoring (explicit page dims): the probe cell sits at
+  // (20,20), so the rotated footprint covers exactly its authored box.
+  assert.equal(Math.min(...xs), 20); assert.equal(Math.max(...xs), 120);
+  assert.equal(Math.min(...ys), 20); assert.equal(Math.max(...ys), 80);
   // ellipse footprint visibly swaps under the rotation: rx 30 / ry 50 with a
   // 90-degree arc x-axis rotation = a 100x60-looking ellipse (faithful).
   const { nodes: el } = await bakeVertexProbe('ellipse;direction=south;');
   assert.match(el.find((n) => n.kind === 'path').d, /A 30 50 90 /,
     'ellipse paints in the inverted 60x100 frame rotated +90');
+});
+
+test('audit7: explicit page dims keep the authored on-page placement', async () => {
+  // HIGH-severity audit finding: with pageWidth/pageHeight set, the bake
+  // anchored to CONTENT bounds, printing every diagram flush at the paper
+  // corner -- the author's page margins were silently dropped on every
+  // production print. Page-relative anchoring must keep model coords.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="150" y="100" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  assert.match(d, /^M 150 100 /, `cell must stay at (150,100), got: ${d.slice(0, 30)}`);
+
+  // Auto-fit page (no page dims): bounds-anchoring stays (content flush).
+  const auto = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="150" y="100" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract: c2 } = await bake(auto, { keepPx: true });
+  const d2 = c2.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  assert.match(d2, /^M 0 0 /, `auto-fit stays flush, got: ${d2.slice(0, 30)}`);
+
+  // Content drawn on a FAR page-grid cell prints on that sheet with the
+  // same in-page margins (mxPrintPreview floor() semantics).
+  const far = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="850" y="640" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract: c3 } = await bake(far, { keepPx: true });
+  const d3 = c3.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // grid cell (2,2): origin (800,600) -> in-page position (50,40)
+  assert.match(d3, /^M 50 40 /, `far grid cell keeps margins, got: ${d3.slice(0, 30)}`);
 });

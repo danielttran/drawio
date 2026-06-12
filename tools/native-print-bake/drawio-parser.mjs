@@ -700,8 +700,13 @@ function parseModel(modelXml) {
   const cells = parseCells(modelXml);
 
   const bounds = computeBounds(cells);
+  // `explicit` records that the AUTHOR fixed the page size (File > Page
+  // Setup): the bake must then keep every cell's on-page position (the
+  // page origin is model 0,0), not normalise content to the paper corner.
+  // Without page dims the page is auto-fit to content and bounds-anchoring
+  // is the faithful choice.
   const paper = (pageW > 0 && pageH > 0)
-    ? { wPx: pageW, hPx: pageH }
+    ? { wPx: pageW, hPx: pageH, explicit: true }
     : { wPx: Math.max(1, bounds.width), hPx: Math.max(1, bounds.height) };
   // Page background colour (File > Page Setup) prints behind all content.
   if (modelAttrs.background && modelAttrs.background !== 'none') {

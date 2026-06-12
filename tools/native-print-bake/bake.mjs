@@ -161,7 +161,13 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
   const page0 = first.contract.document.pages[0];
   const inkMin = pageInkMin(page0);
   const PAD = 2.5; // exporter SVG_PAD slop: boxes legitimately sit ~2px out
-  if (inkMin.x < -PAD || inkMin.y < -PAD) {
+  // Author-fixed page size: positions are PAGE-RELATIVE truth — ink past
+  // the page edge is the owner-ruled HardwareMarginClip edge-clip case,
+  // and shifting the anchor would move every cell off its authored
+  // position. The shift only applies to auto-fit pages, whose origin is
+  // derived from (halo-blind) geometry bounds in the first place.
+  if (!(pageData.paper && pageData.paper.explicit) &&
+      (inkMin.x < -PAD || inkMin.y < -PAD)) {
     const shiftX = Math.min(0, inkMin.x + PAD);
     const shiftY = Math.min(0, inkMin.y + PAD);
     const b = graph.getGraphBounds();

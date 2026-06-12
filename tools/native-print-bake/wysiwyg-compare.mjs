@@ -36,53 +36,34 @@ function parseStyleStr(s) {
 }
 
 function parseModelCells(drawioXml) {
-  const cellRe = /<mxCell\s([^>]*?)(?:\/>|>([\s\S]*?)<\/mxCell>)/gi;
-  const geoRe  = /<mxGeometry\s([^>]*?)\/>/i;
-  const cells  = [];
-  let m;
-  while ((m = cellRe.exec(drawioXml)) !== null) {
-    const attrStr = m[1];
-    const inner   = m[2] || '';
-    const attrs   = {};
-    const attrPat = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
-    let a;
-    while ((a = attrPat.exec(attrStr)) !== null) attrs[a[1]] = a[2];
-    if (!attrs.id || attrs.id === '0' || attrs.id === '1') continue;
-
-    const style  = parseStyleStr(attrs.style || '');
-    const isEdge = attrs.edge === '1';
-    const isVtx  = attrs.vertex === '1';
+  // Decode through the PRODUCTION parser, not a raw-file regex: the regex
+  // found ZERO cells in deflate-compressed <diagram> payloads and skipped
+  // <object>/<UserObject>-wrapped cells (the inner mxCell has no id), so
+  // every check then passed VACUOUSLY while comparing nothing. The
+  // production parser inflates, flattens wrappers, and resolves styles —
+  // the gate now sees exactly the cells the bake prints.
+  const { pages } = parseDrawio(drawioXml);
+  const cells = [];
+  for (const cell of Object.values(pages[0].cells)) {
+    if (!cell || cell.id === '0' || cell.id === '1') continue;
+    const isEdge = !!cell.edge;
+    const isVtx  = !!cell.vertex;
     if (!isEdge && !isVtx) continue;
-
-    const gm = geoRe.exec(inner);
-    let geo = null;
-    if (gm) {
-      const ga = {};
-      const gp = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
-      let g;
-      while ((g = gp.exec(gm[1])) !== null) ga[g[1]] = g[2];
-      geo = {
-        x: parseFloat(ga.x || 0),
-        y: parseFloat(ga.y || 0),
-        w: parseFloat(ga.width  || 0),
-        h: parseFloat(ga.height || 0),
-      };
-    }
-
-    // Decode &#xa; → newline in labels
-    const rawLabel = (attrs.value || '')
-      .replace(/&#xa;/gi, '\n').replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-
+    const g = cell.geometry;
     cells.push({
-      id:        attrs.id,
-      label:     rawLabel,
-      style,
+      id:        String(cell.id),
+      label:     cell.value != null ? String(cell.value) : '',
+      style:     parseStyleStr(cell.rawStyle || ''),
       isEdge,
       isVertex:  isVtx,
-      geo,
-      source:    attrs.source,
-      target:    attrs.target,
+      geo: g ? {
+        x: parseFloat(g.x || 0),
+        y: parseFloat(g.y || 0),
+        w: parseFloat(g.width || 0),
+        h: parseFloat(g.height || 0),
+      } : null,
+      source:    cell.source,
+      target:    cell.target,
     });
   }
   return cells;
@@ -266,13 +247,28 @@ async function compare(drawioXml) {
   );
 
   // ── 2. Every labeled vertex appears in contract text nodes ─────────────────
+  // HTML labels decompose into per-run/<tspan> text nodes, so compare PLAIN
+  // text: strip markup from the expected side, then require the whole text
+  // (or, for run-split labels, every whitespace token of it) to appear in
+  // the page's combined label text. One-way only — the old reverse test
+  // (`expected.includes(l)`) let any short contract fragment that happened
+  // to be a substring of a MISSING label mask the loss.
+  const stripHtml = (s) => String(s)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ').trim();
+  const allLabelText = ' ' + [...contractLabels].join(' ').replace(/\s+/g, ' ') + ' ';
   const missingLabels = [];
   for (const v of labeledVerts) {
-    const expected = v.label.trim();
-    if (!contractLabels.has(expected)) {
-      // Try a partial match (label may be inside a larger string in rich text)
-      const anyMatch = [...contractLabels].some(l => l.includes(expected) || expected.includes(l));
-      if (!anyMatch) missingLabels.push(`"${expected}" (id=${v.id})`);
+    const expected = stripHtml(v.label);
+    if (!expected) continue;
+    if (contractLabels.has(v.label.trim()) || allLabelText.includes(expected)) continue;
+    const tokens = expected.split(' ');
+    const missingTok = tokens.find((t) => !allLabelText.includes(t));
+    if (missingTok !== undefined) {
+      missingLabels.push(`"${expected}" (id=${v.id}, missing token "${missingTok}")`);
     }
   }
   check(
@@ -355,11 +351,14 @@ async function compare(drawioXml) {
 
   // ── 9. Connector edge ─────────────────────────────────────────────────────
   if (edges.length > 0) {
-    // Edge should produce at least one path node beyond the vertex shapes
+    // A REAL contract-side check (the old `edges.length > 0` inside this
+    // `if` was a tautology that passed even when the bake dropped every
+    // edge): each edge contributes at least one stroked path node, so the
+    // page must carry at least one path per edge beyond the vertex bodies.
     check(
-      'Connector edge(s) present in drawing',
-      edges.length > 0,
-      `${edges.length} edge(s) defined (source→target geometry required for path)`
+      'Connector edge(s) reach the contract as stroked paths',
+      contractPaths >= edges.length,
+      `${edges.length} edge(s) defined; ${contractPaths} contract path node(s)`
     );
   }
 

@@ -5108,21 +5108,35 @@
     // margin the author left between the page edge and the first shape (the
     // "output shifted up-and-left one block" report). Anchoring to the page
     // origin makes every cell keep its on-page position, so the margin prints
-    // exactly as drawn. Headless fixtures with no live view fall back to bounds.
-    var origin;
-    if (view && view.translate && (view.translate.x || view.translate.y)) {
-      origin = { x: view.translate.x * scale, y: view.translate.y * scale };
-    } else {
-      origin = {
-        x: bounds && bounds.width > 0 ? bounds.x : 0,
-        y: bounds && bounds.height > 0 ? bounds.y : 0
-      };
-    }
+    // exactly as drawn.
     var page = (paper && paper.wPx > 0 && paper.hPx > 0)
       ? { w: Math.max(1, Math.round(paper.wPx)),
           h: Math.max(1, Math.round(paper.hPx)) }
       : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
           h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
+    var origin;
+    if (view && view.translate && (view.translate.x || view.translate.y)) {
+      origin = { x: view.translate.x * scale, y: view.translate.y * scale };
+    } else if (paper && paper.explicit && bounds && bounds.width > 0) {
+      // The AUTHOR fixed the page size (File > Page Setup), so cells keep
+      // their on-page position even headless (mxPrintPreview semantics):
+      // the origin is the PAGE-GRID cell containing the content, never the
+      // content corner. floor() generalises to content drawn on a far grid
+      // cell — the editor shows it on that page, and the print shows the
+      // same sheet with the same in-page margins.
+      var pgw = page.w * scale;
+      var pgh = page.h * scale;
+      origin = {
+        x: pgw * Math.floor(bounds.x / pgw),
+        y: pgh * Math.floor(bounds.y / pgh)
+      };
+    } else {
+      // Auto-fit page (no explicit dims): bounds-anchoring is faithful.
+      origin = {
+        x: bounds && bounds.width > 0 ? bounds.x : 0,
+        y: bounds && bounds.height > 0 ? bounds.y : 0
+      };
+    }
 
     // Page background colour (File > Page Setup) prints behind all content as a
     // full-page filled rect. Skipped for white (paper is already white) / none.
