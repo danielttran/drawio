@@ -1166,3 +1166,18 @@ compare 19/19, ctest 216/216, render gate, production audit 8996 zero
 notices/blank. Conventions: goldens regenerate via the bake CLI loop;
 shadow tests assert the APP constants; geometry tests use auto-fit fixtures
 (page-relative anchoring is pinned by its own test).
+
+**Round-4 CLOSE-OUT (2026-06-12):** all ~60 verified findings fixed across 11
+commits (waves A/B/C1/C2/C3/D/E/E2/F1/F2/F). Registry shapes landed (28
+red→green tests; test.drawio golden: zigzag-only diff); image clipPath/
+rounded crop faithful (non-inset forms loud); stencil shadow faithful;
+sketch LOUD on stencil/builtin branches; degenerate cells match the editor
+(negative = nothing, zero = hairline; edge child labels exempt). FINAL
+MATRIX GREEN ON THIS BOX: bake 290, exporter 205, validate 61, service 19,
+compare 19/19, ctest 216/216 (real resvg cdylib), render gate, production
+audit 86+8910 zero notices / zero blank / all inked, shim cargo 6/6.
+Residuals — all LOUD or documented, none silent: sketch/roughjs texture
+(loud on stencil/builtin, clean-hachure on generic), ext symbol0..n (loud),
+umlLifeline unknown participant (loud), non-inset image clips (loud),
+vertical/rtl textDirection (loud), Win32-only wave-B changes compile in CI
+(no Windows box here).
