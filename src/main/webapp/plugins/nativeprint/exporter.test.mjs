@@ -2554,12 +2554,14 @@ test('text style: vertical multi-line plain label keeps every row (no one-line c
 
 // audit3(label-renderer): regression tests for the verified label/text fixes.
 
-test('audit3: plain line height is 1.2em (mxConstants.LINE_HEIGHT), not 1.22', () => {
+test('audit3: plain line pitch is Math.round(size*1.2) like mxSvgCanvas2D.plainText', () => {
   const svg = decodeSvg(labelSvgNode(
     oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'Hi')
       .contract.document.pages[0].paint));
-  // middle valign in an 80x40 box: y = (40 - 12*1.2)/2 = 12.8 (1.22 gave 12.68)
-  assert.match(svg, /<text x="40" y="12\.8"/, 'row top uses lineH = fontSize*1.2');
+  // mxSvgCanvas2D.plainText: lh = Math.round(size * LINE_HEIGHT) = 14 for
+  // fontSize 12 (unrounded 14.4 drifted 0.4px per line). Middle valign in an
+  // 80x40 box: y = (40 - 14)/2 = 13.
+  assert.match(svg, /<text x="40" y="13"/, 'row top uses lineH = round(fontSize*1.2)');
 });
 
 test('audit3: html=1 label without markup is entity-decoded; non-HTML stays literal', () => {
@@ -2594,10 +2596,10 @@ test('audit3: astral numeric references survive (fromCodePoint, emoji)', () => {
 test('audit3: middle label taller than the box spills above AND below (no top clamp)', () => {
   const r = oneVertex({ shape: 'rectangle', fontColor: '#000000' }, 'a\nb\nc\nd\ne');
   const node = labelSvgNode(r.contract.document.pages[0].paint);
-  // totalH = 5*14.4 = 72 in a 40-high box: oy = (40-72)/2 = -16 — drawio
-  // centers regardless, so the viewport must grow upward by 16.
-  assert.ok(Math.abs(node.box.y - (-16)) < 0.01, `box.y grows upward (got ${node.box.y})`);
-  assert.ok(Math.abs(node.box.h - 72) < 0.01, `box.h covers the full stack (got ${node.box.h})`);
+  // totalH = 5*round(12*1.2) = 70 in a 40-high box: oy = (40-70)/2 = -15 —
+  // drawio centers regardless, so the viewport must grow upward by 15.
+  assert.ok(Math.abs(node.box.y - (-15)) < 0.01, `box.y grows upward (got ${node.box.y})`);
+  assert.ok(Math.abs(node.box.h - 70) < 0.01, `box.h covers the full stack (got ${node.box.h})`);
 });
 
 test('audit3: asymmetric spacing shifts center/middle labels (mxText.getSpacing)', () => {
@@ -2605,12 +2607,12 @@ test('audit3: asymmetric spacing shifts center/middle labels (mxText.getSpacing)
   const svgT = decodeSvg(labelSvgNode(
     oneVertex({ shape: 'rectangle', fontColor: '#000000', spacingTop: '10' }, 'Hi')
       .contract.document.pages[0].paint));
-  assert.match(svgT, /<text x="40" y="17\.8"/, 'middle label shifts down by (pt-pb)/2');
+  assert.match(svgT, /<text x="40" y="18"/, 'middle label shifts down by (pt-pb)/2');
   // ALIGN_CENTER: dx = (spacingLeft - spacingRight)/2 = ((2+20)-2)/2 = +10
   const svgL = decodeSvg(labelSvgNode(
     oneVertex({ shape: 'rectangle', fontColor: '#000000', spacingLeft: '20' }, 'Hi')
       .contract.document.pages[0].paint));
-  assert.match(svgL, /<text x="50" y="12\.8"/, 'center label shifts right by (pl-pr)/2');
+  assert.match(svgL, /<text x="50" y="13"/, 'center label shifts right by (pl-pr)/2');
 });
 
 test('audit3: edge child label offset is model units (not divided by view scale)', () => {
@@ -2689,9 +2691,10 @@ test('audit3: labelBackgroundColor box hugs the measured text extent, not the ce
   const xs = [...bg.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
   const w = Math.max(...xs.map((p) => p[0])) - Math.min(...xs.map((p) => p[0]));
   const h = Math.max(...xs.map((p) => p[1])) - Math.min(...xs.map((p) => p[1]));
-  // "Hi" at fs12 measures ~11.5px wide, 14.4 tall — nothing like the 80x40 cell.
+  // "Hi" at fs12 measures ~11.5px wide, round(14.4)=14 tall — nothing like
+  // the 80x40 cell.
   assert.ok(w < 20, `bg width hugs the text (got ${w})`);
-  assert.ok(Math.abs(h - 14.4) < 0.01, `bg height = one line box (got ${h})`);
+  assert.ok(Math.abs(h - 14) < 0.01, `bg height = one line box (got ${h})`);
   assert.ok(lp.indexOf(bg) < lp.indexOf(labelSvgNode(lp)), 'bg painted behind the text');
 });
 

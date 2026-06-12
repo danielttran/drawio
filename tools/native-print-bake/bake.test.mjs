@@ -3827,3 +3827,122 @@ test('audit7: perimeterSpacing semantics match mxGraphView (terminal style, fixe
   assert.ok(Math.abs((cpts[cpts.length - 1] - cpts[0]) - 120) < 0.5,
     `fixed anchor unspaced, floating end spaced: span ${cpts[cpts.length - 1] - cpts[0]}`);
 });
+
+test('audit7: noLabel=1 suppresses the label like mxGraph.getLabel', async () => {
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="SECRET" style="rounded=0;noLabel=1;" parent="1"><mxGeometry x="10" y="10" width="80" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  for (const n of contract.document.pages[0].paint) {
+    if (n.kind === 'svg') {
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      assert.ok(!/SECRET/.test(s), 'noLabel=1 label must not print');
+    }
+  }
+  assert.equal(notices.length, 0);
+});
+
+test('audit7: clipped middle/bottom labels show the FIRST lines (plainText clamp)', async () => {
+  // mxSvgCanvas2D.plainText (matchHtmlAlignment): the effective text height
+  // is clamped to the box before valign, so overflow=hidden shows lines from
+  // the TOP. The unclamped offset clipped away line 1 and showed the middle.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="L1&#xa;L2&#xa;L3&#xa;L4&#xa;L5&#xa;L6" style="rounded=0;overflow=hidden;verticalAlign=middle;" parent="1"><mxGeometry x="10" y="10" width="100" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /L1/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  const s = Buffer.from(node.source, 'base64').toString('utf8');
+  const firstY = parseFloat(/<text[^>]*y="(-?[\d.]+)"/.exec(s)[1]);
+  // clamped: y = (40 - min(6*14, 40))/2 = 0 -> line 1 fully inside the clip.
+  assert.ok(firstY >= -0.01 && firstY < 2, `first line stays visible (y=${firstY})`);
+});
+
+test('audit7: vertical-lr textDirection is LOUD, never a silent horizontal print', async () => {
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="V" style="rounded=0;textDirection=vertical-lr;" parent="1"><mxGeometry x="10" y="10" width="80" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.ok(notices.some((n) => /vertical textDirection/.test(n.detail.detail || n.detail || '')),
+    `loud notice expected: ${JSON.stringify(notices)}`);
+});
+
+test('audit7: edge labels honor align=left/right and rotation=', async () => {
+  const page = (lblStyle) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="400" y="40" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="l" value="Cardinality" style="edgeLabel;${lblStyle}" vertex="1" connectable="0" parent="e"><mxGeometry x="0" relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelBox = (contract) => contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /Cardinality/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  }).box;
+  // mxUtils.getAlignmentAsPoint: left puts the label's LEFT edge at the
+  // anchor (edge midpoint, x=220), right its RIGHT edge; center straddles.
+  const left = labelBox((await bake(page('align=left;'), { keepPx: true })).contract);
+  const right = labelBox((await bake(page('align=right;'), { keepPx: true })).contract);
+  const center = labelBox((await bake(page('align=center;'), { keepPx: true })).contract);
+  const cx = 220;
+  const PAD = 6; // svg node box pad/overflow slop
+  assert.ok(Math.abs(left.x - cx) < PAD, `left-aligned label starts at the anchor (x=${left.x})`);
+  assert.ok(Math.abs((right.x + right.w) - cx) < PAD, `right-aligned label ends at the anchor`);
+  assert.ok(Math.abs((center.x + center.w / 2) - cx) < PAD, `centered label straddles the anchor`);
+
+  // rotation= on the label child must reach the printed SVG (was dropped).
+  const rot = (await bake(page('align=center;rotation=45;'), { keepPx: true })).contract;
+  const rotNode = rot.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /Cardinality/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  assert.match(Buffer.from(rotNode.source, 'base64').toString('utf8'), /rotate\(45 /,
+    'label rotation transform present');
+});
+
+test('audit7: external label bands are FULL cell extent (mxGraphView/mxCellRenderer)', async () => {
+  const page = (style) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="XYZ" style="rounded=0;${style}" parent="1"><mxGeometry x="100" y="100" width="120" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelNode = (contract) => contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /XYZ/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  // verticalLabelPosition=bottom + verticalAlign=middle: drawio offsets the
+  // label box by the FULL cell height with the SAME height -> the text
+  // centers ~30px below the cell bottom (the old fontSize-derived band put
+  // it ~9px below: 21px off).
+  const b = labelNode((await bake(page('verticalLabelPosition=bottom;verticalAlign=middle;'), { keepPx: true })).contract);
+  const cyB = b.box.y + b.box.h / 2;
+  assert.ok(Math.abs(cyB - 190) < 8, `bottom band centers at cell.bottom + h/2 = 190 (got ${cyB})`);
+  // labelPosition=left + align=center: band width = CELL width (120), so the
+  // text centers 60px left of the cell (the old max(w, fs*8) band shifted it).
+  const l = labelNode((await bake(page('labelPosition=left;align=center;'), { keepPx: true })).contract);
+  const cxL = l.box.x + l.box.w / 2;
+  assert.ok(Math.abs(cxL - 40) < 8, `left band centers at cell.x - w/2 = 40 (got ${cxL})`);
+});
+
+test('audit7: labelWidth overrides the wrap width and aligns inside the cell', async () => {
+  const page = (style) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="wrap me over the label width please thanks" style="rounded=0;whiteSpace=wrap;${style}" parent="1"><mxGeometry x="100" y="100" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelSvg = (contract) => {
+    const n = contract.document.pages[0].paint.find((n2) => {
+      if (n2.kind !== 'svg') return false;
+      return /wrap me/.test(Buffer.from(n2.source, 'base64').toString('utf8'));
+    });
+    return Buffer.from(n.source, 'base64').toString('utf8');
+  };
+  const narrow = labelSvg((await bake(page(''), { keepPx: true })).contract);
+  const wide = labelSvg((await bake(page('labelWidth=200;'), { keepPx: true })).contract);
+  const lines = (s) => (s.match(/<text/g) || []).length;
+  assert.ok(lines(wide) < lines(narrow),
+    `labelWidth=200 must wrap fewer lines than the 100px cell (${lines(wide)} vs ${lines(narrow)})`);
+});

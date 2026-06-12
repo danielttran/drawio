@@ -1353,21 +1353,33 @@
   // labelPosition=right is paired with align=left so text starts at the right
   // edge). Width/height for the external band are generous so text isn't clipped.
   function externalLabelBox(style, box) {
+    // Exact mxGraphView.updateVertexLabelOffset + mxCellRenderer label
+    // bounds: the external band is the FULL cell size shifted by one cell
+    // extent (not an invented fontSize-derived band, which landed
+    // band-interior align combos tens of px off), and labelWidth overrides
+    // the band width (center: shifted inside the cell by the align dx).
     var lp = style && style.labelPosition;
     var vlp = style && style.verticalLabelPosition;
+    var lwOver = style && style.labelWidth != null && style.labelWidth !== ''
+      ? number(style.labelWidth, 0) : null;
     var horiz = lp && lp !== 'center';
     var vert = vlp && vlp !== 'middle';
-    if (!horiz && !vert) return box;
+    if (!horiz && !vert && lwOver == null) return box;
     var bx = box.x, by = box.y, bw = box.w, bh = box.h;
     if (vert) {
-      var bandH = Math.max(16, number(style.fontSize, 12) * 1.5);
-      if (vlp === 'bottom') { by = box.y + box.h; bh = bandH; }
-      else if (vlp === 'top') { by = box.y - bandH; bh = bandH; }
+      if (vlp === 'bottom') { by = box.y + box.h; }
+      else if (vlp === 'top') { by = box.y - box.h; }
     }
-    if (horiz) {
-      var sideW = Math.max(box.w, number(style.fontSize, 12) * 8);
-      if (lp === 'right') { bx = box.x + box.w; bw = sideW; }
-      else if (lp === 'left') { bx = box.x - sideW; bw = sideW; }
+    if (lp === 'left') {
+      bw = lwOver != null ? lwOver : box.w;
+      bx = box.x - bw;
+    } else if (lp === 'right') {
+      bx = box.x + box.w;
+      if (lwOver != null) bw = lwOver;
+    } else if (lwOver != null) {
+      var dxA = style.align === 'right' ? 1 : (style.align === 'left' ? 0 : 0.5);
+      bx = box.x - (lwOver - box.w) * dxA;
+      bw = lwOver;
     }
     return { x: bx, y: by, w: bw, h: bh };
   }
@@ -1391,7 +1403,12 @@
     if (plain || s.indexOf('<') < 0) {
       var lit = plain ? String(s) : decodeHtmlEntities(s);
       return lit.split('\n').map(function (line) {
-        return { text: line, size: Math.max(1, number(style.fontSize, 12)),
+        // drawio's plain-text path emits SVG <text> with DEFAULT xml:space:
+        // the browser collapses whitespace runs and trims line edges, so the
+        // editor shows "a b" for "a   b". Preserving the runs printed wider
+        // text than the screen. NBSP survives (it is not XML whitespace).
+        return { text: line.replace(/[ \t]+/g, ' ').replace(/^ | $/g, ''),
+          size: Math.max(1, number(style.fontSize, 12)),
           weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
           gap: 0 };
       });
@@ -2382,7 +2399,11 @@
           richEls = body;
         }
       }
-      var richClipped = style.overflow === 'hidden' || style.overflow === 'fill';
+      // 'block' clips too: mxSvgCanvas2D.createCss block branch caps the
+      // label at max-height=round(h) — the bake printed the overflow lines
+      // the editor clips.
+      var richClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
+        style.overflow === 'block';
       // Label-space overflow: rows can overhang horizontally (minX<0 /
       // maxX>contentW) and the paragraph stack can overhang the top (negative
       // oy for too-tall middle/bottom labels) and/or the bottom.
@@ -2417,19 +2438,30 @@
       }
       wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
-          lineH: b.size * 1.2, gap: b.gap, align: b.align,   // mxConstants.LINE_HEIGHT
+          // plain labels: drawio ROUNDS the line pitch
+          // (mxSvgCanvas2D.plainText lh = Math.round(size * LINE_HEIGHT));
+          // unrounded 1.2 drifted 0.4px per line on e.g. fontSize 13. HTML
+          // labels keep unrounded CSS 1.2 via renderRichLabel, not here.
+          lineH: Math.round(b.size * 1.2), gap: b.gap, align: b.align,
           underline: !!b.underline });
       });
     });
-    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14.4, gap: 0 });
+    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14, gap: 0 });
     var totalH = rows.reduce(function (sum, r, i) {
       return sum + r.lineH + (i === 0 ? 0 : r.gap);
     }, 0);
     // mxText.getSpacing(ALIGN_MIDDLE): dy = (spacingTop - spacingBottom)/2.
     // No clamp to 0: a too-tall middle/bottom label spills ABOVE the box
     // (drawio overflow=visible semantics); the viewport grows upward below.
-    var y = v === 'middle' ? (lh - totalH) / 2 + (pt - pb) / 2 :
-      v === 'bottom' ? lh - totalH - pb : pt;
+    // EXCEPT when the label is CLIPPED: mxSvgCanvas2D.plainText
+    // (matchHtmlAlignment) clamps the effective text height to min(H, box)
+    // before applying valign, so the clip window shows the FIRST lines --
+    // the unclamped offset showed the MIDDLE/LAST lines instead.
+    var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
+      style.overflow === 'block';  // createCss block branch clips at round(h)
+    var effTotalH = plainClipped ? Math.min(totalH, lh) : totalH;
+    var y = v === 'middle' ? (lh - effTotalH) / 2 + (pt - pb) / 2 :
+      v === 'bottom' ? lh - effTotalH - pb : pt;
     var yTop = y;
     var decoration = [];
     if (fst & 4) decoration.push('underline');
@@ -2493,7 +2525,6 @@
         textEls + '</g>';
     }
     lastLabelExtent = extentFromLabelSpace(exMinX, yTop, exMaxX, yEnd);
-    var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill';
     return labelSvgAssemble(box, textEls, clipId, plainClipped, gOpacityAttr,
       rotateOverflow(plainOver, vertical));
   }
@@ -4440,11 +4471,16 @@
       y = mid.y;
     }
     // mxUtils.getAlignmentAsPoint: top → dy=0 (label hangs fully below the
-    // anchor), bottom → dy=-1 (fully above), middle → dy=-0.5.
+    // anchor), bottom → dy=-1 (fully above), middle → dy=-0.5. The SAME rule
+    // applies horizontally: align=left puts the label's LEFT edge at the
+    // anchor (dx=0), right its right edge (dx=-1); always centering shifted
+    // left/right-aligned edge labels by half the label width.
     var dyOff = style.verticalAlign === 'bottom' ? height + 2 :
       style.verticalAlign === 'top' ? 0 : height / 2;
+    var dxOff = style.align === 'left' ? 0 :
+      style.align === 'right' ? width : width / 2;
     return {
-      x: (x - origin.x) / scale - width / 2,
+      x: (x - origin.x) / scale - dxOff,
       y: (y - origin.y) / scale - dyOff,
       w: width,
       h: height
@@ -4561,9 +4597,33 @@
     // (dy=-0.5) — previously every valign was treated as middle.
     var vA = alignV(style.verticalAlign || 'middle');
     var elY = vA === 'top' ? cyw : vA === 'bottom' ? cyw - lh : cyw - lh / 2;
-    var elBox = { x: cxw - lw / 2, y: elY, w: lw, h: lh };
-    labelNodes(graph, cell, state, style, elBox, label, notices, resolved)
-      .forEach(function (n) { paint.push(n); });
+    // getAlignmentAsPoint horizontally too: align=left anchors the label's
+    // LEFT edge at the point, right its right edge (was always centered).
+    var elX = style.align === 'left' ? cxw :
+      style.align === 'right' ? cxw - lw : cxw - lw / 2;
+    var elBox = { x: elX, y: elY, w: lw, h: lh };
+    var nodes = labelNodes(graph, cell, state, style, elBox, label, notices, resolved);
+    // mxShape.getTextRotation: a rotation= style on the label child rotates
+    // the rendered text about the label center; it was silently dropped.
+    var elRot = number(style.rotation, 0);
+    if (elRot) {
+      nodes = nodes.map(function (n) {
+        if (!n || n.kind !== 'svg') return n;
+        var inner = (typeof Buffer !== 'undefined' && Buffer.from)
+          ? Buffer.from(n.source, 'base64').toString('utf8')
+          : decodeUtf8B64(n.source);
+        var open = inner.indexOf('>');
+        var close = inner.lastIndexOf('</svg>');
+        if (open < 0 || close < 0) return n;
+        var wrapped = inner.slice(0, open + 1) +
+          '<g transform="rotate(' + fmt(elRot) + ' ' + fmt(n.box.w / 2) + ' ' +
+          fmt(n.box.h / 2) + ')">' + inner.slice(open + 1, close) + '</g>' +
+          inner.slice(close);
+        return { kind: 'svg', box: n.box, aspect: n.aspect,
+          format: n.format, source: base64(wrapped) };
+      });
+    }
+    nodes.forEach(function (n) { paint.push(n); });
     return true;
   }
 
@@ -5307,6 +5367,13 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
     }
+    if (/^vertical-/.test(String(style.textDirection || '').toLowerCase())) {
+      // mxText renders vertical-lr/vertical-rl writing modes; the headless
+      // label renderer lays out horizontally — keep it LOUD, never silent.
+      notices.push(degradation('ExporterUnsupportedShape',
+        'vertical textDirection "' + style.textDirection +
+        '" is not applied to the label (printed horizontal).', cell.id));
+    }
     // LOUD-OR-FAITHFUL for rounded corners: polygon shapes round faithfully
     // via roundedPoly (mxShape.addPoints port); the few curve/multi-part
     // shapes in ROUNDED_NOT_YET would print square corners on rounded=1 —
@@ -5591,26 +5658,10 @@
               aspect: 'preserve'
             });
             if (label !== '') {
-              // For non-rotated stencils, emit label as separate text node centered on cell
-              var lblBoxS = box;
-              // Check for external label position overrides
-              var lposS = style.labelPosition, vlposS = style.verticalLabelPosition;
-              var lblW = style.labelWidth ? parseFloat(style.labelWidth) : null;
-              if (lposS === 'left') {
-                var lw = lblW || box.w;
-                lblBoxS = { x: box.x - lw, y: box.y, w: lw, h: box.h };
-              } else if (lposS === 'right') {
-                var lw = lblW || box.w;
-                lblBoxS = { x: box.x + box.w, y: box.y, w: lw, h: box.h };
-              } else if (lblW) {
-                lblBoxS = { x: box.x, y: box.y, w: lblW, h: box.h };
-              }
-              if (vlposS === 'top') {
-                lblBoxS = { x: lblBoxS.x, y: box.y - box.h, w: lblBoxS.w, h: box.h };
-              } else if (vlposS === 'bottom') {
-                lblBoxS = { x: lblBoxS.x, y: box.y + box.h, w: lblBoxS.w, h: box.h };
-              }
-              labelNodes(graph, cell, state, style, lblBoxS, label, notices, resolved)
+              // External label bands + labelWidth: one shared exact port
+              // (externalLabelBox) so stencils match the generic path.
+              labelNodes(graph, cell, state, style, externalLabelBox(style, box),
+                label, notices, resolved)
                 .forEach(function (n) { paint.push(n); });
             }
           }
@@ -5704,23 +5755,9 @@
           }
           paint.push(paddedSvgShapeNode(builtinContent, box, style, extraPadBI));
           if (label !== '') {
-            var lblBoxBI = box;
-            var lposBI = style.labelPosition, vlposBI = style.verticalLabelPosition;
-            var lblWBI = style.labelWidth ? parseFloat(style.labelWidth) : null;
-            if (lposBI === 'left') {
-              var lwBI = lblWBI || box.w;
-              lblBoxBI = { x: box.x - lwBI, y: box.y, w: lwBI, h: box.h };
-            } else if (lposBI === 'right') {
-              var lwBI = lblWBI || box.w;
-              lblBoxBI = { x: box.x + box.w, y: box.y, w: lwBI, h: box.h };
-            } else if (lblWBI) {
-              lblBoxBI = { x: box.x, y: box.y, w: lblWBI, h: box.h };
-            }
-            if (vlposBI === 'top') {
-              lblBoxBI = { x: lblBoxBI.x, y: box.y - box.h, w: lblBoxBI.w, h: box.h };
-            } else if (vlposBI === 'bottom') {
-              lblBoxBI = { x: lblBoxBI.x, y: box.y + box.h, w: lblBoxBI.w, h: box.h };
-            }
+            // External label bands + labelWidth: one shared exact port
+            // (externalLabelBox) so builtins match the generic path.
+            var lblBoxBI = externalLabelBox(style, box);
             if (style.shape === 'table') {
               var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };

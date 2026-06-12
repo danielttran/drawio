@@ -837,7 +837,14 @@ export function buildGraph(cells, paper) {
       height: allBounds.height
     }),
     getCellStyle: (cell) => (cell && cell.resolvedStyle) ? cloneStyle(cell.resolvedStyle) : {},
-    getLabel:     (cell) => (cell && cell.value != null ? String(cell.value) : ''),
+    // mxGraph.getLabel returns '' when STYLE_NOLABEL is set — hidden labels
+    // (noLabel=1) previously PRINTED, a silent divergence.
+    getLabel:     (cell) => {
+      if (!cell || cell.value == null) return '';
+      const st = cell.resolvedStyle || cell.style;
+      if (st && st.noLabel != null && String(st.noLabel) === '1') return '';
+      return String(cell.value);
+    },
     isHtmlLabel:  (cell) => !!(cell && cell.style && String(cell.style.html) === '1'),
     nativePrintOptions: null
   };
