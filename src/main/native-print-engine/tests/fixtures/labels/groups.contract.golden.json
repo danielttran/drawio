@@ -27,6 +27,12 @@
         "paint": [
           {
             "kind": "path",
+            "d": "M 2645.833333 2645.833333 L 37041.666667 2645.833333 L 37041.666667 23812.5 L 2645.833333 23812.5 Z",
+            "fill": null,
+            "stroke": null
+          },
+          {
+            "kind": "path",
             "d": "M 2645.833333 2645.833333 L 18520.833333 2645.833333 L 18520.833333 11906.25 L 2645.833333 11906.25 Z",
             "fill": {
               "type": "solid",
@@ -216,12 +222,6 @@
             },
             "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjQwIj48Zz48dGV4dCB4PSI1MCIgeT0iNS42IiBmb250LWZhbWlseT0iSGVsdmV0aWNhLCBBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMiIgZm9udC13ZWlnaHQ9IjQwMCIgZmlsbD0iIzAwMDAwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPkJhY2sgKGJvdHRvbTwvdGV4dD48dGV4dCB4PSI1MCIgeT0iMjAiIGZvbnQtZmFtaWx5PSJIZWx2ZXRpY2EsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+ei1vcmRlcik8L3RleHQ+PC9nPjwvc3ZnPg==",
             "aspect": "preserve"
-          },
-          {
-            "kind": "path",
-            "d": "M 2645.833333 2645.833333 L 37041.666667 2645.833333 L 37041.666667 23812.5 L 2645.833333 23812.5 Z",
-            "fill": null,
-            "stroke": null
           }
         ]
       }

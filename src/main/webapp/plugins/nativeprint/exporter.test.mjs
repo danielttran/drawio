@@ -151,7 +151,9 @@ test('exporter emits routed edges with rounded corners arrowheads and labels', (
   const paint = result.contract.document.pages[0].paint;
 
   assert.equal(paint[0].kind, 'path');
-  assert.match(paint[0].d, / C 50 0 50 0 50 10 /); // edge corner radius = arcSize/2 = 10 (drawio mxPolyline)
+  // edge corner radius = arcSize/2 = 10, as the EXACT cubic elevation of
+  // drawio's quadTo (controls at a + 2/3(corner - a)), not control-at-corner.
+  assert.match(paint[0].d, / C 46\.667 0 50 3\.333 50 10 /);
   assert.deepEqual(paint[0].stroke.paint, { type: 'solid', color: '#123456', alpha: 1 });
   // mxMarker block (sw=2, size=6): tip offset = sw*1.118 = 2.236 behind the
   // endpoint, triangle length size+sw = 8, half-width (size+sw)/2 = 4, and the

@@ -1395,9 +1395,10 @@ test('label: plain label honors letterSpacing', async () => {
   assert.match(svgText((await bake(mk('5'), { keepPx: true })).contract), /letter-spacing="5"/);
 });
 
-test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () => {
-  // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4).
-  // drawio uses SHADOWCOLOR #808080 at SHADOW_OPACITY 1, offset
+test('shape: shadow matches drawio (#000000, opacity 0.25, offset 2,3)', async () => {
+  // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4),
+  // then as the LIBRARY defaults #808080@1. The APP overrides them
+  // (Graph.js:161-162): SHADOWCOLOR #000000 at SHADOW_OPACITY 0.25, offset
   // (SHADOW_OFFSET_X=2, SHADOW_OFFSET_Y=3), with per-cell overrides.
   const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
@@ -1405,9 +1406,8 @@ test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () =
   </root></mxGraphModel>`;
   const { contract } = await bake(xml, { keepPx: true });
   const shadow = contract.document.pages[0].paint.find(
-    (n) => n.kind === 'path' && n.fill && n.fill.color === '#808080');
-  assert.ok(shadow, 'shadow path should use drawio shadow colour #808080');
-  assert.equal(shadow.fill.alpha, 1, 'shadow opacity should be 1');
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#000000' && n.fill.alpha === 0.25);
+  assert.ok(shadow, 'shadow path should use the app shadow ink #000000 @ 0.25');
   // shadow offset (2,3): the silhouette path starts at the offset, not (4,4).
   assert.match(shadow.d, /^M 2 3 /, `shadow offset should be (2,3): ${shadow.d.slice(0, 20)}`);
 });
@@ -1500,8 +1500,10 @@ test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async 
   const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null && /C/.test(n.d || ''));
   assert.ok(edge, 'rounded edge present with curve');
   // First bend at x=180: the straight segment ends 10px before it (L ...170...),
-  // not 8px (172). Assert the corner control sequence uses the 10px radius.
-  assert.match(edge.d, /L 170 20 C 180 20/, `edge corner radius should be 10: ${edge.d.slice(0, 50)}`);
+  // not 8px (172), and the corner is the EXACT cubic elevation of drawio's
+  // quadTo (controls at a + 2/3(corner - a)), not a control-at-corner bulge.
+  assert.match(edge.d, /L 170 20 C 176\.667 20 180 23\.333 180 30/,
+    `edge corner must be the elevated quad: ${edge.d.slice(0, 50)}`);
 });
 
 test('edge: perimeterSpacing creates a gap between shape and connector', async () => {
@@ -3434,15 +3436,15 @@ test('audit5: builtin shapes render a REAL gradient (process probe)', async () =
 
 test('audit5: builtin shapes paint shadow=1 (cylinder3 probe)', async () => {
   // Previously shadow=1 was silently dropped on the builtin branch. drawio:
-  // the shadow is the shape repainted in #808080 (SHADOWCOLOR) at alpha 1,
-  // offset (2,3), UNDER the shape.
+  // the shadow is the shape repainted in the APP's SHADOWCOLOR #000000 at
+  // SHADOW_OPACITY 0.25 (Graph.js overrides), offset (2,3), UNDER the shape.
   const { nodes, svgs } = await bakeVertexProbe('shape=cylinder3;shadow=1;fillColor=#dae8fc;');
   const svgNodes = nodes.filter((n) => n.kind === 'svg');
   assert.equal(svgNodes.length, 2, 'shadow node + shape node');
   const [shadow, body] = svgs;
-  assert.match(shadow, /<g opacity="1">/, 'shadow composited at SHADOW_OPACITY once');
-  assert.match(shadow, /fill="#808080"/, 'shadow fill recolored to SHADOWCOLOR');
-  assert.match(shadow, /stroke="#808080"/, 'shadow stroke recolored to SHADOWCOLOR');
+  assert.match(shadow, /<g opacity="0.25">/, 'shadow composited at SHADOW_OPACITY once');
+  assert.match(shadow, /fill="#000000"/, 'shadow fill recolored to SHADOWCOLOR');
+  assert.match(shadow, /stroke="#000000"/, 'shadow stroke recolored to SHADOWCOLOR');
   assert.ok(!/#dae8fc/.test(shadow), 'no original colors left in the shadow copy');
   assert.ok(/#dae8fc/.test(body), 'body keeps its own fill');
   // offset (2,3) in page space
@@ -3671,4 +3673,157 @@ test('audit7: explicit page dims keep the authored on-page placement', async () 
   const d3 = c3.document.pages[0].paint.find((n) => n.kind === 'path').d;
   // grid cell (2,2): origin (800,600) -> in-page position (50,40)
   assert.match(d3, /^M 50 40 /, `far grid cell keeps margins, got: ${d3.slice(0, 30)}`);
+});
+
+test('audit7: edge to a hidden-layer terminal is dropped like the editor', async () => {
+  // mxGraphView.updateEdgeState removes any edge whose connected terminal
+  // has no visible state; the bake printed the edge into empty space.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="L2" value="hidden layer" style="" parent="0" visible="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="100" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="L2"><mxGeometry x="200" y="40" width="100" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  // Only the visible vertex body: no edge stroke reaching x>=100.
+  for (const p of paths) {
+    const xs = [...p.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
+    assert.ok(Math.max(...xs) <= 101, `edge to hidden terminal leaked ink: ${p.d.slice(0, 60)}`);
+  }
+});
+
+test('audit7: bare orthogonal=1 flag projects floating terminals orthogonally', async () => {
+  // mxGraph.isOrthogonal honors the bare style flag without any edgeStyle.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="0" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="160" y="25" width="100" height="50" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="orthogonal=1;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.filter((n) => n.kind === 'path').pop();
+  const pts = [...edge.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  // Orthogonal projection -> a horizontal segment at the shared band's y=50.
+  assert.ok(pts.every((p) => Math.abs(p[1] - 50) < 0.5),
+    `expected horizontal y=50 edge, got ${edge.d}`);
+});
+
+test('audit7: floating edge between OVERLAPPING shapes attaches like the editor', async () => {
+  // mx computes the target point first, then aims the source at that POINT.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="0" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="200" height="200" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.filter((n) => n.kind === 'path').pop();
+  const pts = [...edge.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const start = pts[0];
+  // drawio: target point = b's perimeter toward a's center (20,20); source
+  // then aims at that point -> source attaches at its own (0,0)-ward corner
+  // ray, NOT flipped to the far side.
+  assert.ok(start[0] <= 50 && start[1] <= 50,
+    `source attached on the wrong side: ${edge.d.slice(0, 50)}`);
+});
+
+test('audit7: z-order follows DOCUMENT order for integer-like ids', async () => {
+  // JS objects iterate integer-like keys numerically; with ids "10" and "9"
+  // declared as 10-then-9 ("9" sent to front), the dict walk painted 10 on
+  // top — inverted stacking. The model tree walk must follow XML order.
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="10" vertex="1" style="rounded=0;fillColor=#ff0000;" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="9" vertex="1" style="rounded=0;fillColor=#0000ff;" parent="1"><mxGeometry x="30" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const fills = contract.document.pages[0].paint
+    .filter((n) => n.kind === 'path' && n.fill)
+    .map((n) => n.fill.color);
+  // id 9 is declared LAST -> paints LAST (on top), regardless of numeric order.
+  assert.deepEqual(fills, ['#ff0000', '#0000ff'],
+    `document order must win: ${fills.join(',')}`);
+});
+
+test('audit7: bezier=1 edges paint cubic curves through the control points', async () => {
+  // mxPolyline checks STYLE_BEZIER before curved: 3n+1 points are direct
+  // cubic control points. Previously baked as a straight polyline THROUGH
+  // the control points with no notice.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="e" edge="1" style="bezier=1;endArrow=none;noEdgeStyle=1;" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="0" y="50" as="sourcePoint"/><mxPoint x="300" y="50" as="targetPoint"/>
+        <Array as="points"><mxPoint x="100" y="150"/><mxPoint x="200" y="150"/></Array>
+      </mxGeometry>
+    </mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const e = contract.document.pages[0].paint.find((n) => n.kind === 'path');
+  // Structural: exactly ONE cubic whose controls are the two waypoints
+  // (auto-fit anchoring may translate all coordinates uniformly).
+  const m = e.d.match(/^M ([\d.]+) ([\d.]+) C ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)$/);
+  assert.ok(m, `bezier edge must be one cubic: ${e.d}`);
+  const [, sx, sy, c1x, c1y, c2x, c2y, ex2, ey] = m.map(Number);
+  assert.equal(c1x - sx, 100); assert.equal(c1y - sy, 100);
+  assert.equal(c2x - sx, 200); assert.equal(c2y - sy, 100);
+  assert.equal(ex2 - sx, 300); assert.equal(ey - sy, 0);
+});
+
+test('audit7: shadow=1 edges paint the offset shadow line under the edge', async () => {
+  // mxConnector paints the LINE with the shadow (markers without): the
+  // shadow stroke is the app ink #000000@0.25 offset (2,3), painted first.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="shadow=1;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path' && n.fill == null);
+  const shadow = paths.find((n) => n.stroke && n.stroke.paint.color === '#000000' && n.stroke.paint.alpha === 0.25);
+  assert.ok(shadow, 'edge shadow stroke present');
+  const line = paths.find((n) => n !== shadow);
+  assert.ok(contract.document.pages[0].paint.indexOf(shadow) <
+            contract.document.pages[0].paint.indexOf(line), 'shadow paints under the line');
+  const sm = shadow.d.match(/^M ([\d.]+) ([\d.]+)/), lm = line.d.match(/^M ([\d.]+) ([\d.]+)/);
+  assert.ok(Math.abs((+sm[1]) - (+lm[1]) - 2) < 0.01 && Math.abs((+sm[2]) - (+lm[2]) - 3) < 0.01,
+    `shadow offset (2,3): shadow ${sm[1]},${sm[2]} vs line ${lm[1]},${lm[2]}`);
+});
+
+test('audit7: perimeterSpacing semantics match mxGraphView (terminal style, fixed anchors, diagonals)', async () => {
+  const page = (body) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>${body}</root></mxGraphModel>`;
+  const firstEdge = (contract) => contract.document.pages[0].paint
+    .find((n) => n.kind === 'path' && n.fill == null && n.stroke);
+  // (a) the TERMINAL's own perimeterSpacing style creates the gap too
+  // (mxGraphView.getPerimeterBounds adds it to the edge's border).
+  const a = await bake(page(`
+    <mxCell id="a" vertex="1" style="rounded=0;perimeterSpacing=10;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>`),
+    { keepPx: true });
+  const am = firstEdge(a.contract).d.match(/^M ([\d.]+) /);
+  // a's right side is at x=60; +10 spacing -> 70 (minus the bake's content
+  // translation, which moved x=-10 ink to 0 -> source at 80? No: auto-fit
+  // shifts ALL coords uniformly; measure the GAP via the target end).
+  const pts = [...firstEdge(a.contract).d.matchAll(/([\d.]+) ([\d.]+)/g)].map((m) => +m[1]);
+  const gap = pts[pts.length - 1] - pts[0];
+  // span between endpoints: from 60+10 to 200 (no target spacing) = 130.
+  assert.ok(Math.abs(gap - 130) < 0.5, `terminal-style spacing honored: span ${gap}`);
+
+  // (c) FIXED exitX/exitY anchors are never spaced (mxGraph applies border
+  // to floating terminals only).
+  const c = await bake(page(`
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;perimeterSpacing=20;exitX=1;exitY=0.5;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>`),
+    { keepPx: true });
+  const cpts = [...firstEdge(c.contract).d.matchAll(/([\d.]+) ([\d.]+)/g)].map((m) => +m[1]);
+  // fixed source anchor at x=60 exactly; floating target spaced to 180:
+  // span = 120.
+  assert.ok(Math.abs((cpts[cpts.length - 1] - cpts[0]) - 120) < 0.5,
+    `fixed anchor unspaced, floating end spaced: span ${cpts[cpts.length - 1] - cpts[0]}`);
 });

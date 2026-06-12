@@ -2665,9 +2665,13 @@
   // shadowOpacity / shadowOffsetX / shadowOffsetY overrides. The bake previously
   // used black@0.18 at (4,4) — too light and too far offset.
   function shadowParams(style) {
+    // The APP overrides the raw mxConstants defaults (Graph.js:161-162:
+    // SHADOW_OPACITY=0.25, SHADOWCOLOR='#000000'; offsets stay 2,3) — the
+    // earlier #808080@1 matched mxgraph-the-library, not what the drawio
+    // editor actually shows.
     return {
-      color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#808080',
-      alpha: number(style && style.shadowOpacity, 1),
+      color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#000000',
+      alpha: number(style && style.shadowOpacity, 0.25),
       dx: number(style && style.shadowOffsetX, 2),
       dy: number(style && style.shadowOffsetY, 3)
     };
@@ -3878,7 +3882,38 @@
     return null;
   }
 
-  function edgePath(points, rounded, curved, radius) {
+  function edgePath(points, rounded, curved, radius, bezier) {
+    // mxPolyline.paintEdgeShape checks STYLE_BEZIER FIRST: waypoints are
+    // cubic CONTROL points when they fit the 3n+1 pattern, else
+    // through-point quads. Without this branch bezier=1 edges printed as
+    // (rounded) straight polylines through the control points — silently.
+    if (bezier && points.length > 2) {
+      var bd = 'M ' + p(points[0].x, points[0].y);
+      var n = points.length;
+      if ((n - 1) % 3 === 0) {
+        for (var bi = 1; bi + 2 < n; bi += 3) {
+          bd += ' C ' + p(points[bi].x, points[bi].y) + ' ' +
+            p(points[bi + 1].x, points[bi + 1].y) + ' ' +
+            p(points[bi + 2].x, points[bi + 2].y);
+        }
+        return bd;
+      }
+      var bcur = points[0];
+      var bquad = function (cp, ep) {
+        var c1 = { x: bcur.x + (2 / 3) * (cp.x - bcur.x),
+                   y: bcur.y + (2 / 3) * (cp.y - bcur.y) };
+        var c2 = { x: ep.x + (2 / 3) * (cp.x - ep.x),
+                   y: ep.y + (2 / 3) * (cp.y - ep.y) };
+        bd += ' C ' + p(c1.x, c1.y) + ' ' + p(c2.x, c2.y) + ' ' + p(ep.x, ep.y);
+        bcur = ep;
+      };
+      for (var bj = 1; bj < n - 2; bj++) {
+        var b0 = points[bj], b1 = points[bj + 1];
+        bquad(b0, { x: (b0.x + b1.x) / 2, y: (b0.y + b1.y) / 2 });
+      }
+      bquad(points[n - 2], points[n - 1]);
+      return bd;
+    }
     if (curved && points.length > 2) {
       // mxPolyline.paintCurvedLine: quadratics through successive segment
       // midpoints, for ANY point count (the old 4-point-only cubic left
@@ -3911,12 +3946,24 @@
     // LINE_ARCSIZE=20) / 2 = 10 by default. Was a hardcoded 8.
     var radius = radius > 0 ? radius : 10;
     var out = 'M ' + p(points[0].x, points[0].y);
+    // mxShape.addPoints: the corner curve is a QUADRATIC with control at
+    // the corner (its exact cubic elevation is c = a + 2/3(corner - a));
+    // the old `C corner corner a2` cubic bulged ~1.77px past the true arc
+    // apex at the default radius. The incoming arm's available length is
+    // measured from the PREVIOUS arc end (pe), not the original corner, so
+    // consecutive short segments shorten exactly like the editor.
+    var pe = points[0];
     for (var j = 1; j < points.length - 1; j++) {
-      var prev = points[j - 1], cur = points[j], next = points[j + 1];
-      var a1 = cornerPoint(cur, prev, radius);
+      var cur = points[j], next = points[j + 1];
+      var a1 = cornerPoint(cur, pe, radius);
       var a2 = cornerPoint(cur, next, radius);
-      out += ' L ' + p(a1.x, a1.y) + ' C ' + p(cur.x, cur.y) + ' ' +
-        p(cur.x, cur.y) + ' ' + p(a2.x, a2.y);
+      var cc1 = { x: a1.x + (2 / 3) * (cur.x - a1.x),
+                  y: a1.y + (2 / 3) * (cur.y - a1.y) };
+      var cc2 = { x: a2.x + (2 / 3) * (cur.x - a2.x),
+                  y: a2.y + (2 / 3) * (cur.y - a2.y) };
+      out += ' L ' + p(a1.x, a1.y) + ' C ' + p(cc1.x, cc1.y) + ' ' +
+        p(cc2.x, cc2.y) + ' ' + p(a2.x, a2.y);
+      pe = a2;
     }
     var last = points[points.length - 1];
     return out + ' L ' + p(last.x, last.y);
@@ -6131,21 +6178,11 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'jumpStyle=' + style.jumpStyle + ' line jumps are not rendered — crossings print as plain lines', cell.id));
     }
-    // perimeterSpacing (+ source/targetPerimeterSpacing) creates a gap between
-    // the shape edge and the connector endpoints (drawio grows the perimeter by
-    // the spacing). Pull each endpoint inward along the edge by that amount so
-    // the gap appears, instead of the line touching the shape. Was ignored.
-    var perimBase = number(style.perimeterSpacing, 0);
-    var srcSp = perimBase + number(style.sourcePerimeterSpacing, 0);
-    var tgtSp = perimBase + number(style.targetPerimeterSpacing, 0);
-    var nudge = function (from, toward, dist) {
-      var dx = toward.x - from.x, dy = toward.y - from.y;
-      var len = Math.sqrt(dx * dx + dy * dy);
-      if (len <= 0.001 || dist <= 0) return from;
-      return { x: from.x + dx / len * dist, y: from.y + dy / len * dist };
-    };
-    if (srcSp > 0) points[0] = nudge(points[0], points[1], srcSp);
-    if (tgtSp > 0) points[points.length - 1] = nudge(points[points.length - 1], points[points.length - 2], tgtSp);
+    // perimeterSpacing now lives where mxGraph applies it: the headless
+    // router (drawio-parser terminalPoint) GROWS the perimeter bounds
+    // before intersecting, floating ends only. The old endpoint nudge here
+    // double-spaced routed edges, mis-spaced diagonal approaches, and
+    // wrongly spaced FIXED exitX/exitY anchors.
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });
 
     // JS-registered edge shapes: exact headless transcription from source.
@@ -6213,9 +6250,31 @@
     var linePts = points.slice();
     if (startRes && startRes.pe) linePts[0] = startRes.pe;
     if (endRes && endRes.pe) linePts[linePts.length - 1] = endRes.pe;
+    var lineD = edgePath(linePts, boolish(style.rounded), boolish(style.curved),
+      number(style.arcSize, 20) / 2, boolish(style.bezier));
+    if (boolish(style.shadow) && stroke) {
+      // mxConnector.paintEdgeShape: the LINE paints with the shadow, the
+      // markers explicitly without (c.setShadow(false) before them).
+      // shadow=1 edges previously printed with no shadow and no notice.
+      var esp = shadowParams(style);
+      var eShadowPts = linePts.map(function (pt) {
+        return { x: pt.x + esp.dx, y: pt.y + esp.dy };
+      });
+      paint.push({
+        kind: 'path',
+        d: edgePath(eShadowPts, boolish(style.rounded), boolish(style.curved),
+          number(style.arcSize, 20) / 2, boolish(style.bezier)),
+        fill: null,
+        stroke: {
+          paint: solid(esp.color, esp.alpha),
+          width: stroke.width, cap: stroke.cap, join: stroke.join,
+          miterLimit: stroke.miterLimit, dash: stroke.dash
+        }
+      });
+    }
     paint.push({
       kind: 'path',
-      d: edgePath(linePts, boolish(style.rounded), boolish(style.curved), number(style.arcSize, 20) / 2),
+      d: lineD,
       fill: null,
       stroke: stroke
     });
