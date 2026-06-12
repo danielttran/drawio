@@ -1068,3 +1068,101 @@ clean.
 **Build notes (this box):** do NOT use -DCMAKE_BUILD_TYPE=Release (GCC13
 std::variant maybe-uninitialized false positive under -O2 -Werror). ctest now
 195; exporter 206; bake 206+; goldens regenerated with explained diffs only.
+
+## UPDATE 2026-06-12 — round 4 audit (branch claude/native-print-wysiwyg-audit-ha5jym)
+
+**Goal:** audit + fix the native print path end-to-end (export → C++ engine),
+WYSIWYG from design to paper. Six parallel audits (labels / vertex shapes /
+edges / C++ engine / pipeline glue / Win32 host) returned ~60 VERIFIED
+findings; fixed in waves, each with red-then-green regression tests and the
+full matrix green before commit.
+
+**Wave A — engine/validator/wire gate parity (736f678):** loader now refuses
+what the JS validator refuses (positive box w/h, non-empty static lines,
+strict svg base64 — mid-stream '=' previously crosshatched at draw time,
+minor>=0, duplicate page ids, 1e8 extent caps vs lround UB → silent 1x1
+preview, merge sample<=maxLen in code points); NEW TileCoverageGap notice
+(content inside the page but outside the tile union was silently clipped;
+exact rect-subtraction with the page-escape tolerance); GetContractFields
+pairs sample with the binding min maxLen; validator deep non-finite scan +
+PNG signature + dup ids + extent caps + sample<=maxLen; proto-codec encode
+refuses oversize frames (FRAME_TOO_LARGE) like C++. ctest 216 (8 new).
+
+**Wave B — Win32 host + shim (d04f224, code-reviewed; CI compiles Win32):**
+radial fills under-filled with outermost stop (PathGradientBrush paints only
+inside its boundary ellipse — rect corners printed with NO ink); SVG aspect
+moved to the host (shim now STRETCHES; aspect:'fill' was unreachable), host
+computes preserve sub-rect from intrinsic size (svg_blit_geometry.hpp) and
+blits 1:1 integer-snapped with pinned PixelOffsetModeHalf+NearestNeighbor;
+100 MPx raster AREA cap; band/image blit modes pinned (seams, half-px shift);
+ICC + EXIF orientation honored on image decode; dash normalization in
+dash_pattern.hpp (odd counts doubled) + SetDashPattern status + DashCapRound;
+DEVMODE named-stock clears stale DM_PAPERWIDTH/LENGTH + both stock paths
+re-check driver coercion (loud refusal, never silently-wrong paper);
+PrinterJobGuard RAII (bad_alloc mid-job leaked DC + un-aborted spool = silent
+partial); trace_extent ceil + 100k ceiling + bitmap/GlobalLock/GdiplusStartup
+status checks; NUL-safe text lengths; rich-text trailing-space collapse in
+wrap/align; enumerate_stocks count validation. Shim: stretch + checked_mul +
+fallback advance for unmapped glyphs (cargo test 6/6).
+
+**Wave F1/F2 (050af7a):** HIGH — explicit pageWidth/pageHeight bakes anchored
+to CONTENT bounds, silently dropping the author's on-page placement on EVERY
+production print; now page-grid-aligned origin (mxPrintPreview floor()
+semantics; far grid cells keep in-page margins). Ink-extent shift now
+auto-fit-only. wysiwyg-compare de-vacuated: parses through the production
+parser (compressed files compared 0 cells = vacuous pass; object-wrapped
+cells invisible), edge check was a tautology, label check one-way on
+markup-stripped text. All 19 goldens regenerated (translation-only).
+
+**Wave E — edges (cb8a0c1, 499db2a):** hidden-layer terminals drop the edge
+like the editor (was printed into empty space); z-order follows DOCUMENT
+order (parser builds child tree in XML order + exposes getRoot/getChildAt —
+JS dict iteration sorted integer-like ids numerically, INVERTING
+front/back); bezier=1 cubics (was straight polyline through control points);
+rounded corners are the exact quadTo cubic elevation measured from the
+previous arc end; perimeterSpacing GROWS the perimeter bounds (edge +
+per-end + terminal style; floating ends only — fixed anchors unspaced);
+bare orthogonal=1 honored; routers run on RESOLVED style; floating-floating
+target-first attachment; shadow ink matches the APP (Graph.js #000000@0.25,
+NOT library #808080@1); shadow=1 edges paint the offset line under the
+edge; fixed anchors need BOTH coords (lone exitX floats); edge labels in
+auto-fit bounds.
+
+**Wave D — labels (3f8dd7c):** noLabel=1 suppressed; external label bands
+are FULL cell extent (mxGraphView.updateVertexLabelOffset — invented
+fontSize-derived bands were tens of px off on band-interior aligns) with
+labelWidth override + center align shift, shared by generic/stencil/builtin
+branches (externalLabelBox); edge labels honor align=left/right
+(getAlignmentAsPoint) and child rotation= (rotate about center); clipped
+labels show the FIRST lines (plainText matchHtmlAlignment clamp);
+overflow=block clips; plain line pitch = Math.round(size*1.2); plain
+whitespace runs collapse (NBSP kept); vertical-lr/rl textDirection LOUD.
+
+**Wave C1 (e261098):** relative children of rotated parents rotate around
+the parent center (mxGraphView.updateVertexState); flipH/V reach JPEG/GIF/
+SVG image payloads (SVG-wrapped path dropped them).
+
+**Wave F — pipeline (6027c9f):** dialog surfaces PRINT-TIME engine notices
+(FontSubstituted etc. were discarded post-print); multi-page files send the
+full <mxfile> (current-page model silently never printed pages 2..N);
+pageScale honored; pages:[] loud refusal + DOCUMENT-ordinal page ids;
+broker spawn-error handler + _failAll blob reset + 64 MiB encode guard;
+probe bakes with production inputs; render-artifact text compositor reads
+SCHEMA fields (snake_case reads rendered 12px black/empty); probe CLIs
+print real notice detail; service merges bake notices into success payloads
+and refusals carry allNotices.
+
+**In flight at write time:** registry-shape ports (or/xor/orEllipse/
+sumEllipse/lineEllipse/tapeData/dimension/umlBoundary/umlEntity/umlControl/
+umlLifeline/message/lollipop/requires/waypoint/transparent/curlyBracket/
+zigzag/gitTag/gitMergeCommit/gitCherryPick/mindmapBang/ishikawaHead/
+mermaidOdd + ext;double=1 + link-as-vertex) — these baked WRONG silhouettes
+with NO notice. Remaining known: image clipPath/rounded crop (drawio "Crop
+image" UI), stencil-branch shadow/sketch, builtin-branch sketch fill,
+zero-size cell silhouettes.
+
+**Suites at write time:** bake 259, exporter 205, validate 61, service 19,
+compare 19/19, ctest 216/216, render gate, production audit 8996 zero
+notices/blank. Conventions: goldens regenerate via the bake CLI loop;
+shadow tests assert the APP constants; geometry tests use auto-fit fixtures
+(page-relative anchoring is pinned by its own test).
