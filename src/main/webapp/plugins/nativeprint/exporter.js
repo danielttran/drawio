@@ -896,14 +896,19 @@
 
       var rows = [];
       var isWrap = style.whiteSpace === 'wrap';
+      // Keep the fit-check identical to the plain render path: thread
+      // letterSpacing into the wrap and ROUND the line pitch (the render uses
+      // Math.round(size*1.2)); otherwise the autosize fit can disagree with the
+      // final layout by a sub-pixel-per-line drift.
+      var autoLs = number(style.letterSpacing, 0);
       for (var bi = 0; bi < blocks.length; bi++) {
         var b = blocks[bi];
-        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap);
+        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs);
         for (var li = 0; li < wrappedLines.length; li++) {
           rows.push({
             text: wrappedLines[li],
             size: b.size,
-            lineH: b.size * 1.2,   // mxConstants.LINE_HEIGHT
+            lineH: Math.round(b.size * 1.2),   // mxConstants.LINE_HEIGHT, rounded like the render
             gap: li === 0 ? b.gap : 0
           });
         }

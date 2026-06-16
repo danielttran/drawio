@@ -1324,3 +1324,29 @@ blocking + 2 low, all from the mxGraph `'0'`-is-truthy quirk:
 +3 regression tests (bake 323), 1 stale test corrected. No golden drift. Matrix
 green: exporter 205, bake 323, validate 64, ctest 216/216 (real resvg),
 production-audit 86+8910 zero notices/all inked, render-gate pass.
+
+## UPDATE 2026-06-16 — round 7f + ADVISOR SIGN-OFF (same branch)
+
+**Advisor pass 4 VERDICT: PRODUCTION-READY — no blocking findings.** Verified
+pass-3's fixes line-by-line, confirmed the mxGraph `'0'`-is-truthy class is FULLY
+closed (drawioFlag sound; only `lid`/`boundedLbl` are bare-truthy reachable reads,
+both fixed; every other boolean flag drawio reads with `==`/`!=` so `boolish` is
+correct; the only shipped trigger `cylinder3;lid=0` is fixed). Fresh sweep across
+edges/engine/labels found no silent divergence beyond the inherent (accepted)
+no-browser font-metric approximation.
+
+Closed the one optional polish the advisor named: `getAutosizeTextFontSizeHeadless`
+now threads letterSpacing into its wrap and rounds the line pitch
+(Math.round(size*1.2)) so the autosize fit-check is identical to the render path
+(was a ≤1-unit drift on autosizeText=1 cells). No golden drift.
+
+**FINAL MATRIX (this box):** exporter 205 pass/1 skip, bake 324, validate 64,
+service 19, ctest 216/216 (real resvg cdylib), production-audit 86 shapes + 8910
+stencils zero notices / all inked / 0 blank, render-gate pass. Visually confirmed
+through the production resvg path: round-6 shapes, round-7 label margins, round-7c
+margin shapes, and the flagship test.drawio — all WYSIWYG.
+
+**AUDIT COMPLETE.** Rounds 6→7f closed ~30 verified silent divergences + the full
+getLabelMargins/getLabelBounds family (24 shapes) + the '0'-truthy flag class.
+Independent advisor signed off production-ready. Branch:
+claude/optimistic-archimedes-ka4th1 (fork only).
