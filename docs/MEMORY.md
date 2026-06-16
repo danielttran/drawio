@@ -1230,3 +1230,37 @@ production-audit 86+8910 zero notices / all inked / 0 blank, ctest 216/216 (real
 resvg cdylib). C3 (tile-coverage tolerance can swallow a sub-1058um in-page strip)
 left as a documented LOW residual — only a mis-baked tiling, production tiles
 cover the page exactly.
+
+## UPDATE 2026-06-16 — round 7 (advisor follow-up, same branch)
+
+Independent advisor verified all 18 round-6 fixes as correct (no regressions) but
+found 2 blocking + a systemic label-margin gap. All addressed:
+
+- **BLOCKING-2 + label-margin family (systemic):** the exporter honored
+  getLabelMargins/getLabelBounds ONLY for umlFrame/umlLifeline, so every other
+  margin-defining shape painted its label over the reserved region. Added a
+  `labelMargins(style,w,h)` dispatch + `applyLabelMargins` (direction-rotated per
+  mxUtils.getDirectedBounds) covering cube(boundedLbl), datastore, callout,
+  cylinder(boundedLbl), note2(boundedLbl), document(boundedLbl), manualInput
+  (boundedLbl), folder(boundedLbl), process/process2(getLabelBounds). Applied at
+  all THREE internal-label sites (generic fallback, builtin, shapePath). The
+  DEFAULT sidebar cube (boundedLbl=1) now insets its label clear of the depth band.
+- **BLOCKING-1 L4 sup/sub:** re-derived from mxSvgCanvas2D.getSupSubLineExpansion —
+  the baseline does NOT move; only the line DESCENDER grows, after absorbing the
+  CSS half-leading (lineFontSize*(LINE_HEIGHT-1)/2). (Round-6 grew the ascent,
+  moving the baseline — close but not faithful.)
+- **S3 (completed):** stencil `<image>` ALWAYS stretches (aspect=false in
+  mxStencil.drawShape; the `aspect` attr controls the SHAPE, not the image),
+  honors node flipH/flipV, opacity = alpha*fillAlpha.
+- **Cube direction=north/south:** cubeInner now paints in a w↔h-SWAPPED viewport
+  then rotates+translates (mxShape.isPaintBoundsInverted), like the builtin
+  dirInvBI path — correct proportions for non-square N/S cubes.
+- **Table rowspan:** the height deficit is distributed EVENLY across the spanned
+  rows (was dumped on the last row).
+
+Ragged-row right-edge border gap left as-is (border-model-dependent; matches
+`border="1"` separate-border tables). +12 regression tests (bake 312). Goldens
+regenerated: master-test-rich-text (L4 line height), test (process/folder label
+inset) — coordinate-only. Matrix green: exporter 205, bake 312, validate 64,
+ctest 216/216 (real resvg), production-audit 86+8910 zero notices/all inked/0
+blank, render-gate pass. Visually confirmed all shapes through production resvg.

@@ -230,12 +230,12 @@
           {
             "kind": "svg",
             "box": {
-              "x": 60854.166667,
+              "x": 64029.166667,
               "y": 71437.5,
-              "w": 31750,
+              "w": 25400,
               "h": 15875
             },
-            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjYwIj48Zz48dGV4dCB4PSI2MCIgeT0iMjMiIGZvbnQtZmFtaWx5PSJIZWx2ZXRpY2EsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+QUFBQkI8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iOTYiIGhlaWdodD0iNjAiPjxnPjx0ZXh0IHg9IjQ4IiB5PSIyMyIgZm9udC1mYW1pbHk9IkhlbHZldGljYSwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTIiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5BQUFCQjwvdGV4dD48L2c+PC9zdmc+",
             "aspect": "preserve"
           },
           {

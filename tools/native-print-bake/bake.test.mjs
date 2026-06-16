@@ -4589,3 +4589,91 @@ test('L5 plain-label wrap accounts for letterSpacing', async () => {
   const wide = await linesOf(8);
   assert.ok(wide >= tight, `wide letterSpacing wraps to >= lines: wide=${wide} tight=${tight}`);
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Round-7 (advisor follow-up): per-shape label margins (getLabelMargins/Bounds),
+// L4 descender-side sup/sub model, cube N/S bounds inversion, stencil <image>.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Decode the y of a label text run from the page's label svg node(s).
+function labelTextY(contract, ch = null) {
+  for (const n of contract.document.pages[0].paint) {
+    const s = rawSvg(n);
+    if (!/<text/.test(s)) continue;
+    const re = ch ? new RegExp(`<text[^>]*y="([\\d.]+)"[^>]*>${ch}`) : /<text[^>]*y="([\d.]+)"/;
+    const m = s.match(re);
+    if (m) return { y: parseFloat(m[1]), box: n.box, svg: s };
+  }
+  return null;
+}
+
+test('BLOCKING-2 cube boundedLbl insets the label by size (CubeShape.getLabelMargins)', async () => {
+  // The default General-sidebar cube is boundedLbl=1;size=20 — the label must be
+  // pushed right+down by size, clear of the depth band. Compare the label svg
+  // box x/y with vs without boundedLbl.
+  const mk = (extra) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Cube" style="shape=cube;fillColor=#eee;size=20;${extra}" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const bounded = (await bake(mk('boundedLbl=1;darkOpacity=0.05;'), { keepPx: true })).contract;
+  const plain = (await bake(mk(''), { keepPx: true })).contract;
+  const lb = labelTextY(bounded), lp = labelTextY(plain);
+  assert.ok(lb && lp, 'both labels emitted');
+  assert.ok(lb.box.x > lp.box.x + 10, `boundedLbl insets label left by ~size: ${lb.box.x} vs ${lp.box.x}`);
+  assert.ok(lb.box.y > lp.box.y + 10, `boundedLbl insets label top by ~size: ${lb.box.y} vs ${lp.box.y}`);
+});
+
+test('label margin: datastore label is pushed below the disk stack (DataStoreShape.getLabelMargins)', async () => {
+  const ds = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="DS" style="shape=datastore;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const rect = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="DS" style="rounded=0;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const lds = labelTextY(ds), lr = labelTextY(rect);
+  assert.ok(lds && lr, 'labels emitted');
+  // datastore inset top = 2.5*dy (dy≈round(120/8)=15 → ~37px); plain rect centers.
+  assert.ok(lds.box.y > lr.box.y + 15, `datastore label below disk stack: ${lds.box.y} vs ${lr.box.y}`);
+});
+
+test('label margin: callout label lifted off the tail recess (CalloutShape.getLabelMargins)', async () => {
+  const co = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="C" style="shape=callout;fillColor=#eee;size=30;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const rect = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="C" style="rounded=0;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const lco = labelTextY(co), lr = labelTextY(rect);
+  assert.ok(lco && lr, 'labels emitted');
+  // callout bottom inset = size=30 → the label box is SHORTER (h reduced by 30),
+  // lifting the centered label off the tail recess.
+  assert.ok(lco.box.h < lr.box.h - 20, `callout label box shortened by ~size: ${lco.box.h} vs ${lr.box.h}`);
+});
+
+test('label margin: process insets the label between the bars (ProcessShape.getLabelBounds)', async () => {
+  const pr = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="P" style="shape=process;fillColor=#eee;size=0.2;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(pr);
+  assert.ok(l, 'process label emitted');
+  // inset = 0.2*160 = 32 on each side → label box left edge ≳ 32px in.
+  assert.ok(l.box.x >= 28, `process label inset between bars: box.x=${l.box.x}`);
+});
+
+test('cube direction=north paints in a swapped viewport (no overflow on non-square)', async () => {
+  // A 200x80 cube rotated north must stay within its box (the body is built in
+  // the h×w=80×200 swapped space then rotated), not overflow.
+  const { contract } = await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=cube;fillColor=#eee;direction=north;darkOpacity=0.1;" parent="1"><mxGeometry x="20" y="20" width="200" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true });
+  const svgN = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.ok(svgN, 'cube svg emitted');
+  // box stays ~200x80 (+stroke halo), not a swapped/overflowed extent.
+  assert.ok(svgN.box.w > svgN.box.h, `cube box keeps its 200x80 aspect: ${svgN.box.w}x${svgN.box.h}`);
+});

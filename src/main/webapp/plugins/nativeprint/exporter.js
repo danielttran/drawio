@@ -590,17 +590,26 @@
             var imgSrc = a.src || '';
             var embeddedImgSrc = (resolved && resolved[imgSrc]) || imgSrc;
             if (embeddedImgSrc.indexOf('data:') === 0) {
-              var imgPar = a.aspect === 'fixed' ? 'xMidYMid meet' : 'none';
-              // mxSvgCanvas2D.image opacity = alpha * fillAlpha; a stencil
-              // <alpha>/cell opacity before <image> applies (was dropped).
-              var imgOp = (state.alpha == null) ? 1 : state.alpha;
-              elems.push('<image href="' + embeddedImgSrc + '"' +
-                ' x="' + fmt(tx(parseFloat(a.x) || 0)) + '"' +
-                ' y="' + fmt(ty(parseFloat(a.y) || 0)) + '"' +
-                ' width="' + fmt(trx(parseFloat(a.w) || 0)) + '"' +
-                ' height="' + fmt(try_(parseFloat(a.h) || 0)) + '"' +
+              // mxStencil.drawShape: canvas.image(...,aspect=false,flipH,flipV) —
+              // stencil images ALWAYS stretch (preserveAspectRatio="none") and
+              // honor the node's flipH/flipV; the `aspect` attr is NOT consulted
+              // (it controls the SHAPE aspect, not the image). opacity = alpha *
+              // fillAlpha (mxSvgCanvas2D.image).
+              var iX = tx(parseFloat(a.x) || 0), iY = ty(parseFloat(a.y) || 0);
+              var iW = trx(parseFloat(a.w) || 0), iH = try_(parseFloat(a.h) || 0);
+              var imgOp = ((state.alpha == null) ? 1 : state.alpha) *
+                clamp01(number(style.fillOpacity, 100) / 100);
+              var iFlipH = String(a.flipH) === '1', iFlipV = String(a.flipV) === '1';
+              var iEl = '<image href="' + embeddedImgSrc + '" x="' + fmt(iX) + '" y="' + fmt(iY) +
+                '" width="' + fmt(iW) + '" height="' + fmt(iH) + '"' +
                 (imgOp < 1 ? ' opacity="' + fmt(imgOp) + '"' : '') +
-                ' preserveAspectRatio="' + imgPar + '"/>');
+                ' preserveAspectRatio="none"/>';
+              if (iFlipH || iFlipV) {
+                iEl = '<g transform="translate(' + fmt(iFlipH ? 2 * iX + iW : 0) + ' ' +
+                  fmt(iFlipV ? 2 * iY + iH : 0) + ') scale(' + (iFlipH ? -1 : 1) + ' ' +
+                  (iFlipV ? -1 : 1) + ')">' + iEl + '</g>';
+              }
+              elems.push(iEl);
             } else {
               if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedStencilFeature',
                 'stencil uses <image> with unresolved external URL', ''));
@@ -1399,6 +1408,81 @@
     return { x: bx, y: by, w: bw, h: bh };
   }
 
+  // Per-shape label INSETS (mxShape.getLabelMargins / getLabelBounds): some
+  // shapes confine the label to a sub-region of the cell (e.g. the cube reserves
+  // the depth band, the datastore the disk stack, the callout the tail recess).
+  // Returns {l,t,r,b} in EAST orientation, or null when the shape applies none.
+  // The exporter previously honored this only for umlFrame/umlLifeline, so every
+  // other margin-defining shape printed its label over the reserved region.
+  function labelMargins(style, w, h) {
+    var shape = style.shape;
+    var sw = number(style.strokeWidth, 1);
+    var bounded = boolish(style.boundedLbl);
+    if (shape === 'cube' && bounded) {
+      var cs = Math.max(0, Math.min(w, Math.min(h, number(style.size, 20))));
+      return { l: cs, t: cs, r: 0, b: 0 };
+    }
+    if (shape === 'datastore' || shape === 'dataStore') { // unconditional
+      var dy = Math.min(h / 2, Math.round(h / 8) + sw - 1);
+      return { l: 0, t: 2.5 * dy, r: 0, b: 0 };
+    }
+    if (shape === 'callout') { // unconditional
+      return { l: 0, t: 0, r: 0, b: number(style.size, 30) };
+    }
+    if (shape === 'cylinder' && bounded) {
+      return { l: 0, t: Math.min(40, h * number(style.size, 0.15) * 2), r: 0, b: 0 };
+    }
+    if (shape === 'note2' && bounded) {
+      return { l: 0, t: Math.min(h, number(style.size, 15)), r: 0, b: 0 };
+    }
+    if (shape === 'document' && bounded) {
+      return { l: 0, t: 0, r: 0, b: number(style.size, 0.3) * h };
+    }
+    if (shape === 'manualInput' && bounded) {
+      return { l: 0, t: number(style.size, 30), r: 0, b: 0 };
+    }
+    if (shape === 'folder' && bounded) { // !labelInHeader: tab band off the top
+      return { l: 0, t: number(style.tabHeight, 15), r: 0, b: 0 };
+    }
+    if (shape === 'process' || shape === 'process2') {
+      // ProcessShape.getLabelBounds: insets left+right by the bar inset, but
+      // ONLY when horizontal == (direction is east/west) — else no inset.
+      var dir = String(style.direction || 'east');
+      var horiz = String(style.horizontal) !== '0';
+      var dirH = dir === 'east' || dir === 'west';
+      if (horiz !== dirH) return null;
+      var inset = number(style.size, 0.1);
+      if (boolish(style.fixedSize)) inset = Math.max(0, Math.min(w, inset));
+      else {
+        inset = w * Math.max(0, Math.min(1, inset));
+        if (boolish(style.rounded)) {
+          var pf = number(style.arcSize, 15) / 100;
+          inset = Math.max(inset, Math.min(w * pf, h * pf));
+        }
+      }
+      inset = Math.round(inset);
+      return { l: inset, t: 0, r: inset, b: 0 };
+    }
+    return null;
+  }
+
+  // Apply labelMargins to an internal-label box, rotating the margin by the
+  // shape direction exactly like mxUtils.getDirectedBounds (m={x:l,y:t,
+  // width:r,height:b}). Returns the box unchanged when no margin applies.
+  function applyLabelMargins(box, style) {
+    var m = labelMargins(style, box.w, box.h);
+    if (!m) return box;
+    var l = Math.max(0, Math.min(box.w, m.l)), t = Math.max(0, Math.min(box.h, m.t));
+    var r = Math.max(0, Math.min(box.w, m.r)), b = Math.max(0, Math.min(box.h, m.b));
+    var dir = String(style.direction || 'east');
+    var mx = l, my = t, mw = r, mh = b; // east default
+    if (dir === 'south') { mx = b; my = l; mw = t; mh = r; }
+    else if (dir === 'west') { mx = r; my = b; mw = l; mh = t; }
+    else if (dir === 'north') { mx = t; my = r; mw = b; mh = l; }
+    return { x: box.x + mx, y: box.y + my,
+      w: Math.max(1, box.w - mw - mx), h: Math.max(1, box.h - mh - my) };
+  }
+
   function textDefaultAlign(style) {
     return alignH(style.align || (style.shape === 'text' ? 'left' : 'center'));
   }
@@ -2138,32 +2222,35 @@
         var maxSize = entry.baseSize || 12;
         var imgMax = 0;
         var rowW = 0;
-        // CSS line box = max ascent + max descent across runs. A sup/sub run
-        // carries a baseline shift (st.vshift: <0 raises, >0 lowers), which
-        // grows the line box so the shifted glyph cannot ride into the
-        // neighbouring line (mxSvgCanvas2D.getSupSubLineExpansion). Previously
-        // the box was sized from maxSize alone and a superscript overlapped the
-        // line above.
-        var baseSz = entry.baseSize || 12;
-        var maxAsc = baseSz * RICH_ASCENT;
-        var maxDesc = baseSz * (RICH_LINE_FACTOR - RICH_ASCENT);
+        // supSubExp grows the line DESCENDER (the baseline stays put), exactly
+        // like mxSvgCanvas2D.getSupSubLineExpansion: a sup/sub run extends past
+        // the normal line box only after the CSS half-leading is absorbed, and
+        // the overflow is added below so the NEXT line is pushed down (the
+        // baseline does not move). Sized off the line font (maxSize).
+        var supSubExp = 0;
         row.forEach(function (tk, i) {
           if (tk.img) { if (tk.img.h > imgMax) imgMax = tk.img.h; }
-          else {
-            if (tk.st.size > maxSize) maxSize = tk.st.size;
-            var vs = tk.st.vshift || 0;
-            var a = tk.st.size * RICH_ASCENT - Math.min(0, vs);
-            var d = tk.st.size * (RICH_LINE_FACTOR - RICH_ASCENT) + Math.max(0, vs);
-            if (a > maxAsc) maxAsc = a;
-            if (d > maxDesc) maxDesc = d;
-          }
+          else { if (tk.st.size > maxSize) maxSize = tk.st.size; }
           rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
         });
+        var halfLeading = maxSize * (RICH_LINE_FACTOR - 1) / 2;
+        row.forEach(function (tk) {
+          if (tk.img) return;
+          var vs = tk.st.vshift || 0;
+          var sfz = tk.st.size || (maxSize / RICH_LINE_FACTOR);
+          if (vs < 0) { // superscript: extends above the line box
+            supSubExp = Math.max(supSubExp, sfz - maxSize - vs - halfLeading);
+          } else if (vs > 0) { // subscript: extends below the line box
+            supSubExp = Math.max(supSubExp,
+              (vs + sfz * (RICH_LINE_FACTOR - 1)) - maxSize * (RICH_LINE_FACTOR - 1));
+          }
+        });
+        if (supSubExp < 0) supSubExp = 0;
         // An inline image sits ON the baseline with its whole height above it,
         // so the baseline must also clear the tallest image. Text-only no-shift
         // rows reduce to ascent = size*0.92, lineH = size*1.2 (unchanged).
-        var ascent = Math.max(maxAsc, imgMax);
-        var lineH = ascent + maxDesc;
+        var ascent = Math.max(maxSize * RICH_ASCENT, imgMax);
+        var lineH = ascent + maxSize * (RICH_LINE_FACTOR - RICH_ASCENT) + supSubExp;
         var baseline = y + ascent;
         var align = alignH(entry.align || defAlign);
         var x0 = indent + (align === 'right' ? (avail - rowW)
@@ -2300,13 +2387,18 @@
       for (var ri = 0; ri < rows.length; ri++) {
         if (rowH[ri] <= 0) rowH[ri] = (entry.size || 12) * RICH_LINE_FACTOR + cellPad * 2;
       }
-      // Second pass: ensure rowspan cells fit across their rows; grow last row.
+      // Second pass: ensure rowspan cells fit across their rows. Distribute the
+      // deficit EVENLY across the spanned rows (browsers spread a rowspan cell's
+      // extra height over its rows, not all onto the last one).
       placed.forEach(function (pc) {
         if (pc.rowspan > 1) {
           var have = 0;
           for (var k = pc.r; k < pc.r + pc.rowspan; k++) have += rowH[k];
           var need = pc.laid.height + cellPad * 2;
-          if (need > have) rowH[pc.r + pc.rowspan - 1] += (need - have);
+          if (need > have) {
+            var add = (need - have) / pc.rowspan;
+            for (var k2 = pc.r; k2 < pc.r + pc.rowspan; k2++) rowH[k2] += add;
+          }
         }
       });
       var rowY = [y];
@@ -3639,12 +3731,19 @@
   // are stroked. The plain cube path (cubePath) drops both shaded faces with no
   // notice; this builder is used only when a face opacity is set.
   function cubeInner(style, w, h, fillOverride, opacityOverride) {
-    var s = Math.max(0, Math.min(w, Math.min(h, number(style.size, 20))));
+    // direction=north/south paints in a w↔h-SWAPPED viewport (cw×ch) and then
+    // rotates, exactly like mxShape.isPaintBoundsInverted / the builtin
+    // dirInvBI path — otherwise a non-square N/S cube has the wrong proportions.
+    var dir = style.direction || 'east';
+    var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
+    var inv = (dir === 'north' || dir === 'south');
+    var cw = inv ? h : w, ch = inv ? w : h;
+    var s = Math.max(0, Math.min(cw, Math.min(ch, number(style.size, 20))));
     var op = Math.max(-1, Math.min(1, number(style.darkOpacity, 0)));
     var op2 = Math.max(-1, Math.min(1, number(style.darkOpacity2, 0)));
-    var body = 'M 0 0 L ' + fmt(w - s) + ' 0 L ' + fmt(w) + ' ' + fmt(s) +
-      ' L ' + fmt(w) + ' ' + fmt(h) + ' L ' + fmt(s) + ' ' + fmt(h) +
-      ' L 0 ' + fmt(h - s) + ' Z';
+    var body = 'M 0 0 L ' + fmt(cw - s) + ' 0 L ' + fmt(cw) + ' ' + fmt(s) +
+      ' L ' + fmt(cw) + ' ' + fmt(ch) + ' L ' + fmt(s) + ' ' + fmt(ch) +
+      ' L 0 ' + fmt(ch - s) + ' Z';
     var content;
     if (fillOverride) {
       content = '<path d="' + body + '" fill="' + fillOverride + '"' +
@@ -3665,22 +3764,23 @@
       content = defs + '<path d="' + body + '"' + fillAttr + strokeSvgAttrs(style) + '/>';
       // setFillAlpha(|op|) REPLACES fillAlpha → painted at alpha*|op| like the note fold.
       if (op !== 0) {
-        var topFace = 'M 0 0 L ' + fmt(w - s) + ' 0 L ' + fmt(w) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(s) + ' Z';
+        var topFace = 'M 0 0 L ' + fmt(cw - s) + ' 0 L ' + fmt(cw) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(s) + ' Z';
         content += '<path d="' + topFace + '" fill="' + (op < 0 ? '#ffffff' : '#000000') +
           '" fill-opacity="' + fmt(Math.abs(op) * opacity(style, 'opacity')) + '" stroke="none"/>';
       }
       if (op2 !== 0) {
-        var leftFace = 'M 0 0 L ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(h) + ' L 0 ' + fmt(h - s) + ' Z';
+        var leftFace = 'M 0 0 L ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(ch) + ' L 0 ' + fmt(ch - s) + ' Z';
         content += '<path d="' + leftFace + '" fill="' + (op2 < 0 ? '#ffffff' : '#000000') +
           '" fill-opacity="' + fmt(Math.abs(op2) * opacity(style, 'opacity')) + '" stroke="none"/>';
       }
-      var edges = 'M ' + fmt(s) + ' ' + fmt(h) + ' L ' + fmt(s) + ' ' + fmt(s) + ' L 0 0 M ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(w) + ' ' + fmt(s);
+      var edges = 'M ' + fmt(s) + ' ' + fmt(ch) + ' L ' + fmt(s) + ' ' + fmt(s) + ' L 0 0 M ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(cw) + ' ' + fmt(s);
       content += '<path d="' + edges + '" fill="none"' + strokeSvgAttrs(style) + '/>';
     }
-    content = flipWrapSvg(content, w, h, style);
-    var dir = style.direction || 'east';
-    var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
-    if (deg) content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) + ')">' + content + '</g>';
+    content = flipWrapSvg(content, cw, ch, style);
+    if (deg) {
+      content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) +
+        ') translate(' + fmt((w - cw) / 2) + ' ' + fmt((h - ch) / 2) + ')">' + content + '</g>';
+    }
     return content;
   }
 
@@ -6194,7 +6294,10 @@
         // label (verticalLabelPosition=bottom) — and especially its resolved
         // labelBackgroundColor box — is painted OVER the image, hiding it (the
         // "gear icon not present" bug). Falls back to the cell box if unknown.
-        var lb = box;
+        // Internal label box, inset per the shape's getLabelMargins/Bounds
+        // (cube depth band, datastore disk stack, callout tail recess, process
+        // bars, cylinder/note2/document/manualInput/folder header bands).
+        var lb = applyLabelMargins(box, style);
         var tb = state.text && state.text.bounds;
         if (tb && tb.width > 0 && tb.height > 0 &&
             isFinite(tb.x) && isFinite(tb.y)) {
@@ -6447,6 +6550,9 @@
             // External label bands + labelWidth: one shared exact port
             // (externalLabelBox) so builtins match the generic path.
             var lblBoxBI = externalLabelBox(style, box);
+            // Internal label: inset per getLabelMargins/getLabelBounds (process
+            // bars, etc.). table/umlFrame/umlLifeline override explicitly below.
+            if (lblBoxBI === box) lblBoxBI = applyLabelMargins(box, style);
             if (style.shape === 'table') {
               var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 40)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
@@ -6486,7 +6592,8 @@
         }
         paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
-          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, resolved));
+          // note2 with boundedLbl insets the label below the fold (getLabelMargins).
+          paint.push(labelTextNode(graph, cell, state, style, applyLabelMargins(box, style), label, notices, resolved));
         }
         return;
       }
@@ -6502,7 +6609,9 @@
         }
         paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
-          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, resolved));
+          // The default General-sidebar cube carries boundedLbl=1 → inset the
+          // label by `size` (left+top) per CubeShape.getLabelMargins.
+          paint.push(labelTextNode(graph, cell, state, style, applyLabelMargins(box, style), label, notices, resolved));
         }
         return;
       }
@@ -6776,7 +6885,11 @@
       // (drawio). The plain-shape path previously ignored them, painting the
       // label over the shape — a silent positional divergence. (Stencils/icons
       // handle this on their own paths.)
-      swimLabelBx = externalLabelBox(style, box);
+      var extLB = externalLabelBox(style, box);
+      // Internal label: inset per the shape's getLabelMargins/getLabelBounds
+      // (datastore disk stack, callout tail recess, process bars, cylinder/
+      // note2/document/manualInput/folder bands). External labels are unaffected.
+      swimLabelBx = (extLB === box) ? applyLabelMargins(box, style) : extLB;
     }
     if (label !== '') {
       labelNodes(graph, cell, state, style, swimLabelBx, label, notices, resolved)
