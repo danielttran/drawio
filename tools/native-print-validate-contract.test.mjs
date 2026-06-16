@@ -107,6 +107,45 @@ test('negative schema minor exits 1', async () => {
   assert.match(r.stdout, /\$\.schema\.minor: must be a non-negative integer/);
 });
 
+test('C1: schema.minor above INT32 range exits 1 (loader require_int parity)', async () => {
+  // Number.isInteger(1e15) is true, but the engine require_int rejects it as
+  // out of C++ int range — the validator must use isLoaderInt to catch it.
+  const c = minimalValid();
+  c.schema.minor = 1e15;
+  const r = await run(c);
+  assert.equal(r.code, 1, `expected reject, got ${r.code}; stdout: ${r.stdout}`);
+  assert.match(r.stdout, /\$\.schema\.minor: must be a non-negative integer in C\+\+ int range/);
+});
+
+test('C2: PNG image carrying an iCCP profile exits 1 (loader png_has_iccp_profile parity)', async () => {
+  // Hand-build a byte stream: PNG signature + an iCCP chunk. The loader
+  // (contract_loader.cpp:633) refuses profiled PNGs; the validator must mirror.
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const iccp = Buffer.from([0, 0, 0, 4, 0x69, 0x43, 0x43, 0x50, 0, 0, 0, 0, 0, 0, 0, 0]); // len=4 "iCCP" data crc
+  const data = Buffer.concat([sig, iccp]).toString('base64');
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'image', box: { x: 0, y: 0, w: 10, h: 10 },
+    format: 'png', data, aspect: 'preserve', flipH: false, flipV: false
+  });
+  const r = await run(c);
+  assert.equal(r.code, 1, `expected reject, got ${r.code}; stdout: ${r.stdout}`);
+  assert.match(r.stdout, /embedded ICC profile \(iCCP\)/);
+});
+
+test('C2: clean PNG (no iCCP) still passes', async () => {
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.from([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0, 0, 0, 0]);
+  const data = Buffer.concat([sig, ihdr]).toString('base64');
+  const c = minimalValid();
+  c.document.pages[0].paint.push({
+    kind: 'image', box: { x: 0, y: 0, w: 10, h: 10 },
+    format: 'png', data, aspect: 'preserve', flipH: false, flipV: false
+  });
+  const r = await run(c);
+  assert.equal(r.code, 0, `clean PNG should pass; stdout: ${r.stdout}`);
+});
+
 test('single-stop gradient passes (engine accepts >= 1 stop)', async () => {
   const c = minimalValid();
   c.document.pages[0].paint[0].fill = {

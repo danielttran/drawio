@@ -1181,3 +1181,52 @@ Residuals — all LOUD or documented, none silent: sketch/roughjs texture
 umlLifeline unknown participant (loud), non-inset image clips (loud),
 vertical/rtl textDirection (loud), Win32-only wave-B changes compile in CI
 (no Windows box here).
+
+## UPDATE 2026-06-16 — round 6 audit (branch claude/optimistic-archimedes-ka4th1)
+
+**Goal:** end-to-end WYSIWYG audit (export → C++ engine); fix every silent
+divergence; advisor sign-off; push to fork. Five parallel object-by-object
+audits (vertex shapes / edges / labels / stencils+images / C++ engine) returned
+**18 verified findings**; all fixed with red→green regression tests, full matrix
+green before commit.
+
+**Fixes (each matched to drawio mxShape/mxStencil/mxText source):**
+- *S1 (HIGH):* stencil-internal `<text>` was seeded from the CELL font; drawio
+  mxShape.configureCanvas sets NO font, so stencil text uses the canvas defaults
+  (#000000/11/Arial,Helvetica/normal) unless the stencil emits its own font cmds
+  (mxStencil.js:952-968). Every stencil's decorative lettering (e.g. electrical
+  logic-gate J/K/Q/D) mis-rendered when the cell carried a non-default font.
+- *V1 (HIGH):* datastore drew 1 of 3 stacked-disk rim curves + flat bottom;
+  now 3 rims + body bottom control h+dy/3 (DataStoreShape.redrawPath).
+- *V2 (HIGH):* callout had hard-coded rounded corners, ignored size/position/
+  position2/base, and put the tail tip BELOW the cell; now the faithful square
+  7-point polygon with the tail tip ON the bottom edge (CalloutShape).
+- *V3:* cylinder cap used a circle-bezier (too shallow) + ignored size; now the
+  drawio control points (-dy/3, h+dy/3, 2dy) + size override (mxCylinder).
+- *V4:* cube darkOpacity/darkOpacity2 shaded faces were dropped; now emitted via
+  cubeInner (CubeShape.paintVertexShape).
+- *V5:* swimlane/table startSize default 30 → 40 (mxConstants.DEFAULT_STARTSIZE).
+- *V6/V7:* associativeEntity rounded=1 (rect+diamond) and glass=1 were ignored;
+  now faithful (mxRectangleShape + addPoints).
+- *E1:* flexArrow / wedgeArrowDashed2 shadow=1 silently dropped; now an offset
+  filled shadow band.
+- *E2:* fixed exitX/exitY anchor ignored the terminal's perimeterSpacing; now
+  grows the box like mxGraph.getConnectionPoint/getPerimeterBounds.
+- *S2:* mxLabel image icon was letterboxed; mxLabel.paintImage stretches
+  (aspect=false). *S3:* stencil `<image>` dropped state.alpha. *S4:* image-cell
+  opacity ignored fillOpacity (now opacity*fillOpacity, incl. non-PNG path).
+- *L1:* overflow=width never clipped (grew the viewport); now clips to the cell.
+  *L2/L3:* rich-text `<table>` forced equal columns + ignored colspan/rowspan;
+  now content-proportional widths + an occupancy-grid honoring spans. *L4:*
+  sup/sub didn't expand the line box; now CSS max-ascent+max-descent. *L5:*
+  plain-label wrap ignored letterSpacing.
+- *C1/C2 (validator parity):* schema.minor now isLoaderInt (INT32) like the
+  loader; iCCP-profiled PNGs now refused pre-print (mirrors png_has_iccp_profile).
+
+Goldens regenerated: test (was already stale at HEAD — bake.test doesn't assert
+it), master-test, master-test-rich-text (coordinate/base64-only). Matrix on this
+box: exporter 205/1-skip, bake 307, validate 64, service 19, render-gate 1/1,
+production-audit 86+8910 zero notices / all inked / 0 blank, ctest 216/216 (real
+resvg cdylib). C3 (tile-coverage tolerance can swallow a sub-1058um in-page strip)
+left as a documented LOW residual — only a mis-baked tiling, production tiles
+cover the page exactly.

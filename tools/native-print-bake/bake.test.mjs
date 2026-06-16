@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { bake, localFileFetch } from './bake.mjs';
 import { pxContractToUm, SCALE } from './px-to-um.mjs';
 import { parseDrawio, buildGraph } from './drawio-parser.mjs';
+import { fixedConnectionPoint } from './mx-edge-router.mjs';
 import { ShimDocument, ShimElement, ShimTextNode, ShimXMLSerializer } from './svg-shim/index.mjs';
 import { referencedFonts, checkFontAvailability, assertFontsAvailable } from './font-preflight.mjs';
 import { loadStencils } from './stencil-loader.mjs';
@@ -1529,10 +1530,15 @@ test('edge: perimeterSpacing creates a gap between shape and connector', async (
   assert.ok(Math.abs((e0.x1 - e20.x1) - 20) < 0.01, `target endpoint should pull in by 20: ${e0.x1}->${e20.x1}`);
 });
 
-test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () => {
+test('shape: cylinder cap height = min(40, round(h/5)) + drawio control points (mxCylinder)', async () => {
   // REGRESSION: cylinder cap was min(0.18h, 0.28w) (width-dependent, wrong
-  // proportion). drawio getCylinderSize = min(maxHeight=40, h/5).
-  // 200x100 cylinder -> cap = min(40, 20) = 20: top ellipse passes through y=20.
+  // proportion), then drawn with a circle-bezier (k=0.5522) that made the caps
+  // far too shallow. drawio mxCylinder.redrawPath: cap e = min(maxHeight=40,
+  // round(h/5)); top rim control = -e/3 (arcs ABOVE the box top), bottom
+  // control = h+e/3, front lid control = 2e. 200x100 -> e = min(40, 20) = 20.
+  // The faithful top rim bulges above y=0, so the ink-extent anchor shifts the
+  // whole path down by the overhang — assert the cap e from the geometry, not
+  // the absolute origin.
   const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=cylinder;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="200" height="100" as="geometry"/></mxCell>
@@ -1540,8 +1546,14 @@ test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () =
   const { contract } = await bake(xml, { keepPx: true });
   const cyl = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /C/.test(n.d || ''));
   assert.ok(cyl, 'cylinder path present');
-  // first move-to is the cap line at y = cap = 20 (box-relative origin 0).
-  assert.match(cyl.d, /^M 0 20 C/, `cylinder cap should be h/5=20: ${cyl.d.slice(0, 24)}`);
+  // d = "M 0 <topY> C 0 <topCtrl> ..."; e = topY - topCtrl scaled: topY = y+e,
+  // topCtrl = y - e/3, so (topY - topCtrl) = e + e/3 = (4/3)e.
+  const m = cyl.d.match(/^M 0 ([\d.]+) C 0 (-?[\d.]+)/);
+  assert.ok(m, `unexpected cylinder path: ${cyl.d.slice(0, 40)}`);
+  const e = (parseFloat(m[1]) - parseFloat(m[2])) * 3 / 4;
+  assert.ok(Math.abs(e - 20) < 0.01, `cylinder cap e should be 20, got ${e}`);
+  // front lid control sits 2e below the cap line (downward-bulging ellipse).
+  assert.match(cyl.d, /C 0 44\.167 200 44\.167 200 24\.167$/, `lid control = 2e: ${cyl.d.slice(-40)}`);
 });
 
 test('shape: size proportion matches drawio (parallelogram/step/card + size/fixedSize)', async () => {
@@ -4373,4 +4385,207 @@ test('audit7: shadow ink composes with the shape opacity (createShadow clone sem
   assert.ok(shadow, 'shadow present');
   assert.ok(Math.abs(shadow.fill.alpha - 0.125) < 0.001,
     `shadow alpha composes: got ${shadow.fill.alpha}`);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Round-6 audit (branch claude/optimistic-archimedes-ka4th1): silent-divergence
+// fixes found by object-by-object comparison against drawio mxShape/mxStencil/
+// mxText source. Each asserts the FAITHFUL geometry/attribute the bake now emits.
+// ──────────────────────────────────────────────────────────────────────────
+
+function rawSvg(node) {
+  return (node && node.kind === 'svg' && typeof node.source === 'string')
+    ? Buffer.from(node.source, 'base64').toString('utf8') : '';
+}
+const mkV = (style, w = 120, h = 80) => `<mxGraphModel><root>
+  <mxCell id="0"/><mxCell id="1" parent="0"/>
+  <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="${w}" height="${h}" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+
+test('V1 datastore: three stacked rim curves + body bottom control h+dy/3 (DataStoreShape)', async () => {
+  const { contract } = await bake(mkV('shape=datastore;fillColor=#eee;', 100, 80), { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /C/.test(n.d || '')).d;
+  // body (1 'M') + three stacked platter rim curves (3 'M') = 4 subpaths.
+  const moves = (d.match(/M /g) || []).length;
+  assert.equal(moves, 4, `expected 4 subpaths (body + 3 rims), got ${moves}: ${d.slice(0, 60)}`);
+});
+
+test('V2 callout: square 7-point polygon, tail tip ON the bottom edge (CalloutShape)', async () => {
+  const { contract } = await bake(mkV('shape=callout;fillColor=#eee;', 120, 80), { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // no arcs (square corners).
+  assert.ok(!/[AQ]/.test(d), `callout should be square (no arcs), got: ${d}`);
+  // default size=30 → body recedes to h-30=50; tail tip at (position*w=60, h=80)
+  // sitting exactly on the bottom edge, then back up to (60,50).
+  assert.ok(/L 60 80 L 60 50/.test(d), `tail tip on bottom edge then back up: ${d}`);
+  // every y-coordinate is within [0, h=80] (tail never pokes past the footprint).
+  const ys = [...d.matchAll(/(?:M|L) [\d.]+ ([\d.]+)/g)].map((m) => parseFloat(m[1]));
+  assert.ok(Math.max(...ys) <= 80.0001, `no point below h=80: ${ys}`);
+});
+
+test('V4 cube darkOpacity: two shaded faces emitted (CubeShape)', async () => {
+  // drawio darkOpacity is a fraction clamped to [-1,1] (CubeShape).
+  const { contract } = await bake(mkV('shape=cube;fillColor=#eee;darkOpacity=0.4;darkOpacity2=-0.3;', 120, 80), { keepPx: true });
+  const svg = rawSvg(contract.document.pages[0].paint.find((n) => n.kind === 'svg'));
+  assert.ok(/fill="#000000" fill-opacity="0\.4/.test(svg), `op>0 top face black @0.4: ${svg.slice(0, 200)}`);
+  assert.ok(/fill="#ffffff" fill-opacity="0\.3/.test(svg), `op2<0 left face white @0.3`);
+});
+
+test('V4 cube default (no darkOpacity): unchanged single-path render', async () => {
+  const { contract } = await bake(mkV('shape=cube;fillColor=#eee;', 120, 80), { keepPx: true });
+  // No shaded-face svg; stays a kind:path silhouette (the plain cube path).
+  assert.ok(contract.document.pages[0].paint.some((n) => n.kind === 'path' && /L/.test(n.d || '')),
+    'plain cube still a path');
+});
+
+test('V5 swimlane startSize defaults to 40 (mxConstants.DEFAULT_STARTSIZE)', async () => {
+  const { contract } = await bake(mkV('shape=swimlane;fillColor=#eee;', 200, 200), { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path' && /L/.test(n.d || '')).d;
+  // horizontal swimlane divider line sits at y = startSize = 40 (box-relative).
+  assert.ok(/ 40(\b|\.)/.test(d) || /40 /.test(d), `header divider at startSize=40: ${d.slice(0, 120)}`);
+});
+
+test('V6 associativeEntity rounded=1: rounded rect + rounded diamond (AssociativeEntity)', async () => {
+  const sq = rawSvg((await bake(mkV('shape=associativeEntity;fillColor=#eee;', 120, 80), { keepPx: true }))
+    .contract.document.pages[0].paint.find((n) => n.kind === 'svg'));
+  assert.ok(/<rect /.test(sq), `default associativeEntity = square rect: ${sq.slice(0, 120)}`);
+  const rd = rawSvg((await bake(mkV('shape=associativeEntity;fillColor=#eee;rounded=1;arcSize=20;', 120, 80), { keepPx: true }))
+    .contract.document.pages[0].paint.find((n) => n.kind === 'svg'));
+  assert.ok(/[Q]/.test(rd) && !/<rect /.test(rd), `rounded=1 → rounded-rect path with Q curves: ${rd.slice(0, 160)}`);
+});
+
+test('V7 associativeEntity glass=1: glass overlay emitted', async () => {
+  const svg = rawSvg((await bake(mkV('shape=associativeEntity;fillColor=#eee;glass=1;', 120, 80), { keepPx: true }))
+    .contract.document.pages[0].paint.find((n) => n.kind === 'svg'));
+  assert.ok(/#ffffff/i.test(svg) || /glass/i.test(svg), `glass highlight present: ${svg.slice(-160)}`);
+});
+
+test('E1 flexArrow shadow=1: offset filled shadow band emitted (was silently dropped)', async () => {
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="3" vertex="1" style="" parent="1"><mxGeometry x="20" y="20" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="4" vertex="1" style="" parent="1"><mxGeometry x="200" y="20" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="5" edge="1" source="3" target="4" style="shape=flexArrow;shadow=1;fillColor=#eee;" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const shadow = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#000000' && n.fill.alpha < 0.3);
+  assert.ok(shadow, 'flexArrow shadow=1 emits an offset filled shadow band');
+});
+
+test('S2 mxLabel image icon stretches (preserveAspectRatio=none, aspect=false)', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const { contract } = await bake(mkV(`shape=label;image=data:image/png,${png};imageWidth=16;imageHeight=40;`, 120, 80), { keepPx: true });
+  const node = contract.document.pages[0].paint.find(
+    (n) => (n.kind === 'image') || (n.kind === 'svg' && /Gear|iVBOR|xlink:href/.test(rawSvg(n))));
+  assert.ok(node, 'label icon emitted');
+  if (node.kind === 'image') assert.equal(node.aspect, 'fill', 'label icon aspect=fill (stretch)');
+  else assert.ok(/preserveAspectRatio="none"/.test(rawSvg(node)), `label icon preserveAspectRatio=none: ${rawSvg(node).slice(0, 200)}`);
+});
+
+test('S4 image cell opacity composes opacity*fillOpacity (mxSvgCanvas2D.image)', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const { contract } = await bake(mkV(`shape=image;image=data:image/png,${png};opacity=80;fillOpacity=50;`, 60, 60), { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' && /opacity="0\.4/.test(rawSvg(n)));
+  assert.ok(node, 'image opacity = 0.8 * 0.5 = 0.4');
+});
+
+test('L1 overflow=width clips to the cell (does not grow the viewport)', async () => {
+  const long = 'WWWWWWWWWW WWWWWWWWWW WWWWWWWWWW WWWWWWWWWW';
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="${long}" style="text;html=1;overflow=width;whiteSpace=nowrap;fontSize=20;" parent="1"><mxGeometry x="20" y="20" width="40" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const lbl = contract.document.pages[0].paint.find((n) => n.kind === 'svg' && /<text/.test(rawSvg(n)));
+  assert.ok(lbl, 'overflow=width label emitted');
+  // clipped: the label box width stays ~ the cell width (40px → um), not grown
+  // to the unwrapped text extent (which would be many times wider).
+  assert.ok(lbl.box.w <= 60 * SCALE, `overflow=width clips to cell, box.w=${lbl.box.w / SCALE}px`);
+});
+
+test('L3 rich-text table colspan: spanning cell widens, following cells shift right', async () => {
+  const value = '&lt;table border=&quot;1&quot;&gt;&lt;tr&gt;&lt;td colspan=&quot;2&quot;&gt;AB&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td&gt;C&lt;/td&gt;&lt;td&gt;D&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;';
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="${value}" style="text;html=1;" parent="1"><mxGeometry x="20" y="20" width="160" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const svg = rawSvg(contract.document.pages[0].paint.find((n) => n.kind === 'svg' && /<rect/.test(rawSvg(n))));
+  // A colspan=2 top cell → its rect spans both columns (wider than a single
+  // bottom cell). Match the real ` width=` attr (leading space avoids the
+  // `stroke-width` attribute).
+  const rectW = [...svg.matchAll(/ width="([\d.]+)"/g)].map((m) => parseFloat(m[1])).sort((a, b) => b - a);
+  assert.ok(rectW.length >= 3, `table drew row+cell rects: ${rectW.length}`);
+  assert.ok(rectW[0] > rectW[rectW.length - 1] * 1.5, `colspan cell wider than single cell: ${rectW}`);
+});
+
+test('S1 stencil <text> uses canvas-default font, NOT the cell font (mxShape.configureCanvas sets no font)', async () => {
+  // The D/Q lettering inside electrical/logic_gates d_type_flip-flop carries no
+  // <fontcolor>/<fontsize>/<fontstyle> command, so it must paint with the canvas
+  // defaults (#000000, 11px, Arial,Helvetica, normal) even when the CELL sets a
+  // different font. Seeding stencil text from the cell style mis-rendered every
+  // stencil's decorative lettering (silent C1 violation).
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=mxgraph.electrical.logic_gates.d_type_flip-flop;fontColor=#ff0000;fontSize=40;fontStyle=1;" parent="1"><mxGeometry x="50" y="50" width="120" height="100" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml);
+  const svg = contract.document.pages[0].paint
+    .map((n) => rawSvg(n)).find((s) => /<text[^>]*>D<\/text>/.test(s)) || '';
+  const m = svg.match(/<text[^>]*>D<\/text>/);
+  assert.ok(m, 'stencil D text present');
+  assert.match(m[0], /fill="#000000"/, `stencil text stays black, not cell red: ${m[0]}`);
+  assert.match(m[0], /font-size="11"/, `stencil text stays 11px, not cell 40: ${m[0]}`);
+  assert.ok(!/font-weight="(bold|700)"/.test(m[0]), `stencil text stays normal weight: ${m[0]}`);
+});
+
+test('E2 fixed anchor honors the terminal perimeterSpacing (mxGraph.getConnectionPoint)', async () => {
+  // getConnectionPoint computes the anchor against getPerimeterBounds, which
+  // grows the box by perimeterSpacing on every side. A right-edge anchor
+  // (fx=1, fy=0.5) on a 100x100 box at (0,0) sits at x=100 with no spacing,
+  // and at x=110 with perimeterSpacing=10.
+  const box = { x: 0, y: 0, width: 100, height: 100 };
+  const noSp = fixedConnectionPoint(box, {}, 1, 0.5, 0, 0, false);
+  assert.ok(Math.abs(noSp.x - 100) < 0.001, `no spacing: x=${noSp.x}`);
+  const sp = fixedConnectionPoint(box, { perimeterSpacing: 10 }, 1, 0.5, 0, 0, false);
+  assert.ok(Math.abs(sp.x - 110) < 0.001, `perimeterSpacing=10 pushes anchor to x=110, got ${sp.x}`);
+  assert.ok(Math.abs(sp.y - 50) < 0.001, `y stays centered: ${sp.y}`);
+});
+
+test('L4 sup/sub grows the line box (getSupSubLineExpansion)', async () => {
+  // A superscript on line 1 expands line 1's box, so line 2 (B) is pushed DOWN
+  // vs the same two lines with no superscript — the shifted glyph can no longer
+  // ride into the line above. Measure B's baseline y in both cases.
+  const mk = (val) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="${val}" style="text;html=1;fontSize=20;verticalAlign=top;" parent="1"><mxGeometry x="20" y="20" width="200" height="200" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const yOfB = async (val) => {
+    const c = (await bake(mk(val), { keepPx: true })).contract;
+    const s = c.document.pages[0].paint.map((n) => rawSvg(n)).find((x) => /<text/.test(x)) || '';
+    const m = s.match(/<text[^>]*y="([\d.]+)"[^>]*>B</);
+    return m ? parseFloat(m[1]) : 0;
+  };
+  const withSup = await yOfB('&lt;p&gt;A&lt;sup&gt;2&lt;/sup&gt;&lt;/p&gt;&lt;p&gt;B&lt;/p&gt;');
+  const plain = await yOfB('&lt;p&gt;A&lt;/p&gt;&lt;p&gt;B&lt;/p&gt;');
+  assert.ok(withSup > plain, `sup on line 1 pushes line 2 down: withSup=${withSup} plain=${plain}`);
+});
+
+test('L5 plain-label wrap accounts for letterSpacing', async () => {
+  // With wide letter spacing the same words occupy more width, so the label
+  // wraps to more lines (the wrap decision must include letterSpacing, matching
+  // what the plain emit already renders).
+  const mk = (ls) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="aaaa bbbb cccc dddd" style="whiteSpace=wrap;fontSize=14;letterSpacing=${ls};" parent="1"><mxGeometry x="20" y="20" width="80" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const linesOf = async (ls) => {
+    const c = (await bake(mk(ls), { keepPx: true })).contract;
+    const s = c.document.pages[0].paint.map((n) => rawSvg(n)).find((x) => /<text/.test(x)) || '';
+    return (s.match(/<text/g) || []).length;
+  };
+  const tight = await linesOf(0);
+  const wide = await linesOf(8);
+  assert.ok(wide >= tight, `wide letterSpacing wraps to >= lines: wide=${wide} tight=${tight}`);
 });
