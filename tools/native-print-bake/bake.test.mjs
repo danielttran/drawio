@@ -4818,3 +4818,19 @@ test('NB-1 rotated boundedLbl cube insets the label (getLabelBounds is pre-rotat
   // near (w/2,h/2) of the full box. With margins the x is shifted right by ~30.
   assert.ok(parseFloat(m[1]) > 30, `rotated label inset by size: x=${m[1]}`);
 });
+
+test('NB-2 boundedLbl=0 still applies the margin (mxGraph "0" is truthy)', async () => {
+  // drawio reads boundedLbl with `if(getValue(style,"boundedLbl",false))`; "0" is
+  // JS-truthy, so a hand-authored boundedLbl=0 STILL bounds the label in the app.
+  const inset = labelTextY((await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="C" style="shape=cube;fillColor=#eee;size=20;boundedLbl=0;darkOpacity=0.05;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract);
+  const none = labelTextY((await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="C" style="shape=cube;fillColor=#eee;size=20;darkOpacity=0.05;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract);
+  assert.ok(inset && none, 'labels emitted');
+  // boundedLbl=0 (truthy) insets; bare cube (no boundedLbl) does not.
+  assert.ok(inset.box.x > none.box.x + 10, `boundedLbl=0 still insets (drawio truthy): ${inset.box.x} vs ${none.box.x}`);
+});

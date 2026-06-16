@@ -1438,7 +1438,10 @@
   function labelMargins(style, w, h) {
     var shape = style.shape;
     var sw = number(style.strokeWidth, 1);
-    var bounded = boolish(style.boundedLbl);
+    // drawio reads boundedLbl with `if(getValue(style,'boundedLbl',false))`, so
+    // the string '0' is truthy too — use drawioFlag (not boolish) to match the
+    // app even for the hand-authored boundedLbl=0 case (NB-2).
+    var bounded = drawioFlag(style.boundedLbl, false);
     if (shape === 'cube' && bounded) {
       var cs = Math.max(0, Math.min(w, Math.min(h, number(style.size, 20))));
       return { l: cs, t: cs, r: 0, b: 0 };
