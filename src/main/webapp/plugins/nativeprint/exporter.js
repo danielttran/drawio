@@ -770,6 +770,19 @@
     return v === true || v === 1 || v === '1' || v === 'true';
   }
 
+  // Replicates drawio's `if (mxUtils.getValue(style, key, def))` truthiness for
+  // flags it reads with a BARE `if(...)` (not an `== '1'` comparison). In the
+  // browser, style values are STRINGS, so '0' and even 'false' are JS-truthy —
+  // only '' / real false / null are falsy; an absent key uses `def`. The headless
+  // parser numericizes '0'->0 (JS-falsy), which would silently flip such a flag,
+  // so coerce a numeric 0 back to truthy to match what the operator sees.
+  // (e.g. CylinderShape3 `lid`: `lid=0` still draws the lid in the app.)
+  function drawioFlag(v, def) {
+    if (v === undefined || v === null) return def;
+    if (v === '' || v === false) return false;
+    return true;
+  }
+
   function clamp01(v) {
     return Math.max(0, Math.min(1, v));
   }
@@ -1306,6 +1319,14 @@
   function rotatedLabelEls(graph, cell, style, ox, oy, w, h, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
     var src = raw != null ? raw : label;
+    // drawio computes getLabelBounds PRE-rotation, then rotates; so inset the
+    // label box by the shape's margin here too (internal labels only) — a
+    // rotated boundedLbl cube/datastore/process/etc. is inset in the app.
+    var rbox = { x: ox, y: oy, w: w, h: h };
+    if (externalLabelBox(style, rbox) === rbox) {
+      var rlm = applyLabelMargins(rbox, style);
+      ox = rlm.x; oy = rlm.y; w = rlm.w; h = rlm.h;
+    }
     // Non-HTML labels are literal text: a '<' must not trigger rich HTML parsing.
     if (isHtmlLabelStyle(style) && String(src == null ? '' : src).indexOf('<') >= 0) {
       var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
@@ -1446,7 +1467,9 @@
       // CylinderShape3.getLabelMargins (Shapes.js:1377): top min(h,size*2),
       // bottom size*0.3; size halves when lid=false. size default 15.
       var c3 = number(style.size, 15);
-      if (String(style.lid) === '0') c3 /= 2;
+      // drawio halves only when `!getValue('lid',true)` — i.e. never for a '0'
+      // string. Match the paint's drawioFlag semantics (don't halve for lid=0).
+      if (!drawioFlag(style.lid, true)) c3 /= 2;
       return { l: 0, t: Math.min(h, c3 * 2), r: 0, b: Math.max(0, c3 * 0.3) };
     }
     if (shape === 'tape' && bounded) {
@@ -3951,8 +3974,12 @@
       if (cySz === 0) {
         return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
       }
-      var cyLid = shape !== 'cylinder3' ||
-        (String(style.lid) !== '0' && String(style.lid) !== 'false');
+      // mxGraph reads lid with `if (getValue(style,'lid',true))` — a string
+      // '0'/'false' is truthy, so drawio ALWAYS draws the lid (the no-lid branch
+      // is effectively dead in the app). Match that via drawioFlag, NOT the
+      // numericized 0 (which previously dropped the lid — a silent divergence on
+      // the shipped Basic-sidebar `cylinder3;lid=0`).
+      var cyLid = shape !== 'cylinder3' || drawioFlag(style.lid, true);
       var cyR = fmt(w * 0.5) + ' ' + fmt(cySz) + ' 0 0 ';
       var cyTop = cyLid
         ? 'M ' + p(0, cySz) + ' A ' + cyR + '1 ' + p(w / 2, 0) + ' A ' + cyR + '1 ' + p(w, cySz)

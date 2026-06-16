@@ -1299,3 +1299,28 @@ umlFrame/umlLifeline special-cased at the label sites; mxShape base = null).
 +5 regression tests (bake 321). Golden drift: master-test (doubleEllipse inset,
 coordinate-only). Matrix green: exporter 205, bake 321, validate 64, ctest
 216/216 (real resvg), production-audit 86+8910 zero notices/all inked, render-gate.
+
+## UPDATE 2026-06-16 — round 7d (advisor pass 3 follow-up, same branch)
+
+Advisor pass 3 confirmed all 24 label-margin shapes correctly covered; found 1
+blocking + 2 low, all from the mxGraph `'0'`-is-truthy quirk:
+- **BLOCKING-1 cylinder3;lid=0** (SHIPPED Basic-sidebar shape): mxGraph reads lid
+  via `if(getValue(style,'lid',true))` — the string `'0'` is JS-truthy, so the app
+  ALWAYS draws the lid (the no-lid branch is dead for string styles). The headless
+  parser numericizes `'0'`→`0` (falsy), so the exporter dropped the lid AND halved
+  the label band — a silent silhouette+label divergence on every print of that
+  library shape. Fixed with a new `drawioFlag(v,def)` helper (matches drawio's
+  string-truthiness: only ''/false/null are falsy; numeric 0 → truthy) applied to
+  both the lid paint and the cylinder3 label-margin halving. CORRECTED a stale
+  test that had asserted the wrong no-lid behavior.
+- **NB-1 rotated boundedLbl shapes** skipped the label inset: `rotatedLabelEls`
+  now applies `applyLabelMargins` pre-rotation (internal labels only), so a
+  rotated cube/datastore/process/etc. is inset like the app (getLabelBounds is
+  computed pre-rotation).
+- **NB-2** (boundedLbl=0 string-truthy parity) — not triggerable by any shipped
+  style (grep clean); documented, not gating. `boolish` stays correct for the
+  `=='1'`-style flags drawio compares explicitly.
+
++3 regression tests (bake 323), 1 stale test corrected. No golden drift. Matrix
+green: exporter 205, bake 323, validate 64, ctest 216/216 (real resvg),
+production-audit 86+8910 zero notices/all inked, render-gate pass.

@@ -2866,14 +2866,20 @@ test('audit2: cylinder2 cap uses absolute size (default 15) with arcs + stroke-o
     'inner lid is stroke-only at 2*size');
 });
 
-test('audit2: cylinder3 honors size= and lid=0 (downward top arc, no inner lid)', async () => {
+test('audit2: cylinder3 honors size=; lid=0 STILL draws the lid (mxGraph "0" is truthy)', async () => {
+  // CORRECTED (was asserting the no-lid branch): mxGraph reads lid via
+  // `if(getValue(style,"lid",true))`; the string "0" is JS-truthy, so the app
+  // ALWAYS draws the lid (the no-lid branch is dead for string styles). The
+  // headless render must match what the operator sees — lid present.
   const svg = decodeSvgNode((await auditProbe('shape=cylinder3;size=40;lid=0;fillColor=#ffffff;strokeColor=#000000;', 100, 120))
     .contract.document.pages[0].paint[0]);
-  assert.ok(svg.includes('M 0 0 A 50 40 0 0 0 50 40 A 50 40 0 0 0 100 0 L 100 80'),
-    'lid=0 top edge is the sweep-0 arc pair, got: ' + svg);
-  assert.ok(!svg.includes('fill="none"') || !/A 50 40 0 0 1 50 80/.test(svg),
-    'no inner lid stroke when lid=0');
-  assert.equal((svg.match(/<path/g) || []).length, 1, 'lid=0 -> single body path, no inner lid');
+  // top edge arcs UP (sweep 1), as for any lidded cylinder3.
+  assert.ok(svg.includes('M 0 40 A 50 40 0 0 1 50 0 A 50 40 0 0 1 100 40'),
+    'lid=0 top edge is the lidded sweep-1 arc pair, got: ' + svg);
+  // inner lid stroke present (fill="none").
+  assert.ok(/A 50 40 0 0 1 50 80/.test(svg) && svg.includes('fill="none"'),
+    'inner lid stroke present even with lid=0');
+  assert.equal((svg.match(/<path/g) || []).length, 2, 'lid=0 -> body path + inner lid stroke');
 });
 
 test('audit2: isoCube2 hexagon body + stroke-only interior edges (isoAngle honored)', async () => {
@@ -4774,4 +4780,41 @@ test('label margin: umlState insets left 10 only with boundedLbl + umlStateConne
   const plain = labelTextY((await bake(mk(''), { keepPx: true })).contract);
   assert.ok(conn && plain, 'umlState labels emitted');
   assert.ok(conn.box.x > plain.box.x + 5, `umlState+connection insets left 10: ${conn.box.x} vs ${plain.box.x}`);
+});
+
+test('BLOCKING-1 cylinder3 lid=0 still draws the lid (mxGraph string "0" is truthy)', async () => {
+  // mxGraph reads lid with `if(getValue(style,"lid",true))`; the string "0" is
+  // JS-truthy, so the app ALWAYS draws the lid. The headless parser numericizes
+  // "0"->0 (falsy), which previously dropped the lid — a silent divergence on the
+  // shipped Basic-sidebar cylinder3;lid=0. Both lid=0 and unset must draw the lid.
+  const svgOf = async (extra) => {
+    const c = (await bake(`<mxGraphModel><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="shape=cylinder3;fillColor=#eee;size=20;${extra}" parent="1"><mxGeometry x="20" y="20" width="120" height="120" as="geometry"/></mxCell>
+    </root></mxGraphModel>`, { keepPx: true })).contract;
+    return rawSvg(c.document.pages[0].paint.find((n) => n.kind === 'svg'));
+  };
+  const lid0 = await svgOf('lid=0;');
+  const unset = await svgOf('');
+  // The lid stroke is a second <path fill="none"> (the inner lid arc). Both the
+  // lid=0 and unset variants must have it; the top edge arcs UP (sweep "1").
+  const lidStrokeCount = (s) => (s.match(/fill="none"/g) || []).length;
+  assert.ok(lidStrokeCount(lid0) >= 1, `cylinder3 lid=0 must still draw the lid stroke: ${lid0.slice(0, 200)}`);
+  assert.equal(lidStrokeCount(lid0), lidStrokeCount(unset), 'lid=0 renders identically to unset (drawio "0" is truthy)');
+});
+
+test('NB-1 rotated boundedLbl cube insets the label (getLabelBounds is pre-rotation)', async () => {
+  // A rotated cube with boundedLbl must still inset its label by size (drawio
+  // computes getLabelBounds before rotating). The rotated label lives inside the
+  // shape's kind:svg; assert the label <text> is offset from the box origin.
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="R" style="shape=cube;fillColor=#eee;boundedLbl=1;size=30;rotation=30;" parent="1"><mxGeometry x="60" y="60" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const svg = rawSvg(c.document.pages[0].paint.find((n) => n.kind === 'svg' && /<text/.test(rawSvg(n))));
+  const m = svg.match(/<text x="([\d.]+)" y="([\d.]+)"/);
+  assert.ok(m, `rotated cube label present: ${svg.slice(0, 160)}`);
+  // inset by size=30 (+ pads) → the text origin is well inside the viewport, not
+  // near (w/2,h/2) of the full box. With margins the x is shifted right by ~30.
+  assert.ok(parseFloat(m[1]) > 30, `rotated label inset by size: x=${m[1]}`);
 });
