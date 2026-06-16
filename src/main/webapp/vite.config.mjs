@@ -64,6 +64,13 @@ function isAllowedOrigin(origin) {
 
 // ---- frozen frame codec (JS mirror of include/print_engine/proto.hpp) ----
 function encodeFrame(type, streamId, payload) {
+  // Encode-side refusal mirroring C++ encode_frame: an oversize frame would
+  // hard-fail the peer's decoder and kill the transport (opaque engine
+  // respawn instead of a diagnosable error for e.g. image-heavy contracts).
+  if (payload.length + 5 > 64 * 1024 * 1024) {
+    throw new Error('frame payload too large: ' + payload.length +
+      ' bytes exceeds the 64 MiB frame limit');
+  }
   const h = Buffer.alloc(9);
   h.writeUInt32LE(payload.length + 5, 0);
   h.writeUInt8(type, 4);
@@ -100,6 +107,14 @@ class Engine {
     this.pendingControl = null;   // resolver awaiting a control reply
     this.pendingBlobFor = null;   // imageStreamId we still need a 0x02 for
     this.blob = null;
+    // Without this handler a missing/unspawnable ENGINE_EXE raises an
+    // unhandled EventEmitter 'error' that can kill the entire Vite dev
+    // server instead of failing the one RPC.
+    this.proc.on('error', (e) => {
+      this.proc = null;
+      this._handshaked = false;
+      this._failAll('engine spawn failed: ' + e.message);
+    });
     this.proc.stdout.on('data', d => this._onData(d));
     this.proc.on('exit', () => {
       this.proc = null;
@@ -114,6 +129,11 @@ class Engine {
   _failAll(msg) {
     if (this.pendingControl) { this.pendingControl.reject(new Error(msg)); }
     this.pendingControl = null;
+    // Reset the in-flight blob state too: a later request after a decode
+    // error otherwise waited forever for a stale blob stream id.
+    this.pendingBlobFor = null;
+    this.blob = null;
+    this.controlMsg = null;
   }
 
   _onData(d) {

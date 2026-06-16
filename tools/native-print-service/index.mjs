@@ -174,8 +174,14 @@ export class PrintService {
       );
     } catch (err) {
       if (err.code === 'BAKE_NOTICES') {
-        return jobRefused(res, 'BAKE_NOTICES',
-          'D5: bake produced degradation notices; job refused', err.notices);
+        // `notices` stays the BLOCKING subset (the refusal reason);
+        // `allNotices` carries the bake's full audit trail.
+        return sendJson(res, 422, {
+          error: 'D5: bake produced degradation notices; job refused',
+          code: 'BAKE_NOTICES',
+          notices: err.notices,
+          allNotices: err.allBakeNotices || err.notices
+        });
       }
       if (err.code === 'MISSING_FONTS') {
         return jobRefused(res, 'MISSING_FONTS',
@@ -193,6 +199,7 @@ export class PrintService {
     await loadDeps();
 
     let contract;
+    let bakeNotices = [];
 
     if (source.kind === 'drawio') {
       // D1: bake the .drawio XML (D5 gate inside bake with unattended:true)
@@ -200,6 +207,7 @@ export class PrintService {
         unattended: false,  // we apply D5 ourselves below
         pages: pages || undefined
       });
+      bakeNotices = notices;
       // D5: any DEGRADATION-severity bake notice -> refuse BEFORE printing.
       // info/silent kinds (e.g. SvgArtworkRasterized, HardwareMarginClip per
       // the owner's taxonomy) never block: refusing on them made nearly every
@@ -209,6 +217,9 @@ export class PrintService {
         const err = new Error(`bake produced ${blocking.length} degradation notice(s)`);
         err.code = 'BAKE_NOTICES';
         err.notices = blocking;
+        // The non-blocking remainder still matters for the caller's audit
+        // trail (a refusal hides what ELSE the bake had to say).
+        err.allBakeNotices = notices;
         throw err;
       }
       contract = baked;
@@ -236,11 +247,15 @@ export class PrintService {
     // Report the printed job honestly, with its notices, and let the caller
     // decide. Severity-filter so faithful-render info notices don't read as
     // degradations.
-    const printedDegradations = engineNotices.filter(
+    // Bake notices (info severity, e.g. RichApproximateAlpha) are real
+    // fidelity notes the operator audit trail must carry — the engine never
+    // sees them, so dropping them here silenced the only record.
+    const allNotices = [...bakeNotices, ...engineNotices];
+    const printedDegradations = allNotices.filter(
       (n) => _noticeSeverity(n.kind) === 'degradation');
     return {
       jobId,
-      notices: engineNotices,
+      notices: allNotices,
       degradations: printedDegradations,
       jobLog
     };

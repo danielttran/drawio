@@ -240,6 +240,10 @@ function validatePaintNode(node, path) {
         }
         if (!isLoaderInt(c.maxLen) || c.maxLen < 0) {
           bad(`${path}.content.maxLen`, 'merge content requires a non-negative integer maxLen');
+        } else if (typeof c.sample === 'string' && codePointCount(c.sample) > c.maxLen) {
+          // Loader parity: the sample renders in design previews, so it must
+          // satisfy the node's own maxLen.
+          bad(`${path}.content.sample`, 'sample exceeds maxLen (engine rejects it)');
         }
         if (typeof c.wrap === 'string' && !['none', 'word'].includes(c.wrap)) {
           bad(`${path}.content.wrap`, `must be none|word, got ${JSON.stringify(c.wrap)}`);
@@ -271,6 +275,11 @@ function validatePaintNode(node, path) {
         bad(path + '.data', 'base64 payload is empty');
       } else if (!isStrictBase64(node.data)) {
         bad(path + '.data', 'image data must be base64 (length % 4 == 0, [A-Za-z0-9+/] with at most two trailing =)');
+      } else if (!node.data.startsWith('iVBORw0KGgo')) {
+        // base64 of the 8-byte PNG signature. The engine only signature-
+        // checks at the portable render gate; a non-PNG payload otherwise
+        // surfaces as a late, mislabeled GDI+ decode failure mid-job.
+        bad(path + '.data', 'payload does not start with the PNG signature');
       }
       if (node.aspect !== 'preserve' && node.aspect !== 'fill') {
         bad(path + '.aspect', `must be preserve|fill, got ${JSON.stringify(node.aspect)}`);
@@ -319,6 +328,8 @@ function validatePaintNode(node, path) {
         }
         if (!isLoaderInt(bv.maxLen) || bv.maxLen < 0) {
           bad(path + '.value.maxLen', 'barcode merge value requires a non-negative integer maxLen');
+        } else if (typeof bv.sample === 'string' && codePointCount(bv.sample) > bv.maxLen) {
+          bad(`${path}.value.sample`, 'sample exceeds maxLen (engine rejects it)');
         }
         if (bv.errorOnUnencodable !== true) {
           bad(path + '.value.errorOnUnencodable',
@@ -420,10 +431,39 @@ function validateStroke(stroke, path) {
   }
 }
 
+// Deep scan for non-finite numbers ANYWHERE in the document. JSON.parse
+// turns the literal "1e999" into Infinity, which the engine's from_chars
+// parser refuses as "number literal out of range" — including in fields the
+// loader never reads. Without this scan the validator blessed contracts
+// that fail at print time (the dangerous direction for a gate).
+function scanForNonFinite(value, path) {
+  if (typeof value === 'number') {
+    if (!isFinite(value)) bad(path, 'non-finite number (engine refuses the literal as out of range)');
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => scanForNonFinite(v, `${path}[${i}]`));
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const k of Object.keys(value)) scanForNonFinite(value[k], `${path}.${k}`);
+  }
+}
+
+// Mirrors the loader's kMaxPageExtent (contract_loader.cpp): page/tile
+// extents and origins beyond 1e8 contract units are refused before they can
+// reach unspecified lround device math.
+const MAX_PAGE_EXTENT = 1e8;
+
+// maxLen counts Unicode code points on both sides (loader
+// utf8_code_point_count / renderer utf8_code_points).
+function codePointCount(s) { return [...s].length; }
+
 function validate(contract) {
   if (!contract || typeof contract !== 'object') {
     bad('$', 'contract is not an object'); return;
   }
+  scanForNonFinite(contract, '$');
   if (!required(contract, 'schema', '$', 'object')) return;
   if (contract.schema?.major !== 1) {
     bad('$.schema.major', `must be 1, got ${JSON.stringify(contract.schema?.major)}`);
@@ -441,12 +481,24 @@ function validate(contract) {
   if (!Array.isArray(contract.document?.pages) || contract.document.pages.length === 0) {
     bad('$.document.pages', 'must be a non-empty array'); return;
   }
+  const seenPageIds = new Set();
   contract.document.pages.forEach((page, pi) => {
     const p = `$.document.pages[${pi}]`;
     required(page, 'id', p, 'string');
+    // Loader parity: notices are keyed by page id, so duplicate ids collapse
+    // distinct notices — the engine refuses the ambiguity at load.
+    if (typeof page?.id === 'string') {
+      if (seenPageIds.has(page.id)) bad(p + '.id', `duplicate page id ${JSON.stringify(page.id)} (engine rejects it)`);
+      seenPageIds.add(page.id);
+    }
     if (page.size) {
       if (!isPositiveNumber(page.size.w)) bad(p + '.size.w', 'must be > 0');
       if (!isPositiveNumber(page.size.h)) bad(p + '.size.h', 'must be > 0');
+      for (const k of ['w', 'h']) {
+        if (typeof page.size[k] === 'number' && Math.abs(page.size[k]) > MAX_PAGE_EXTENT) {
+          bad(`${p}.size.${k}`, 'extent is out of printable range (engine rejects it)');
+        }
+      }
     } else {
       bad(p + '.size', 'missing');
     }
@@ -455,11 +507,20 @@ function validate(contract) {
     } else {
       page.tiles.forEach((t, ti) => {
         const tp = `${p}.tiles[${ti}]`;
-        if (!t?.origin || typeof t.origin.x !== 'number' || typeof t.origin.y !== 'number') {
-          bad(tp + '.origin', 'must have numeric x,y');
+        // isFiniteNumber, not typeof: Infinity is a number that the engine's
+        // parser refuses (and lround of it is unspecified downstream).
+        if (!t?.origin || !isFiniteNumber(t.origin.x) || !isFiniteNumber(t.origin.y)) {
+          bad(tp + '.origin', 'must have finite numeric x,y');
         }
         if (!t?.size || !isPositiveNumber(t.size.w) || !isPositiveNumber(t.size.h)) {
           bad(tp + '.size', 'must have positive w,h');
+        }
+        for (const [obj, prefix] of [[t?.origin, '.origin'], [t?.size, '.size']]) {
+          for (const k of obj ? Object.keys(obj) : []) {
+            if (typeof obj[k] === 'number' && Math.abs(obj[k]) > MAX_PAGE_EXTENT) {
+              bad(`${tp}${prefix}.${k}`, 'extent is out of printable range (engine rejects it)');
+            }
+          }
         }
       });
     }

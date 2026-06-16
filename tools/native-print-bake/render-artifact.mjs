@@ -113,12 +113,27 @@ function nodeToSvg(node, defs) {
       `preserveAspectRatio="${par}"${tx} xlink:href="${href}"/>`;
   }
   if (node.kind === 'text') {
-    // Headless production path emits text as svg nodes; a bare text node would
-    // only appear via variable-merge contracts. Render verbatim if present.
-    return `<text x="${b.x}" y="${b.y + (node.font_size_px || 12)}" ` +
-      `font-family="${esc(node.font_family || 'Helvetica, Arial, sans-serif')}" ` +
-      `font-size="${node.font_size_px || 12}" fill="${esc((node.fill && node.fill.color) || '#000')}" ` +
-      `xml:space="preserve">${esc(node.content && node.content.sample || node.label || '')}</text>`;
+    // Headless production path emits text as svg nodes; a bare text node
+    // only appears via variable-merge contracts. Read the SCHEMA fields
+    // (font.sizePx/family/color; content.lines or merge sample) — the old
+    // snake_case reads matched nothing, so every text node rendered 12px
+    // black Helvetica or empty and false-tripped the blank gate.
+    const font = node.font || {};
+    const size = font.sizePx || 12;
+    const c = node.content || {};
+    const lines = c.type === 'static' && Array.isArray(c.lines) ? c.lines
+      : c.type === 'merge' ? [String(c.sample == null ? '' : c.sample)]
+      : c.type === 'rich' && Array.isArray(c.paragraphs)
+        ? c.paragraphs.map((p) => (p.runs || []).map((r) => r.text || '').join(''))
+        : [''];
+    const lh = Math.round(size * 1.2);
+    const weight = font.weight && font.weight >= 600 ? ' font-weight="700"' : '';
+    const italic = font.italic ? ' font-style="italic"' : '';
+    return lines.map((ln, i) =>
+      `<text x="${b.x}" y="${b.y + size + i * lh}" ` +
+      `font-family="${esc(font.family || 'Helvetica, Arial, sans-serif')}" ` +
+      `font-size="${size}"${weight}${italic} fill="${esc(font.color || '#000')}" ` +
+      `xml:space="preserve">${esc(ln)}</text>`).join('');
   }
   return '';
 }

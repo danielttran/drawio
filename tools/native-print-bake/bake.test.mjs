@@ -623,7 +623,9 @@ test('bake: pages option selects subset of pages', async () => {
   </mxfile>`;
   const { contract } = await bake(xml, { pages: [1] }); // only second page
   assert.equal(contract.document.pages.length, 1);
-  assert.equal(contract.document.pages[0].id, 'page-1'); // ordinal from selected set
+  // DOCUMENT ordinal, not selection index: notices' pageId must point at
+  // the real document page (selecting [1] = the file's second page).
+  assert.equal(contract.document.pages[0].id, 'page-2');
 });
 
 test('D5: unattended mode succeeds for supported browser-free flowchart shape', async () => {
@@ -1395,19 +1397,19 @@ test('label: plain label honors letterSpacing', async () => {
   assert.match(svgText((await bake(mk('5'), { keepPx: true })).contract), /letter-spacing="5"/);
 });
 
-test('shape: shadow matches drawio (#808080, opacity 1, offset 2,3)', async () => {
-  // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4).
-  // drawio uses SHADOWCOLOR #808080 at SHADOW_OPACITY 1, offset
+test('shape: shadow matches drawio (#000000, opacity 0.25, offset 2,3)', async () => {
+  // REGRESSION (WYSIWYG): the bake drew shadows as black@0.18 offset (4,4),
+  // then as the LIBRARY defaults #808080@1. The APP overrides them
+  // (Graph.js:161-162): SHADOWCOLOR #000000 at SHADOW_OPACITY 0.25, offset
   // (SHADOW_OFFSET_X=2, SHADOW_OFFSET_Y=3), with per-cell overrides.
-  const xml = `<mxGraphModel pageWidth="200" pageHeight="150"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ffffff;shadow=1;" parent="1"><mxGeometry x="40" y="40" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
   const { contract } = await bake(xml, { keepPx: true });
   const shadow = contract.document.pages[0].paint.find(
-    (n) => n.kind === 'path' && n.fill && n.fill.color === '#808080');
-  assert.ok(shadow, 'shadow path should use drawio shadow colour #808080');
-  assert.equal(shadow.fill.alpha, 1, 'shadow opacity should be 1');
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#000000' && n.fill.alpha === 0.25);
+  assert.ok(shadow, 'shadow path should use the app shadow ink #000000 @ 0.25');
   // shadow offset (2,3): the silhouette path starts at the offset, not (4,4).
   assert.match(shadow.d, /^M 2 3 /, `shadow offset should be (2,3): ${shadow.d.slice(0, 20)}`);
 });
@@ -1433,7 +1435,7 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   // built-in shapePath shapes (triangle, parallelogram, ...), so a flipped
   // triangle printed un-flipped. The geometry is now mirrored about the box
   // centre (the label stays upright, matching drawio).
-  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+  const mk = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1454,7 +1456,7 @@ test('shape: flipH / flipV mirror built-in path shapes (not just stencils)', asy
   // rotation + flip: the flip must STILL be applied (not silently dropped) and
   // the label must stay upright. The flip is baked into the rotated path
   // (flipPathD), so the rotated SVG differs from rotation-only.
-  const mkLbl = (style) => `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+  const mkLbl = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" value="T" vertex="1" style="${style}fillColor=#f00;" parent="1"><mxGeometry x="80" y="60" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1490,7 +1492,7 @@ test('image: cell opacity is applied (frozen contract has no image opacity field
 test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async () => {
   // REGRESSION: edge bend rounding used a hardcoded radius 8; drawio rounds with
   // (style.arcSize || LINE_ARCSIZE=20)/2 = 10 by default (every rounded edge).
-  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
     <mxCell id="b" vertex="1" parent="1"><mxGeometry x="300" y="220" width="60" height="40" as="geometry"/></mxCell>
@@ -1500,8 +1502,10 @@ test('edge: rounded corner radius is arcSize/2 = 10 (drawio mxPolyline)', async 
   const edge = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.fill == null && /C/.test(n.d || ''));
   assert.ok(edge, 'rounded edge present with curve');
   // First bend at x=180: the straight segment ends 10px before it (L ...170...),
-  // not 8px (172). Assert the corner control sequence uses the 10px radius.
-  assert.match(edge.d, /L 170 20 C 180 20/, `edge corner radius should be 10: ${edge.d.slice(0, 50)}`);
+  // not 8px (172), and the corner is the EXACT cubic elevation of drawio's
+  // quadTo (controls at a + 2/3(corner - a)), not a control-at-corner bulge.
+  assert.match(edge.d, /L 170 20 C 176\.667 20 180 23\.333 180 30/,
+    `edge corner must be the elevated quad: ${edge.d.slice(0, 50)}`);
 });
 
 test('edge: perimeterSpacing creates a gap between shape and connector', async () => {
@@ -1529,7 +1533,7 @@ test('shape: cylinder cap height = min(40, h/5) (drawio mxCylinder)', async () =
   // REGRESSION: cylinder cap was min(0.18h, 0.28w) (width-dependent, wrong
   // proportion). drawio getCylinderSize = min(maxHeight=40, h/5).
   // 200x100 cylinder -> cap = min(40, 20) = 20: top ellipse passes through y=20.
-  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=cylinder;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="200" height="100" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1545,7 +1549,7 @@ test('shape: size proportion matches drawio (parallelogram/step/card + size/fixe
   // (parallelogram/trapezoid 0.25w, step 0.22w, card min(0.18w,0.35h)) and
   // ignored the size/fixedSize style. drawio: relative w*(size||0.2) or absolute
   // min(w,size) under fixedSize; card = min(w,h,size||30).
-  const mk = (style) => `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+  const mk = (style) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${style}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1564,7 +1568,7 @@ test('shape: flowchart document/dataStorage/manualInput/loopLimit match drawio g
   // REGRESSION (WYSIWYG): these flowchart shapes had wrong size proportions and,
   // for dataStorage (was a parallelogram, should be a curved D) and loopLimit
   // (was a pentagon peak, should be a cut-corner hexagon), the WRONG geometry.
-  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+  const mk = (sh) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="120" height="80" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1608,7 +1612,7 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
   // REGRESSION (WYSIWYG): cube had the 3D depth in the WRONG direction
   // (top-left vs drawio top-right); delay used one cubic (drawio two
   // quadratics); offPageConnector shoulder was 0.65h (drawio h - 0.375h).
-  const mk = (sh) => `<mxGraphModel pageWidth="300" pageHeight="160"><root>
+  const mk = (sh) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="shape=${sh};fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="80" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1624,7 +1628,7 @@ test('shape: cube/delay/offPageConnector match drawio geometry', async () => {
 test('shape: cross honors size attr; datastore top cap matches drawio', async () => {
   // REGRESSION: cross ignored the size style (default 0.2 was correct);
   // datastore top-cap control point was 0 (drawio -dy/3).
-  const mk = (st) => `<mxGraphModel pageWidth="200" pageHeight="160"><root>
+  const mk = (st) => `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="2" vertex="1" style="${st}fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="100" height="100" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
@@ -1766,7 +1770,7 @@ test('edge: entityRelationEdgeStyle routes with horizontal exit/entry (not a str
   // REGRESSION (WYSIWYG): entity-relation edges (common in ER diagrams) routed
   // as a straight diagonal — only orthogonal/elbow were routed. drawio's
   // mxEdgeStyle.EntityRelation exits/enters horizontally from the side centres.
-  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="a" vertex="1" parent="1"><mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>
     <mxCell id="b" vertex="1" parent="1"><mxGeometry x="280" y="220" width="80" height="40" as="geometry"/></mxCell>
@@ -2509,7 +2513,7 @@ test('audit: floating edge from an ellipse starts on the ellipse arc, not the bb
 });
 
 test('audit: exitX/exitY honors the terminal rotation (mxGraph.getConnectionPoint)', async () => {
-  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+  const xml = `<mxGraphModel><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
     <mxCell id="A" vertex="1" parent="1" style="rounded=0;rotation=90;"><mxGeometry x="0" y="0" width="120" height="40" as="geometry"/></mxCell>
     <mxCell id="B" vertex="1" parent="1" style="rounded=0;"><mxGeometry x="300" y="300" width="80" height="40" as="geometry"/></mxCell>
@@ -2897,8 +2901,10 @@ test('audit2: rounded=1 rounds every ported polygon shape faithfully (no notice,
   }
 });
 
-test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout/zigzag)', async () => {
-  for (const shape of ['folder', 'callout', 'zigzag']) {
+test('audit2: rounded=1 on non-ported roundable shapes stays LOUD (folder/callout)', async () => {
+  // zigzag left this list in audit7: rounded=1 now paints the faithful cubic
+  // wave (ZigzagShape rounded branch) — see 'audit7 shape: zigzag'.
+  for (const shape of ['folder', 'callout']) {
     const { notices } = await auditProbe(`shape=${shape};rounded=1;fillColor=#ffffff;strokeColor=#000000;`);
     assert.ok(notices.some((n) => /rounded corners on/.test(n.detail && n.detail.detail || '')),
       `rounded ${shape} must emit a loud notice (not silently square)`);
@@ -3434,15 +3440,15 @@ test('audit5: builtin shapes render a REAL gradient (process probe)', async () =
 
 test('audit5: builtin shapes paint shadow=1 (cylinder3 probe)', async () => {
   // Previously shadow=1 was silently dropped on the builtin branch. drawio:
-  // the shadow is the shape repainted in #808080 (SHADOWCOLOR) at alpha 1,
-  // offset (2,3), UNDER the shape.
+  // the shadow is the shape repainted in the APP's SHADOWCOLOR #000000 at
+  // SHADOW_OPACITY 0.25 (Graph.js overrides), offset (2,3), UNDER the shape.
   const { nodes, svgs } = await bakeVertexProbe('shape=cylinder3;shadow=1;fillColor=#dae8fc;');
   const svgNodes = nodes.filter((n) => n.kind === 'svg');
   assert.equal(svgNodes.length, 2, 'shadow node + shape node');
   const [shadow, body] = svgs;
-  assert.match(shadow, /<g opacity="1">/, 'shadow composited at SHADOW_OPACITY once');
-  assert.match(shadow, /fill="#808080"/, 'shadow fill recolored to SHADOWCOLOR');
-  assert.match(shadow, /stroke="#808080"/, 'shadow stroke recolored to SHADOWCOLOR');
+  assert.match(shadow, /<g opacity="0.25">/, 'shadow composited at SHADOW_OPACITY once');
+  assert.match(shadow, /fill="#000000"/, 'shadow fill recolored to SHADOWCOLOR');
+  assert.match(shadow, /stroke="#000000"/, 'shadow stroke recolored to SHADOWCOLOR');
   assert.ok(!/#dae8fc/.test(shadow), 'no original colors left in the shadow copy');
   assert.ok(/#dae8fc/.test(body), 'body keeps its own fill');
   // offset (2,3) in page space
@@ -3625,11 +3631,746 @@ test('audit5: plain vertex direction= follows mxShape.getShapeRotation exactly',
   const d = nodes.find((n) => n.kind === 'path').d;
   const pts = [...d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
   const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
-  assert.equal(Math.min(...xs), 0); assert.equal(Math.max(...xs), 100);
-  assert.equal(Math.min(...ys), 0); assert.equal(Math.max(...ys), 60);
+  // Page-relative anchoring (explicit page dims): the probe cell sits at
+  // (20,20), so the rotated footprint covers exactly its authored box.
+  assert.equal(Math.min(...xs), 20); assert.equal(Math.max(...xs), 120);
+  assert.equal(Math.min(...ys), 20); assert.equal(Math.max(...ys), 80);
   // ellipse footprint visibly swaps under the rotation: rx 30 / ry 50 with a
   // 90-degree arc x-axis rotation = a 100x60-looking ellipse (faithful).
   const { nodes: el } = await bakeVertexProbe('ellipse;direction=south;');
   assert.match(el.find((n) => n.kind === 'path').d, /A 30 50 90 /,
     'ellipse paints in the inverted 60x100 frame rotated +90');
+});
+
+test('audit7: explicit page dims keep the authored on-page placement', async () => {
+  // HIGH-severity audit finding: with pageWidth/pageHeight set, the bake
+  // anchored to CONTENT bounds, printing every diagram flush at the paper
+  // corner -- the author's page margins were silently dropped on every
+  // production print. Page-relative anchoring must keep model coords.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="150" y="100" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  assert.match(d, /^M 150 100 /, `cell must stay at (150,100), got: ${d.slice(0, 30)}`);
+
+  // Auto-fit page (no page dims): bounds-anchoring stays (content flush).
+  const auto = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="150" y="100" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract: c2 } = await bake(auto, { keepPx: true });
+  const d2 = c2.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  assert.match(d2, /^M 0 0 /, `auto-fit stays flush, got: ${d2.slice(0, 30)}`);
+
+  // Content drawn on a FAR page-grid cell prints on that sheet with the
+  // same in-page margins (mxPrintPreview floor() semantics).
+  const far = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1">
+      <mxGeometry x="850" y="640" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract: c3 } = await bake(far, { keepPx: true });
+  const d3 = c3.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // grid cell (2,2): origin (800,600) -> in-page position (50,40)
+  assert.match(d3, /^M 50 40 /, `far grid cell keeps margins, got: ${d3.slice(0, 30)}`);
+});
+
+test('audit7: edge to a hidden-layer terminal is dropped like the editor', async () => {
+  // mxGraphView.updateEdgeState removes any edge whose connected terminal
+  // has no visible state; the bake printed the edge into empty space.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="L2" value="hidden layer" style="" parent="0" visible="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="100" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="L2"><mxGeometry x="200" y="40" width="100" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path');
+  // Only the visible vertex body: no edge stroke reaching x>=100.
+  for (const p of paths) {
+    const xs = [...p.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => +m[1]);
+    assert.ok(Math.max(...xs) <= 101, `edge to hidden terminal leaked ink: ${p.d.slice(0, 60)}`);
+  }
+});
+
+test('audit7: bare orthogonal=1 flag projects floating terminals orthogonally', async () => {
+  // mxGraph.isOrthogonal honors the bare style flag without any edgeStyle.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="0" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="160" y="25" width="100" height="50" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="orthogonal=1;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.filter((n) => n.kind === 'path').pop();
+  const pts = [...edge.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  // Orthogonal projection -> a horizontal segment at the shared band's y=50.
+  assert.ok(pts.every((p) => Math.abs(p[1] - 50) < 0.5),
+    `expected horizontal y=50 edge, got ${edge.d}`);
+});
+
+test('audit7: floating edge between OVERLAPPING shapes attaches like the editor', async () => {
+  // mx computes the target point first, then aims the source at that POINT.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="0" width="100" height="100" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="200" height="200" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const edge = contract.document.pages[0].paint.filter((n) => n.kind === 'path').pop();
+  const pts = [...edge.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const start = pts[0];
+  // drawio: target point = b's perimeter toward a's center (20,20); source
+  // then aims at that point -> source attaches at its own (0,0)-ward corner
+  // ray, NOT flipped to the far side.
+  assert.ok(start[0] <= 50 && start[1] <= 50,
+    `source attached on the wrong side: ${edge.d.slice(0, 50)}`);
+});
+
+test('audit7: z-order follows DOCUMENT order for integer-like ids', async () => {
+  // JS objects iterate integer-like keys numerically; with ids "10" and "9"
+  // declared as 10-then-9 ("9" sent to front), the dict walk painted 10 on
+  // top — inverted stacking. The model tree walk must follow XML order.
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="10" vertex="1" style="rounded=0;fillColor=#ff0000;" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+    <mxCell id="9" vertex="1" style="rounded=0;fillColor=#0000ff;" parent="1"><mxGeometry x="30" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const fills = contract.document.pages[0].paint
+    .filter((n) => n.kind === 'path' && n.fill)
+    .map((n) => n.fill.color);
+  // id 9 is declared LAST -> paints LAST (on top), regardless of numeric order.
+  assert.deepEqual(fills, ['#ff0000', '#0000ff'],
+    `document order must win: ${fills.join(',')}`);
+});
+
+test('audit7: bezier=1 edges paint cubic curves through the control points', async () => {
+  // mxPolyline checks STYLE_BEZIER before curved: 3n+1 points are direct
+  // cubic control points. Previously baked as a straight polyline THROUGH
+  // the control points with no notice.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="e" edge="1" style="bezier=1;endArrow=none;noEdgeStyle=1;" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="0" y="50" as="sourcePoint"/><mxPoint x="300" y="50" as="targetPoint"/>
+        <Array as="points"><mxPoint x="100" y="150"/><mxPoint x="200" y="150"/></Array>
+      </mxGeometry>
+    </mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const e = contract.document.pages[0].paint.find((n) => n.kind === 'path');
+  // Structural: exactly ONE cubic whose controls are the two waypoints
+  // (auto-fit anchoring may translate all coordinates uniformly).
+  const m = e.d.match(/^M ([\d.]+) ([\d.]+) C ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)$/);
+  assert.ok(m, `bezier edge must be one cubic: ${e.d}`);
+  const [, sx, sy, c1x, c1y, c2x, c2y, ex2, ey] = m.map(Number);
+  assert.equal(c1x - sx, 100); assert.equal(c1y - sy, 100);
+  assert.equal(c2x - sx, 200); assert.equal(c2y - sy, 100);
+  assert.equal(ex2 - sx, 300); assert.equal(ey - sy, 0);
+});
+
+test('audit7: shadow=1 edges paint the offset shadow line under the edge', async () => {
+  // mxConnector paints the LINE with the shadow (markers without): the
+  // shadow stroke is the app ink #000000@0.25 offset (2,3), painted first.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="shadow=1;endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const paths = contract.document.pages[0].paint.filter((n) => n.kind === 'path' && n.fill == null);
+  const shadow = paths.find((n) => n.stroke && n.stroke.paint.color === '#000000' && n.stroke.paint.alpha === 0.25);
+  assert.ok(shadow, 'edge shadow stroke present');
+  const line = paths.find((n) => n !== shadow);
+  assert.ok(contract.document.pages[0].paint.indexOf(shadow) <
+            contract.document.pages[0].paint.indexOf(line), 'shadow paints under the line');
+  const sm = shadow.d.match(/^M ([\d.]+) ([\d.]+)/), lm = line.d.match(/^M ([\d.]+) ([\d.]+)/);
+  assert.ok(Math.abs((+sm[1]) - (+lm[1]) - 2) < 0.01 && Math.abs((+sm[2]) - (+lm[2]) - 3) < 0.01,
+    `shadow offset (2,3): shadow ${sm[1]},${sm[2]} vs line ${lm[1]},${lm[2]}`);
+});
+
+test('audit7: perimeterSpacing semantics match mxGraphView (terminal style, fixed anchors, diagonals)', async () => {
+  const page = (body) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>${body}</root></mxGraphModel>`;
+  const firstEdge = (contract) => contract.document.pages[0].paint
+    .find((n) => n.kind === 'path' && n.fill == null && n.stroke);
+  // (a) the TERMINAL's own perimeterSpacing style creates the gap too
+  // (mxGraphView.getPerimeterBounds adds it to the edge's border).
+  const a = await bake(page(`
+    <mxCell id="a" vertex="1" style="rounded=0;perimeterSpacing=10;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>`),
+    { keepPx: true });
+  const am = firstEdge(a.contract).d.match(/^M ([\d.]+) /);
+  // a's right side is at x=60; +10 spacing -> 70 (minus the bake's content
+  // translation, which moved x=-10 ink to 0 -> source at 80? No: auto-fit
+  // shifts ALL coords uniformly; measure the GAP via the target end).
+  const pts = [...firstEdge(a.contract).d.matchAll(/([\d.]+) ([\d.]+)/g)].map((m) => +m[1]);
+  const gap = pts[pts.length - 1] - pts[0];
+  // span between endpoints: from 60+10 to 200 (no target spacing) = 130.
+  assert.ok(Math.abs(gap - 130) < 0.5, `terminal-style spacing honored: span ${gap}`);
+
+  // (c) FIXED exitX/exitY anchors are never spaced (mxGraph applies border
+  // to floating terminals only).
+  const c = await bake(page(`
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="40" width="60" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;perimeterSpacing=20;exitX=1;exitY=0.5;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>`),
+    { keepPx: true });
+  const cpts = [...firstEdge(c.contract).d.matchAll(/([\d.]+) ([\d.]+)/g)].map((m) => +m[1]);
+  // fixed source anchor at x=60 exactly; floating target spaced to 180:
+  // span = 120.
+  assert.ok(Math.abs((cpts[cpts.length - 1] - cpts[0]) - 120) < 0.5,
+    `fixed anchor unspaced, floating end spaced: span ${cpts[cpts.length - 1] - cpts[0]}`);
+});
+
+test('audit7: noLabel=1 suppresses the label like mxGraph.getLabel', async () => {
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="SECRET" style="rounded=0;noLabel=1;" parent="1"><mxGeometry x="10" y="10" width="80" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  for (const n of contract.document.pages[0].paint) {
+    if (n.kind === 'svg') {
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      assert.ok(!/SECRET/.test(s), 'noLabel=1 label must not print');
+    }
+  }
+  assert.equal(notices.length, 0);
+});
+
+test('audit7: clipped middle/bottom labels show the FIRST lines (plainText clamp)', async () => {
+  // mxSvgCanvas2D.plainText (matchHtmlAlignment): the effective text height
+  // is clamped to the box before valign, so overflow=hidden shows lines from
+  // the TOP. The unclamped offset clipped away line 1 and showed the middle.
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="L1&#xa;L2&#xa;L3&#xa;L4&#xa;L5&#xa;L6" style="rounded=0;overflow=hidden;verticalAlign=middle;" parent="1"><mxGeometry x="10" y="10" width="100" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /L1/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  const s = Buffer.from(node.source, 'base64').toString('utf8');
+  const firstY = parseFloat(/<text[^>]*y="(-?[\d.]+)"/.exec(s)[1]);
+  // clamped: y = (40 - min(6*14, 40))/2 = 0 -> line 1 fully inside the clip.
+  assert.ok(firstY >= -0.01 && firstY < 2, `first line stays visible (y=${firstY})`);
+});
+
+test('audit7: vertical-lr textDirection is LOUD, never a silent horizontal print', async () => {
+  const xml = `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="V" style="rounded=0;textDirection=vertical-lr;" parent="1"><mxGeometry x="10" y="10" width="80" height="30" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.ok(notices.some((n) => /vertical textDirection/.test(n.detail.detail || n.detail || '')),
+    `loud notice expected: ${JSON.stringify(notices)}`);
+});
+
+test('audit7: edge labels honor align=left/right and rotation=', async () => {
+  const page = (lblStyle) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="a" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="0" y="40" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="b" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="400" y="40" width="40" height="20" as="geometry"/></mxCell>
+    <mxCell id="e" edge="1" style="endArrow=none;" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="l" value="Cardinality" style="edgeLabel;${lblStyle}" vertex="1" connectable="0" parent="e"><mxGeometry x="0" relative="1" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelBox = (contract) => contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /Cardinality/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  }).box;
+  // mxUtils.getAlignmentAsPoint: left puts the label's LEFT edge at the
+  // anchor (edge midpoint, x=220), right its RIGHT edge; center straddles.
+  const left = labelBox((await bake(page('align=left;'), { keepPx: true })).contract);
+  const right = labelBox((await bake(page('align=right;'), { keepPx: true })).contract);
+  const center = labelBox((await bake(page('align=center;'), { keepPx: true })).contract);
+  const cx = 220;
+  const PAD = 6; // svg node box pad/overflow slop
+  assert.ok(Math.abs(left.x - cx) < PAD, `left-aligned label starts at the anchor (x=${left.x})`);
+  assert.ok(Math.abs((right.x + right.w) - cx) < PAD, `right-aligned label ends at the anchor`);
+  assert.ok(Math.abs((center.x + center.w / 2) - cx) < PAD, `centered label straddles the anchor`);
+
+  // rotation= on the label child must reach the printed SVG (was dropped).
+  const rot = (await bake(page('align=center;rotation=45;'), { keepPx: true })).contract;
+  const rotNode = rot.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /Cardinality/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  assert.match(Buffer.from(rotNode.source, 'base64').toString('utf8'), /rotate\(45 /,
+    'label rotation transform present');
+});
+
+test('audit7: external label bands are FULL cell extent (mxGraphView/mxCellRenderer)', async () => {
+  const page = (style) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="XYZ" style="rounded=0;${style}" parent="1"><mxGeometry x="100" y="100" width="120" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelNode = (contract) => contract.document.pages[0].paint.find((n) => {
+    if (n.kind !== 'svg') return false;
+    return /XYZ/.test(Buffer.from(n.source, 'base64').toString('utf8'));
+  });
+  // verticalLabelPosition=bottom + verticalAlign=middle: drawio offsets the
+  // label box by the FULL cell height with the SAME height -> the text
+  // centers ~30px below the cell bottom (the old fontSize-derived band put
+  // it ~9px below: 21px off).
+  const b = labelNode((await bake(page('verticalLabelPosition=bottom;verticalAlign=middle;'), { keepPx: true })).contract);
+  const cyB = b.box.y + b.box.h / 2;
+  assert.ok(Math.abs(cyB - 190) < 8, `bottom band centers at cell.bottom + h/2 = 190 (got ${cyB})`);
+  // labelPosition=left + align=center: band width = CELL width (120), so the
+  // text centers 60px left of the cell (the old max(w, fs*8) band shifted it).
+  const l = labelNode((await bake(page('labelPosition=left;align=center;'), { keepPx: true })).contract);
+  const cxL = l.box.x + l.box.w / 2;
+  assert.ok(Math.abs(cxL - 40) < 8, `left band centers at cell.x - w/2 = 40 (got ${cxL})`);
+});
+
+test('audit7: labelWidth overrides the wrap width and aligns inside the cell', async () => {
+  const page = (style) => `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="wrap me over the label width please thanks" style="rounded=0;whiteSpace=wrap;${style}" parent="1"><mxGeometry x="100" y="100" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const labelSvg = (contract) => {
+    const n = contract.document.pages[0].paint.find((n2) => {
+      if (n2.kind !== 'svg') return false;
+      return /wrap me/.test(Buffer.from(n2.source, 'base64').toString('utf8'));
+    });
+    return Buffer.from(n.source, 'base64').toString('utf8');
+  };
+  const narrow = labelSvg((await bake(page(''), { keepPx: true })).contract);
+  const wide = labelSvg((await bake(page('labelWidth=200;'), { keepPx: true })).contract);
+  const lines = (s) => (s.match(/<text/g) || []).length;
+  assert.ok(lines(wide) < lines(narrow),
+    `labelWidth=200 must wrap fewer lines than the 100px cell (${lines(wide)} vs ${lines(narrow)})`);
+});
+
+test('audit7: relative child of a ROTATED parent rotates around the parent center', async () => {
+  // mxGraphView.updateVertexState rotates a relative child's center about
+  // the parent center; the bake printed it at the unrotated spot while the
+  // parent body rotated away.
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="g" vertex="1" style="rounded=0;rotation=90;" parent="1"><mxGeometry x="100" y="100" width="200" height="100" as="geometry"/></mxCell>
+    <mxCell id="c" vertex="1" value="" style="rounded=0;fillColor=#ff0000;" parent="g"><mxGeometry x="1" y="1" relative="1" width="40" height="20" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const child = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#ff0000');
+  const xs = [...child.d.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const cx = (Math.min(...xs.map((p) => p[0])) + Math.max(...xs.map((p) => p[0]))) / 2;
+  const cy = (Math.min(...xs.map((p) => p[1])) + Math.max(...xs.map((p) => p[1]))) / 2;
+  // parent center (200,150); child unrotated center (320,210); rotated 90deg
+  // -> (200 - (210-150), 150 + (320-200)) = (140, 270).
+  assert.ok(Math.abs(cx - 140) < 0.5 && Math.abs(cy - 270) < 0.5,
+    `child center must rotate with the parent: got (${cx},${cy})`);
+});
+
+test('audit7: flipH on a GIF image cell reaches the printed SVG (non-PNG flip)', async () => {
+  const gif = 'R0lGODlhAQABAIAAAP8AAP///yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;flipH=1;image=data:image/gif,${gif};" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /image\/gif/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'gif image baked as svg-wrapped node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /scale\(-1 1\)/,
+    'flipH transform present');
+});
+
+test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
+  const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
+  await assert.rejects(() => bake(xml, { pages: [] }), RangeError);
+});
+
+// ---------------------------------------------------------------------------
+// audit7 registry shape fidelity: registered shapes that previously baked to a
+// WRONG silhouette with NO notice. Every expectation below is pinned against
+// the actual painter in src/main/webapp/js/grapheditor/Shapes.js (line refs in
+// each test). Probes use auditProbe (cell at page origin, keepPx).
+// ---------------------------------------------------------------------------
+
+test('audit7 shape: or is the D-shape M0,0 Q(w,0)(w,h/2) Q(w,h)(0,h) Z (Shapes.js:3639)', async () => {
+  const { contract, notices } = await auditProbe('shape=or;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 C 66.667 0 100 10 100 30 C 100 50 66.667 60 0 60 Z',
+    'or must be the OrShape D (was a full ellipse)');
+});
+
+test('audit7 shape: xor adds the concave back quad to (0,0) (Shapes.js:3658)', async () => {
+  const { contract, notices } = await auditProbe('shape=xor;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 C 66.667 0 100 10 100 30 C 100 50 66.667 60 0 60 C 33.333 40 33.333 20 0 0 Z',
+    'xor must be the XorShape crescent (was a full ellipse)');
+});
+
+test('audit7 shape: orEllipse paints BOTH mid lines over the ellipse (Shapes.js:3750)', async () => {
+  const { contract, notices } = await auditProbe('shape=orEllipse;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'ellipse body');
+  assert.ok(svg.includes('M 0 30 L 100 30'), 'horizontal mid line, got: ' + svg);
+  assert.ok(svg.includes('M 50 0 L 50 60'), 'vertical mid line, got: ' + svg);
+});
+
+test('audit7 shape: sumEllipse diagonals use the s2=0.145 inset (Shapes.js:3778)', async () => {
+  const { contract, notices } = await auditProbe('shape=sumEllipse;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 14.5 8.7 L 85.5 51.3'), 'main diagonal, got: ' + svg);
+  assert.ok(svg.includes('M 85.5 8.7 L 14.5 51.3'), 'anti diagonal, got: ' + svg);
+});
+
+test('audit7 shape: lineEllipse mid line follows line=vertical (Shapes.js:3983)', async () => {
+  const hor = decodeSvgNode((await auditProbe('shape=lineEllipse;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(hor.includes('M 0 30 L 100 30'), 'default mid line is horizontal, got: ' + hor);
+  const ver = decodeSvgNode((await auditProbe('shape=lineEllipse;line=vertical;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(ver.includes('M 50 0 L 50 60'), 'line=vertical mid line is vertical, got: ' + ver);
+});
+
+test('audit7 shape: tapeData = ellipse + bottom-center to bottom-right line (Shapes.js:3729)', async () => {
+  const { contract, notices } = await auditProbe('shape=tapeData;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'ellipse body (was a tape silhouette)');
+  assert.ok(svg.includes('M 50 60 L 100 60'), 'bottom tail line, got: ' + svg);
+});
+
+test('audit7 shape: dimension is the stroke-only double arrow (Shapes.js:3856)', async () => {
+  const { contract, notices } = await auditProbe('shape=dimension;fillColor=#ff00ff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // sw = strokeWidth/2 = 0.5; al = 10+2*sw = 11; cy = h - al/2 = 54.5
+  assert.ok(svg.includes('M 0 0 L 0 60'), 'left end bar, got: ' + svg);
+  assert.ok(svg.includes('M 100 0 L 100 60'), 'right end bar');
+  assert.ok(svg.includes('M 0.5 54.5 L 99.5 54.5'), 'dimension line at cy=h-al/2');
+  assert.ok(svg.includes('M 0.5 54.5 L 11.5 49'), 'left arrowhead upper');
+  assert.ok(svg.includes('M 99.5 54.5 L 88.5 60'), 'right arrowhead lower');
+  assert.ok(!/ff00ff/.test(svg), 'DimensionShape only ever strokes — fillColor must not paint');
+});
+
+test('audit7 shape: umlBoundary = bar + connector + offset ellipse (Shapes.js:2397)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlBoundary;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.ok(svg.includes('M 0 15 L 0 45'), 'left bar h/4..3h/4, got: ' + svg);
+  assert.ok(svg.includes('M 0 30 L 16.667 30'), 'connector to w/6 at h/2');
+  assert.match(svg, /<ellipse cx="58.333" cy="30" rx="41.667" ry="30"/,
+    'ellipse occupies (w\\/6,0,5w\\/6,h), not the whole box');
+});
+
+test('audit7 shape: umlEntity underline runs w/8..7w/8 at the bottom (Shapes.js:2430)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlEntity;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="50" cy="30" rx="50" ry="30"/, 'full ellipse body');
+  assert.ok(svg.includes('M 12.5 60 L 87.5 60'), 'bottom underline, got: ' + svg);
+});
+
+test('audit7 shape: umlControl = arrow strokes + lowered ellipse (Shapes.js:2479)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlControl;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // h/8*1.1 = 8.25 with h=60
+  assert.ok(svg.includes('M 37.5 8.25 L 62.5 0'), 'upper arrow stroke, got: ' + svg);
+  assert.match(svg, /<ellipse cx="50" cy="33.75" rx="50" ry="26.25"/, 'ellipse at (0,h/8,w,7h/8)');
+  assert.ok(svg.includes('M 37.5 8.25 L 62.5 15'), 'lower arrow stroke (paintForeground)');
+});
+
+test('audit7 shape: umlLifeline = header rect (size=40) + DASHED stem (Shapes.js:2530)', async () => {
+  const { contract, notices } = await auditProbe('shape=umlLifeline;fillColor=#ffffff;strokeColor=#000000;', 100, 200);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="40"/,
+    'header rect is size tall, NOT the whole cell');
+  const stem = svg.match(/<path d="M 50 40 L 50 200"[^/]*\/>/);
+  assert.ok(stem, 'stem from header bottom to cell bottom, got: ' + svg);
+  assert.match(stem[0], /stroke-dasharray/, 'stem dashed by default (lifelineDashed=1)');
+  const solid = decodeSvgNode((await auditProbe('shape=umlLifeline;lifelineDashed=0;fillColor=#ffffff;strokeColor=#000000;', 100, 200))
+    .contract.document.pages[0].paint[0]);
+  const solidStem = solid.match(/<path d="M 50 40 L 50 200"[^/]*\/>/);
+  assert.ok(solidStem && !/stroke-dasharray/.test(solidStem[0]), 'lifelineDashed=0 stem is solid');
+});
+
+test('audit7 shape: umlLifeline participant=umlActor renders the actor header; unknown participant is LOUD', async () => {
+  const actor = await auditProbe('shape=umlLifeline;participant=umlActor;fillColor=#ffffff;strokeColor=#000000;', 40, 200);
+  assert.equal(actor.notices.length, 0, 'registered participant must render without notice');
+  const svg = decodeSvgNode(actor.contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse /, 'umlActor head ellipse painted as the header');
+  assert.ok(!/<rect /.test(svg), 'participant replaces the default header rect');
+  const unknown = await auditProbe('shape=umlLifeline;participant=noSuchShape;fillColor=#ffffff;strokeColor=#000000;', 40, 200);
+  assert.ok(unknown.notices.some((n) => n.kind === 'ExporterUnsupportedShape' &&
+    /participant/.test(n.detail.detail)), 'unknown participant must emit a LOUD notice');
+});
+
+test('audit7 shape: message = rect + STROKED envelope flap (Shapes.js:2325)', async () => {
+  const { contract, notices } = await auditProbe('shape=message;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="60"/, 'envelope body rect');
+  assert.match(svg, /<path d="M 0 0 L 50 30 L 100 0" fill="none"/,
+    'flap 0,0 -> w/2,h/2 -> w,0 stroked only');
+});
+
+test('audit7 shape: lollipop = size circle at top-center + stem (Shapes.js:3028)', async () => {
+  const { contract, notices } = await auditProbe('shape=lollipop;fillColor=#ffffff;strokeColor=#000000;', 30, 60);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="15" cy="5" rx="5" ry="5"/,
+    'size(10) circle at top-center, NOT a full-cell ellipse');
+  assert.match(svg, /<path d="M 15 10 L 15 60" fill="none"/, 'stem from circle to bottom');
+});
+
+test('audit7 shape: requires = stroke-only open arc (inset 2+sw) + stem (Shapes.js:3057)', async () => {
+  const { contract, notices } = await auditProbe('shape=requires;fillColor=#ff00ff;strokeColor=#000000;', 30, 60);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // sz=10, inset=2+1=3: stem (15,13)->(15,60); arc M 7 5 Q 7 13 15 13 Q 23 13 23 5
+  assert.ok(svg.includes('M 15 13 L 15 60'), 'stem below the arc, got: ' + svg);
+  assert.ok(svg.includes('M 7 5 Q 7 13 15 13 Q 23 13 23 5'), 'open half-arc quads');
+  assert.ok(!/ff00ff/.test(svg), 'RequiresShape only strokes — fillColor must not paint');
+});
+
+test('audit7 shape: waypoint is a dot filled with the STROKE color (Shapes.js:500)', async () => {
+  const { contract, notices } = await auditProbe('shape=waypoint;fillColor=#00ff00;strokeColor=#ff0000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = max(0, size-2) + 2*sw = 4 + 2 = 6 -> r=3 centered
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="3" ry="3" fill="#ff0000"/,
+    'dot diameter size-2+2sw filled with strokeColor (was a full-cell ellipse)');
+  assert.ok(!/00ff00/.test(svg), 'fillColor is never painted (drawio fills with NONE)');
+  const big = decodeSvgNode((await auditProbe('shape=waypoint;size=20;strokeWidth=2;strokeColor=#ff0000;', 40, 40))
+    .contract.document.pages[0].paint[0]);
+  assert.match(big, /<ellipse cx="20" cy="20" rx="11" ry="11"/, 'size/strokeWidth honored: (20-2)+2*2=22');
+});
+
+test('audit7 shape: transparent paints NOTHING (Shapes.js:1933)', async () => {
+  const { contract, notices } = await auditProbe('shape=transparent;fillColor=#ff0000;strokeColor=#00ff00;');
+  assert.equal(notices.length, 0, 'transparent is faithful as no-paint — no notice');
+  assert.equal(contract.document.pages[0].paint.length, 0,
+    'TransparentShape fills NONE and never strokes — zero ink');
+});
+
+test('audit7 shape: link VERTEX paints nothing (mxArrowConnector has no paintVertexShape)', async () => {
+  const { contract, notices } = await auditProbe('shape=link;fillColor=#ff0000;strokeColor=#00ff00;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint.length, 0,
+    'link as a vertex paints no body in drawio (was an invented S-curve)');
+});
+
+test('audit7 shape: curlyBracket is the NEVER-filled bracket polyline (Shapes.js:1535)', async () => {
+  const { contract, notices } = await auditProbe('shape=curlyBracket;fillColor=#ff00ff;strokeColor=#000000;', 20, 120);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = w*size(0.5) = 10; open polyline through (w,0)(s,0)(s,h/2)(0,h/2)(s,h/2)(s,h)(w,h)
+  assert.match(svg, /<path d="M 20 0 L 10 0 L 10 60 L 0 60 L 10 60 L 10 120 L 20 120" fill="none"/,
+    'bracket polyline (was a closed filled double-C), got: ' + svg);
+  assert.ok(!/ff00ff/.test(svg), 'CurlyBracketShape sets fill NULL — never filled');
+  const rounded = decodeSvgNode((await auditProbe('shape=curlyBracket;rounded=1;strokeColor=#000000;', 20, 120))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(/ d="[^"]*Q[^"]*" fill="none"/.test(rounded), 'rounded=1 rounds the corners via addPoints');
+});
+
+test('audit7 shape: zigzag starts/ends at h/2 with round(w/size)-1 waves (Shapes.js:5708)', async () => {
+  const { contract, notices } = await auditProbe('shape=zigzag;strokeColor=#000000;fillColor=none;', 100, 20);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // size=10: numFull = round(100/10)-1 = 9, halfWave=10, halfEnd=5; inset=sw=1
+  assert.match(svg,
+    /<path d="M 0 10 L 5 1 L 15 19 L 25 1 L 35 19 L 45 1 L 55 19 L 65 1 L 75 19 L 85 1 L 95 19 L 100 10" fill="none"/,
+    'zigzag teeth from the ported painter, got: ' + svg);
+  const filled = decodeSvgNode((await auditProbe('shape=zigzag;strokeColor=#000000;fillColor=#ffcc00;', 100, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.match(filled, /<rect x="0" y="0" width="100" height="20" fill="#ffcc00" stroke="none"/,
+    'background fill is a SEPARATE unstroked rect');
+  const wave = await auditProbe('shape=zigzag;rounded=1;strokeColor=#000000;fillColor=none;', 100, 20);
+  assert.equal(wave.notices.length, 0, 'rounded zigzag (wave) now renders faithfully — no notice');
+  assert.ok(/ d="M 0 10 C [^"]*" fill="none"/.test(decodeSvgNode(wave.contract.document.pages[0].paint[0])),
+    'rounded=1 paints the cubic wave');
+});
+
+test('audit7 shape: gitTag = tabInset/tabSize polygon + hole circle (Shapes.js:6424)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitTag;fillColor=#ffffff;strokeColor=#000000;', 60, 20);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // tabSize=8, tabInset=4: tabY1=8, tabY2=12 — NOT the old arrow-left pentagon
+  assert.ok(svg.includes('M 0 8 L 0 12 L 8 20 L 60 20 L 60 0 L 8 0 Z'),
+    'tag silhouette with the flat tab tip, got: ' + svg);
+  // holeColor falls back to the RESOLVED style fontColor (default.xml
+  // defaultVertex fontColor=default -> theme fg #000000), exactly like the
+  // live getValue(style,'holeColor', getValue(style,'fontColor','#333333')).
+  assert.match(svg, /<ellipse cx="4" cy="10" rx="1" ry="1" fill="#000000" stroke="#000000"/,
+    'pierce hole at (tabSize/2, h/2), holeSize=1, default = resolved fontColor');
+  const red = decodeSvgNode((await auditProbe('shape=gitTag;holeColor=#ff0000;fillColor=#ffffff;strokeColor=#000000;', 60, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.match(red, /<ellipse cx="4" cy="10" rx="1" ry="1" fill="#ff0000"/, 'holeColor= honored');
+  const noHole = decodeSvgNode((await auditProbe('shape=gitTag;holeSize=0;fillColor=#ffffff;strokeColor=#000000;', 60, 20))
+    .contract.document.pages[0].paint[0]);
+  assert.ok(!/<ellipse/.test(noHole), 'holeSize=0 suppresses the hole');
+});
+
+test('audit7 shape: gitMergeCommit inner 0.6-diameter circle in innerColor (Shapes.js:6488)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitMergeCommit;fillColor=#ffffff;strokeColor=#000000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="20" ry="20" fill="#ffffff"/, 'outer circle');
+  assert.match(svg, /<ellipse cx="20" cy="20" rx="12" ry="12" fill="#ececff" stroke="#ececff"/,
+    'inner min(w,h)*0.6 circle in default innerColor #ECECFF');
+});
+
+test('audit7 shape: gitCherryPick eyes + stem in featureColor (Shapes.js:6519)', async () => {
+  const { contract, notices } = await auditProbe('shape=gitCherryPick;fillColor=#1f2020;strokeColor=#000000;', 40, 40);
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  // s = min(w,h)/20 = 2; eyeR = 5.5; eyes at (cx±3s, cy+2s) = (14|26, 24)
+  assert.match(svg, /<ellipse cx="14" cy="24" rx="5.5" ry="5.5" fill="#ffffff"/, 'left eye');
+  assert.match(svg, /<ellipse cx="26" cy="24" rx="5.5" ry="5.5" fill="#ffffff"/, 'right eye');
+  assert.ok(/M 26 22 L 20 10/.test(svg) && /M 14 22 L 20 10/.test(svg),
+    'inverted-V stem lines to (cx, cy-5s), got: ' + svg);
+  assert.match(svg, /stroke-width="2"/, 'stem stroke width = 1*s');
+});
+
+test('audit7 shape: mindmapBang is the 14-arc starburst (Shapes.js:6575)', async () => {
+  const { contract, notices } = await auditProbe('shape=mindmapBang;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const d = contract.document.pages[0].paint[0].d;
+  // W=80 H=48 r=12 ox=8 oy=4.8; first top arc ends at (28, 0)
+  assert.ok(d.startsWith('M 8 4.8 A 12 12 0 0 0 28 0'),
+    'starburst starts at (ox,oy) with the first scallop arc, got: ' + d);
+  assert.equal((d.match(/A /g) || []).length, 14, '4+3+4+3 elliptical arcs');
+  assert.ok(/Z$/.test(d), 'closed silhouette');
+});
+
+test('audit7 shape: ishikawaHead bulges to quad ctrl (2w, h/2) (Shapes.js:6647)', async () => {
+  const { contract, notices } = await auditProbe('shape=ishikawaHead;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 0 60 C 133.333 40 133.333 20 0 0 Z',
+    'fish head: flat left edge + quadTo(2w,h/2) teardrop (was an ellipse)');
+});
+
+test('audit7 shape: mermaidOdd notches the LEFT side inward by h/4 (Shapes.js:6672)', async () => {
+  const { contract, notices } = await auditProbe('shape=mermaidOdd;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  assert.equal(contract.document.pages[0].paint[0].d,
+    'M 0 0 L 15 30 L 0 60 L 100 60 L 100 0 Z',
+    'rect with the inward left chevron (was an ellipse)');
+});
+
+test('audit7 shape: ext;double=1 paints the inner rect at margin max(2,sw+1)+margin (Shapes.js:2220)', async () => {
+  const { contract, notices } = await auditProbe('shape=ext;double=1;fillColor=#ffffff;strokeColor=#000000;');
+  assert.equal(notices.length, 0);
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="0" y="0" width="100" height="60"/, 'outer rect');
+  assert.match(svg, /<rect x="2" y="2" width="96" height="56"/, 'inner rect at default margin 2');
+  const m3 = decodeSvgNode((await auditProbe('shape=ext;double=1;margin=3;fillColor=#ffffff;strokeColor=#000000;'))
+    .contract.document.pages[0].paint[0]);
+  assert.match(m3, /<rect x="5" y="5" width="90" height="50"/, 'margin= style adds to the base margin');
+});
+
+test('audit7 shape: ext symbol0..n emit a LOUD ExporterUnsupportedShape notice', async () => {
+  const { contract, notices } = await auditProbe('shape=ext;double=1;symbol0=cloud;fillColor=#ffffff;strokeColor=#000000;');
+  assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape' &&
+    /symbol0/.test(n.detail.detail)), 'symbols must never be silently dropped');
+  const svg = decodeSvgNode(contract.document.pages[0].paint[0]);
+  assert.match(svg, /<rect x="2" y="2" width="96" height="56"/, 'double rect still renders');
+});
+
+test('audit7: image clipPath/rounded crop reaches the printed SVG', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const page = (style) => `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;${style}image=data:image/png,${png};" parent="1"><mxGeometry x="10" y="10" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  // inset() crop -> svg-wrapped node with a clipPath rect at the crop window.
+  const { contract: cropC, notices: cropN } =
+    await bake(page('clipPath=inset(10% 20% 10% 20%);'), { keepPx: true });
+  assert.equal(cropN.length, 0);
+  const cropNode = cropC.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const cropSvg = Buffer.from(cropNode.source, 'base64').toString('utf8');
+  assert.match(cropSvg, /<clipPath id="imgclip\d+"><rect x="16" y="4" width="48" height="32"/,
+    `inset crop rect: ${cropSvg}`);
+  // rounded=1 -> synthetic inset(0 round r%) clip with rx.
+  const { contract: rndC } = await bake(page('rounded=1;'), { keepPx: true });
+  const rndNode = rndC.document.pages[0].paint.find((n) => n.kind === 'svg');
+  assert.match(Buffer.from(rndNode.source, 'base64').toString('utf8'), /rx="/,
+    'rounded image carries a rounded clip');
+  // unsupported clip form -> full image + LOUD notice, never a silent wrong crop.
+  const { notices: polyN } = await bake(page('clipPath=polygon(0 0, 100% 0, 0 100%);'), { keepPx: true });
+  assert.ok(polyN.some((n) => /clipPath/.test(n.detail.detail)), 'polygon clip is loud');
+});
+
+test('audit7: shadow=1 on a STENCIL paints the offset recolored copy; sketch=1 is LOUD', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=mxgraph.basic.4_point_star;fillColor=#ff0000;shadow=1;" parent="1"><mxGeometry x="40" y="40" width="100" height="100" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0);
+  const svgs = contract.document.pages[0].paint.filter((n) => n.kind === 'svg');
+  assert.equal(svgs.length, 2, 'shadow copy + stencil body');
+  const shadow = Buffer.from(svgs[0].source, 'base64').toString('utf8');
+  assert.match(shadow, /<g opacity="0.25">/);
+  assert.match(shadow, /#000000/);
+  assert.ok(!/#ff0000/.test(shadow), 'shadow copy is fully recolored');
+  // paddedSvgShapeNode grows the shadow viewport by the stroke halo, so
+  // compare with that slack: the offset is (2,3) +- pad.
+  assert.ok(Math.abs((svgs[1].box.x + 2) - svgs[0].box.x) < 1, 'offset ~(2,3)');
+
+  const { notices: skN } = await bake(xml.replace('shadow=1;', 'sketch=1;'), { keepPx: true });
+  assert.ok(skN.some((n) => /sketch=1/.test(n.detail.detail)), 'stencil sketch is loud');
+
+  const builtin = xml.replace('shape=mxgraph.basic.4_point_star;fillColor=#ff0000;shadow=1;',
+    'shape=process;sketch=1;fillStyle=hachure;fillColor=#ff0000;');
+  const { notices: biN } = await bake(builtin, { keepPx: true });
+  assert.ok(biN.some((n) => /sketch=1/.test(n.detail.detail)), 'builtin-branch sketch is loud');
+});
+
+test('audit7: zero/negative-extent cells match drawio (hairline / nothing)', async () => {
+  const page = (w, h) => `<mxGraphModel pageWidth="200" pageHeight="100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="10" y="10" width="${w}" height="${h}" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  // h=0: a horizontal hairline, not a 1px-tall outlined rect.
+  const { contract: lineC } = await bake(page(80, 0), { keepPx: true });
+  const ln = lineC.document.pages[0].paint.find((n) => n.kind === 'path');
+  assert.ok(ln && /^M 10 10 L 90 10$/.test(ln.d), `hairline expected: ${ln && ln.d}`);
+  assert.equal(ln.fill, null);
+  // The LABEL still renders for a degenerate body (drawio mxText does).
+  const { contract: lblC } = await bake(page(80, 0).replace('style=', 'value="DIV" style='), { keepPx: true });
+  assert.ok(lblC.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /DIV/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'zero-extent cell keeps its label');
+  // negative width: drawio paints nothing.
+  const { contract: negC } = await bake(page(-80, 40), { keepPx: true });
+  assert.equal(negC.document.pages[0].paint.length, 0, 'negative extent paints nothing');
+});
+
+test('audit7: shadow ink composes with the shape opacity (createShadow clone semantics)', async () => {
+  // mxSvgCanvas2D.createShadow clones the painted node (keeping its own
+  // fill-opacity) and applies shadowAlpha on top: opacity=50 + shadow=1
+  // prints a 0.25*0.5 = 0.125 shadow, not a flat 0.25.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;shadow=1;opacity=50;" parent="1"><mxGeometry x="40" y="40" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const shadow = contract.document.pages[0].paint.find(
+    (n) => n.kind === 'path' && n.fill && n.fill.color === '#000000');
+  assert.ok(shadow, 'shadow present');
+  assert.ok(Math.abs(shadow.fill.alpha - 0.125) < 0.001,
+    `shadow alpha composes: got ${shadow.fill.alpha}`);
 });

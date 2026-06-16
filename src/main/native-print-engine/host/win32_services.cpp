@@ -8,9 +8,11 @@
 #include "engine_services_factory.hpp"
 
 #include "custom_stock.hpp"
+#include "dash_pattern.hpp"
 #include "print_engine/contract_loader.hpp"
 #include "print_engine/native_print.hpp"
 #include "print_engine/renderer.hpp"
+#include "svg_blit_geometry.hpp"
 #include "svg_rasterizer.hpp"
 
 // GDI+ / Win32 system headers warn under /W4 /WX; silence only the system
@@ -37,6 +39,8 @@
 #include <cctype>
 #include <cwchar>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <set>
@@ -117,14 +121,27 @@ struct PrinterHandle {
   PrinterHandle& operator=(const PrinterHandle&) = delete;
 };
 
-// One-process GDI+ token.
+// One-process GDI+ token. Startup status is kept so render_preview/print can
+// refuse loudly instead of drawing into an uninitialized GDI+ (every later
+// call would fail with confusing per-object statuses or, worse, silently
+// no-op).
 struct GdiplusScope {
   ULONG_PTR token = 0;
+  Gdiplus::Status status = Gdiplus::GenericError;
   GdiplusScope() {
     Gdiplus::GdiplusStartupInput in;
-    Gdiplus::GdiplusStartup(&token, &in, nullptr);
+    status = Gdiplus::GdiplusStartup(&token, &in, nullptr);
+    if (status != Gdiplus::Ok) {
+      token = 0;
+      std::fprintf(stderr,
+                   "[print_engine_host] GdiplusStartup failed (status=%d); "
+                   "preview/print will fail loudly\n",
+                   static_cast<int>(status));
+    }
   }
-  ~GdiplusScope() { Gdiplus::GdiplusShutdown(token); }
+  ~GdiplusScope() {
+    if (status == Gdiplus::Ok) Gdiplus::GdiplusShutdown(token);
+  }
 };
 
 int png_encoder_clsid(CLSID& clsid) {
@@ -171,6 +188,10 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
         "DocumentProperties default fetch failed"});
   }
 
+  // Named-stock paper id requested below, re-checked after the merge: the
+  // driver merge may silently coerce it (see the coercion re-checks).
+  std::optional<short> requested_named_paper;
+
   if (!stock_id.empty()) {
     // Custom stock (v2.0 §5): "custom:<wMicrons>x<hMicrons>" => DMPAPER_USER
     // + dmPaperWidth/Length in tenths of millimetre. No DC_PAPERNAMES lookup;
@@ -203,6 +224,32 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
         return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
             ContractErrorCode::PrintDeviceError, narrow(printer_name),
             "DocumentProperties merge (custom stock) failed"});
+      }
+      // Coercion re-check: DocumentProperties is a MERGE, and drivers may
+      // "helpfully" snap DMPAPER_USER to the nearest named stock or clamp
+      // the dims to their supported range -- which then prints on the
+      // WRONG physical paper with no error anywhere. 1 mm (10 tenth-mm)
+      // of tolerance absorbs benign driver rounding; anything beyond is a
+      // loud typed refusal naming requested vs got (never silently-wrong
+      // paper).
+      {
+        const short want_w = static_cast<short>(custom->width_microns / 100);
+        const short want_h = static_cast<short>(custom->height_microns / 100);
+        constexpr int kTenthMmTolerance = 10;  // 1 mm
+        if (devmode->dmPaperSize != DMPAPER_USER ||
+            std::abs(static_cast<int>(devmode->dmPaperWidth) - want_w) >
+                kTenthMmTolerance ||
+            std::abs(static_cast<int>(devmode->dmPaperLength) - want_h) >
+                kTenthMmTolerance) {
+          return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+              ContractErrorCode::PrintDeviceError, stock_id,
+              "driver coerced the requested custom stock: requested " +
+                  std::to_string(want_w) + "x" + std::to_string(want_h) +
+                  " 0.1mm (DMPAPER_USER), merged DEVMODE has paperSize=" +
+                  std::to_string(devmode->dmPaperSize) + " dims " +
+                  std::to_string(devmode->dmPaperWidth) + "x" +
+                  std::to_string(devmode->dmPaperLength)});
+        }
       }
       return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
     }
@@ -241,6 +288,16 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
       if (name == wanted) {
         devmode->dmFields |= DM_PAPERSIZE;
         devmode->dmPaperSize = static_cast<short>(paper_ids[static_cast<std::size_t>(i)]);
+        requested_named_paper = devmode->dmPaperSize;
+        // Clear any stale explicit dimensions inherited from the printer's
+        // DEFAULT devmode: when DM_PAPERWIDTH/LENGTH are set, drivers
+        // prefer them OVER dmPaperSize during the merge, silently
+        // overriding the named stock with whatever paper the default
+        // happened to describe.
+        devmode->dmFields &=
+            ~static_cast<DWORD>(DM_PAPERWIDTH | DM_PAPERLENGTH);
+        devmode->dmPaperWidth = 0;
+        devmode->dmPaperLength = 0;
         // Orientation stays PORTRAIT (identity mapping): the stock list
         // shown to the operator carries DC_PAPERSIZE dims as-is, and the
         // contract page is baked to those dims. Deriving LANDSCAPE from
@@ -269,6 +326,18 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
     return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
         ContractErrorCode::PrintDeviceError, narrow(printer_name),
         "DocumentProperties merge failed"});
+  }
+  // Coercion re-check (named stock): some drivers replace an unsupported or
+  // tray-mismatched dmPaperSize during the merge and report IDOK -- the job
+  // would then print on a silently different paper than the operator picked.
+  if (requested_named_paper &&
+      devmode->dmPaperSize != *requested_named_paper) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, stock_id,
+        "driver coerced the requested stock: requested dmPaperSize=" +
+            std::to_string(*requested_named_paper) +
+            ", merged DEVMODE has dmPaperSize=" +
+            std::to_string(devmode->dmPaperSize)});
   }
   return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
 }
@@ -436,6 +505,9 @@ Gdiplus::LineJoin line_join(const std::string& join) {
 struct StyledPen {
   std::unique_ptr<Gdiplus::Brush> brush;
   std::unique_ptr<Gdiplus::Pen> pen;
+  // SetDashPattern status: an InvalidParameter would otherwise print a
+  // SILENTLY SOLID line -- the caller must fail loudly instead.
+  bool dash_ok = true;
 };
 
 StyledPen make_pen(const StrokeStyle& stroke,
@@ -450,18 +522,20 @@ StyledPen make_pen(const StrokeStyle& stroke,
   styled.pen->SetLineJoin(line_join(stroke.join));
   styled.pen->SetMiterLimit(static_cast<Gdiplus::REAL>(stroke.miter_limit));
   if (!stroke.dash.empty()) {
-    // GDI+ dash-array elements are MULTIPLES OF PEN WIDTH; the contract
-    // carries absolute units (SVG stroke-dasharray semantics, already
-    // pre-multiplied by stroke width on the producer side). Feeding raw
-    // values printed dash lengths proportional to width^2 -- divide by the
-    // stroke width so device dash length == value * scale.
-    const double width_divisor = std::max(stroke.width, 1e-6);
-    std::vector<Gdiplus::REAL> dash;
-    dash.reserve(stroke.dash.size());
-    for (const double value : stroke.dash) {
-      dash.push_back(static_cast<Gdiplus::REAL>(value / width_divisor));
+    // Normalization (÷width for GDI+'s pen-width-multiple semantics +
+    // defensive odd-count doubling per SVG repeat rules) lives in
+    // dash_pattern.hpp so it is unit-testable off-Windows.
+    const std::vector<float> dash =
+        print_engine::host::gdiplus_dash_pattern(stroke.dash, stroke.width);
+    styled.dash_ok =
+        styled.pen->SetDashPattern(dash.data(), static_cast<INT>(dash.size())) ==
+        Gdiplus::Ok;
+    // SVG applies the line cap to every dash end; GDI+ defaults to flat.
+    // There is no square dash cap in GDI+ -- "square" keeps flat (the
+    // closest available shape), a documented residual.
+    if (stroke.cap == "round") {
+      styled.pen->SetDashCap(Gdiplus::DashCapRound);
     }
-    styled.pen->SetDashPattern(dash.data(), static_cast<INT>(dash.size()));
   }
   return styled;
 }
@@ -607,10 +681,16 @@ struct DrawResult {
 
 void push_notice_unique(std::vector<DegradationNotice>& notices,
                         DegradationNotice notice) {
+  // Compare ALL five fields, exactly like the engine renderer's dedupe:
+  // the print path encodes the tile index in resolved_value, so a 3-field
+  // compare collapsed DISTINCT per-tile notices into one (silent loss of
+  // the second tile's report).
   const auto duplicate = std::find_if(
       notices.begin(), notices.end(), [&notice](const DegradationNotice& n) {
         return n.type == notice.type && n.page_id == notice.page_id &&
-               n.detail == notice.detail;
+               n.detail == notice.detail &&
+               n.symbology == notice.symbology &&
+               n.resolved_value == notice.resolved_value;
       });
   if (duplicate == notices.end()) {
     notices.push_back(std::move(notice));
@@ -698,11 +778,25 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           static_cast<Gdiplus::REAL>(c.device_box.w),
           static_cast<Gdiplus::REAL>(c.device_box.h));
       if (c.fill.has_value()) {
+        if (c.fill->type == PaintType::Radial && !c.fill->stops.empty()) {
+          // GDI+ PathGradientBrush paints ONLY inside its boundary ellipse;
+          // SVG radial semantics (spreadMethod=pad) extend the outermost
+          // stop to the rest of the geometry. Without this under-fill the
+          // corners of a radial-filled rectangle print with NO ink at all
+          // -- silently, in preview and print alike.
+          Gdiplus::SolidBrush pad_brush(gdip_color(c.fill->stops.back().color));
+          g.FillPath(&pad_brush, &path);
+        }
         auto brush = make_brush(*c.fill, bounds);
         g.FillPath(brush.get(), &path);
       }
       if (c.stroke.has_value()) {
         auto styled_pen = make_pen(*c.stroke, bounds, command_scale(c));
+        if (!styled_pen.dash_ok) {
+          return Result<DrawResult, ContractError>::err(ContractError{
+              ContractErrorCode::ContractValueError, current_page_id,
+              "GDI+ rejected the stroke dash pattern (would print solid)"});
+        }
         g.DrawPath(styled_pen.pen.get(), &path);
       }
     } else if (c.kind == EmittedKind::Text) {
@@ -811,7 +905,9 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
 
         if (s.empty()) return 0.0;
         Gdiplus::RectF bb;
-        g.MeasureString(s.c_str(), -1, &f,
+        // Explicit length: JSON \u0000 is legal text; -1 (nul-terminated)
+        // silently truncated measure AND draw at the first NUL.
+        g.MeasureString(s.c_str(), static_cast<INT>(s.size()), &f,
                         Gdiplus::RectF(0, 0, 1.0e6f, 1.0e6f), fmt.get(), &bb);
         return bb.Width;
       };
@@ -834,6 +930,10 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         std::size_t para = 0;
         double width = 0.0;
         double height = 0.0;
+        // Advance of the LAST token's trailing space: browsers collapse it
+        // at a line end, so wrap decisions and alignment must exclude it
+        // (rich tokens keep "word " spacing internally).
+        double trailing = 0.0;
       };
       struct Layout {
         std::vector<Line> lines;
@@ -893,18 +993,34 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                 auto m = measure_seg(seg);
                 const double w = m.width;
                 const double h = m.height;
-                if (do_wrap && !cur.segs.empty() && (cur.width + w) > avail) {
+                double trail = 0.0;
+                if (!tok.empty() && tok.back() == L' ') {
+                  Seg core{tok.substr(0, tok.size() - 1), pi, st,
+                           run.underline, run.strikethrough};
+                  trail = std::max(0.0, w - measure_seg(core).width);
+                }
+                // Exclude the line's pending trailing space AND the
+                // candidate's own trailing space from the wrap test --
+                // browsers collapse spaces at line ends, so wrapping one
+                // space-width early diverged from the editor's breaks.
+                if (do_wrap && !cur.segs.empty() &&
+                    (cur.width - cur.trailing + (w - trail)) > avail) {
+                  cur.width -= cur.trailing;  // collapsed at the line end
                   L.lines.push_back(cur);
                   cur = Line{}; cur.para = pi;
                 }
                 cur.segs.push_back(seg);
                 cur.width += w;
+                cur.trailing = trail;
                 cur.height = std::max(cur.height, h);
                 if (sp == std::wstring::npos) break;
                 pos = sp + 1;
               }
             }
-            if (!cur.segs.empty() || para.runs.empty()) L.lines.push_back(cur);
+            if (!cur.segs.empty() || para.runs.empty()) {
+              cur.width -= cur.trailing;  // collapsed at the line end
+              L.lines.push_back(cur);
+            }
           }
         } else {
           for (std::size_t pi = 0; pi < paragraphs.size(); ++pi) {
@@ -1056,7 +1172,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           Gdiplus::Font seg_font(&seg_use, static_cast<Gdiplus::REAL>(seg.st.em), seg.st.style, Gdiplus::UnitPixel);
           const double dy = std::max(0.0, line_max_ascent - m.ascent);
           const double draw_y = y + dy;
-          g.DrawString(seg.text.c_str(), -1, &seg_font,
+          g.DrawString(seg.text.c_str(), static_cast<INT>(seg.text.size()), &seg_font,
                        Gdiplus::PointF(static_cast<Gdiplus::REAL>(x), static_cast<Gdiplus::REAL>(draw_y)),
                        fmt.get(), &seg_brush);
           const double thickness = std::max(1.0, seg.st.em * 0.06);
@@ -1091,10 +1207,6 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           static_cast<Gdiplus::REAL>(c.device_box.y),
           static_cast<Gdiplus::REAL>(c.device_box.w),
           static_cast<Gdiplus::REAL>(c.device_box.h));
-      const std::uint32_t target_w =
-          static_cast<std::uint32_t>(std::max(1, c.raster_width_px));
-      const std::uint32_t target_h =
-          static_cast<std::uint32_t>(std::max(1, c.raster_height_px));
       bool rasterized = false;
       std::string raster_fail_detail;
       if (svg_rasterizer == nullptr || !svg_rasterizer->available()) {
@@ -1123,6 +1235,41 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                 "svg_source contains <foreignObject>; refusing loudly "
                 "(host transcribes HTML labels before bake)";
           } else {
+            // Aspect policy lives HERE (the shim stretches to exactly the
+            // requested pixel size): "preserve" aspect-fits the SVG's
+            // intrinsic size inside the device box and rasterizes at that
+            // snapped sub-rect; "fill" -- or an SVG with no usable
+            // intrinsic ratio, per the CSS replaced-element rules -- uses
+            // the full box. The snapped INTEGER rect is also the blit
+            // destination, so the raster reaches the page strictly 1:1
+            // (INV-5: deterministic bytes, never resampled into a
+            // fractional rect).
+            print_engine::host::SvgBlitRect blit =
+                print_engine::host::snap_svg_blit_rect(
+                    c.device_box.x, c.device_box.y, c.device_box.w,
+                    c.device_box.h);
+            if (c.image_aspect == "preserve") {
+              double intrinsic_w = 0.0;
+              double intrinsic_h = 0.0;
+              if (print_engine::host::svg_intrinsic_size(decoded, intrinsic_w,
+                                                         intrinsic_h)) {
+                blit = print_engine::host::svg_blit_rect_preserve(
+                    c.device_box.x, c.device_box.y, c.device_box.w,
+                    c.device_box.h, intrinsic_w, intrinsic_h);
+              }
+            }
+            // The engine ceiling caps each SIDE at 100k px; cap the AREA
+            // too so the premul staging buffer (w*h*4) cannot demand tens
+            // of GB and kill the job mid-document via bad_alloc.
+            constexpr double kMaxSvgRasterArea = 100000000.0;  // 100 MPx
+            if (static_cast<double>(blit.w) * static_cast<double>(blit.h) >
+                kMaxSvgRasterArea) {
+              return Result<DrawResult, ContractError>::err(ContractError{
+                  ContractErrorCode::ContractValueError, current_page_id,
+                  "svg raster area exceeds the 100 megapixel host ceiling"});
+            }
+            const std::uint32_t target_w = static_cast<std::uint32_t>(blit.w);
+            const std::uint32_t target_h = static_cast<std::uint32_t>(blit.h);
             const SvgRasterResult rr = svg_rasterizer->render(
                 decoded, target_w, target_h, raster_dpi);
             // Promote to size_t BEFORE multiplying so a 64K x 64K SVG
@@ -1143,13 +1290,22 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                                      static_cast<INT>(out_h_sz), stride,
                                      PixelFormat32bppPARGB, premul.data());
               if (bitmap.GetLastStatus() == Gdiplus::Ok) {
-                const Gdiplus::RectF dst = image_destination(
-                    c, static_cast<Gdiplus::REAL>(out_w_sz),
-                    static_cast<Gdiplus::REAL>(out_h_sz));
-                g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
-                            static_cast<Gdiplus::REAL>(out_w_sz),
-                            static_cast<Gdiplus::REAL>(out_h_sz),
-                            Gdiplus::UnitPixel);
+                // Strictly 1:1: integer destination rect == raster size,
+                // nearest-neighbour + half-pixel offset pinned so GDI+
+                // cannot blend edge pixels with the transparent border
+                // (the classic seam/soften artifact of the defaults).
+                // Same draw_trace runs for preview and print (INV-5), so
+                // pinning here keeps both sinks identical by construction.
+                const Gdiplus::PixelOffsetMode prev_pom = g.GetPixelOffsetMode();
+                const Gdiplus::InterpolationMode prev_im = g.GetInterpolationMode();
+                g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+                g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+                g.DrawImage(&bitmap,
+                            Gdiplus::Rect(blit.x, blit.y, blit.w, blit.h),
+                            0, 0, static_cast<INT>(out_w_sz),
+                            static_cast<INT>(out_h_sz), Gdiplus::UnitPixel);
+                g.SetPixelOffsetMode(prev_pom);
+                g.SetInterpolationMode(prev_im);
                 rasterized = true;
                 push_notice_unique(
                     result.notices,
@@ -1186,7 +1342,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
         Gdiplus::Font font(&arial, 10.0f, Gdiplus::FontStyleRegular,
                            Gdiplus::UnitPixel);
         const std::wstring text = widen(c.label);
-        g.DrawString(text.c_str(), -1, &font, box, nullptr, &black);
+        g.DrawString(text.c_str(), static_cast<INT>(text.size()), &font, box, nullptr, &black);
         if (raster_fail_detail.empty()) {
           // Defensive: every upstream branch sets a reason; if a future
           // edit forgets, emit a generic loud notice rather than a silent
@@ -1218,7 +1374,7 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       Gdiplus::Font font(&arial, 10.0f, Gdiplus::FontStyleRegular,
                          Gdiplus::UnitPixel);
       const std::wstring text = widen(c.label);
-      g.DrawString(text.c_str(), -1, &font, box, nullptr, &black);
+      g.DrawString(text.c_str(), static_cast<INT>(text.size()), &font, box, nullptr, &black);
     } else if (c.kind == EmittedKind::Image) {
       Gdiplus::RectF box(
           static_cast<Gdiplus::REAL>(c.device_box.x),
@@ -1238,6 +1394,12 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
             "image memory allocation failed"});
       }
       void* dest = GlobalLock(mem);
+      if (dest == nullptr) {
+        GlobalFree(mem);
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, "image",
+            "image memory lock failed"});
+      }
       std::memcpy(dest, bytes.data(), bytes.size());
       GlobalUnlock(mem);
       IStream* stream = nullptr;
@@ -1247,12 +1409,40 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
             ContractErrorCode::ImageDecodeError, "image",
             "image stream creation failed"});
       }
-      Gdiplus::Bitmap bitmap(stream);
+      // useEmbeddedColorManagement = TRUE: the document was authored in a
+      // browser, which honors embedded ICC profiles; decoding without them
+      // printed color-shifted pixels versus what the designer saw.
+      Gdiplus::Bitmap bitmap(stream, TRUE);
       if (bitmap.GetLastStatus() != Gdiplus::Ok) {
         stream->Release();
         return Result<DrawResult, ContractError>::err(ContractError{
             ContractErrorCode::ImageDecodeError, "image",
             "GDI+ bitmap decode failed"});
+      }
+      // EXIF orientation: browsers apply it by default (CSS
+      // image-orientation: from-image), GDI+ never does -- a camera JPEG
+      // pasted into a diagram printed rotated/mirrored otherwise.
+      {
+        const UINT prop_size =
+            bitmap.GetPropertyItemSize(PropertyTagOrientation);
+        if (prop_size > 0) {
+          std::vector<std::uint8_t> prop_buf(prop_size);
+          auto* prop = reinterpret_cast<Gdiplus::PropertyItem*>(prop_buf.data());
+          if (bitmap.GetPropertyItem(PropertyTagOrientation, prop_size,
+                                     prop) == Gdiplus::Ok &&
+              prop->type == PropertyTagTypeShort && prop->value != nullptr) {
+            switch (*static_cast<const std::uint16_t*>(prop->value)) {
+              case 2: bitmap.RotateFlip(Gdiplus::RotateNoneFlipX); break;
+              case 3: bitmap.RotateFlip(Gdiplus::Rotate180FlipNone); break;
+              case 4: bitmap.RotateFlip(Gdiplus::RotateNoneFlipY); break;
+              case 5: bitmap.RotateFlip(Gdiplus::Rotate90FlipX); break;
+              case 6: bitmap.RotateFlip(Gdiplus::Rotate90FlipNone); break;
+              case 7: bitmap.RotateFlip(Gdiplus::Rotate270FlipX); break;
+              case 8: bitmap.RotateFlip(Gdiplus::Rotate270FlipNone); break;
+              default: break;  // 1 = upright
+            }
+          }
+        }
       }
       Gdiplus::GraphicsState state = g.Save();
       if (c.flip_h || c.flip_v) {
@@ -1266,6 +1456,13 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
           c,
           static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
           static_cast<Gdiplus::REAL>(bitmap.GetHeight()));
+      // Pinned sampling modes: GDI+ defaults (PixelOffsetModeNone +
+      // bilinear) blend edge pixels with the transparent border and can
+      // shift content half a pixel. Both sinks run this same code (INV-5),
+      // but the choice must be explicit, not a default. HighQualityBicubic
+      // because image content IS rescaled to the destination box.
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+      g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
       g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
                   static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
                   static_cast<Gdiplus::REAL>(bitmap.GetHeight()),
@@ -1281,6 +1478,28 @@ struct TileTrace {
   std::string page_id;
   int tile_index = 0;
   RenderTrace trace;
+};
+
+// RAII for the printer DC + started document: an exception escaping mid-job
+// (e.g. bad_alloc in a band or raster staging buffer) previously leaked the
+// DC and left a StartDoc'd job neither aborted nor ended -- the spooler
+// could then emit a SILENT PARTIAL document, the exact v2.0 §5.2 forbidden
+// outcome. The destructor aborts the in-flight document and deletes the DC
+// on every exit path; `doc_started` is cleared after a successful EndDoc.
+struct PrinterJobGuard {
+  HDC hdc = nullptr;
+  bool doc_started = false;
+  PrinterJobGuard() = default;
+  PrinterJobGuard(const PrinterJobGuard&) = delete;
+  PrinterJobGuard& operator=(const PrinterJobGuard&) = delete;
+  ~PrinterJobGuard() {
+    if (hdc != nullptr) {
+      if (doc_started) {
+        AbortDoc(hdc);  // never a silent partial (v2.0 §5.2)
+      }
+      DeleteDC(hdc);
+    }
+  }
 };
 
 std::vector<TileTrace> split_tiles(const RenderTrace& trace) {
@@ -1317,7 +1536,7 @@ std::vector<TileTrace> split_tiles(const RenderTrace& trace) {
 }
 
 // Total device extent across all tiles (tiles stacked vertically for preview).
-void trace_extent(const RenderTrace& trace, int& w, int& h) {
+[[nodiscard]] bool trace_extent(const RenderTrace& trace, int& w, int& h) {
   double mw = 0.0, mh = 0.0;
   for (const auto& c : trace.commands) {
     if (c.kind == EmittedKind::StartTile || c.kind == EmittedKind::Clip ||
@@ -1328,8 +1547,19 @@ void trace_extent(const RenderTrace& trace, int& w, int& h) {
       mh = std::max(mh, c.device_box.y + c.device_box.h);
     }
   }
-  w = std::max(1, static_cast<int>(std::lround(mw)));
-  h = std::max(1, static_cast<int>(std::lround(mh)));
+  // ceil, not lround: nearest-rounding cropped up to half a device pixel
+  // from the preview that the print keeps (INV-5 parity at the canvas edge).
+  // Guarded: lround/ceil of an out-of-int-range double is unspecified --
+  // it silently produced a 1x1 white preview for huge-but-finite extents.
+  // The loader caps page/tile extents, so this is defense-in-depth.
+  constexpr double kMaxPreviewExtentPx = 100000.0;
+  if (!std::isfinite(mw) || !std::isfinite(mh) ||
+      mw > kMaxPreviewExtentPx || mh > kMaxPreviewExtentPx) {
+    return false;
+  }
+  w = std::max(1, static_cast<int>(std::ceil(mw)));
+  h = std::max(1, static_cast<int>(std::ceil(mh)));
+  return true;
 }
 
 // Resolve the rasterizer DLL path the same way Windows does for
@@ -1405,13 +1635,29 @@ class Win32Services final : public EngineServices {
     for (const auto& tile : tiles) {
       int tile_w = 0;
       int tile_h = 0;
-      trace_extent(tile.trace, tile_w, tile_h);
+      if (!trace_extent(tile.trace, tile_w, tile_h)) {
+        return Result<PreviewOutput, ContractError>::err(ContractError{
+            ContractErrorCode::ContractValueError, "preview",
+            "preview raster extent exceeds the 100000 px host ceiling"});
+      }
       w = std::max(w, tile_w);
       h += tile_h;
       tile_heights.push_back(tile_h);
     }
 
+    if (gdiplus_.status != Gdiplus::Ok) {
+      return Result<PreviewOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, "preview",
+          "GDI+ failed to initialize at startup"});
+    }
     Gdiplus::Bitmap bmp(w, h, PixelFormat32bppARGB);
+    if (bmp.GetLastStatus() != Gdiplus::Ok) {
+      // A stacked multi-tile canvas can exceed what GDI+ will allocate;
+      // drawing into an invalid bitmap silently no-ops every command.
+      return Result<PreviewOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, "preview",
+          "preview bitmap allocation failed (canvas too large?)"});
+    }
     std::vector<DegradationNotice> device_notices;
     {
       Gdiplus::Graphics g(&bmp);
@@ -1463,6 +1709,12 @@ class Win32Services final : public EngineServices {
     PreviewOutput po;
     po.png.resize(sz);
     void* src = GlobalLock(hg);
+    if (src == nullptr) {
+      stream->Release();
+      return Result<PreviewOutput, ContractError>::err(ContractError{
+          ContractErrorCode::PrintDeviceError, "preview",
+          "preview stream lock failed"});
+    }
     std::memcpy(po.png.data(), src, sz);
     GlobalUnlock(hg);
     stream->Release();
@@ -1494,6 +1746,8 @@ class Win32Services final : public EngineServices {
           ContractErrorCode::PrintDeviceError, printer_id,
           "could not open printer device"});
     }
+    PrinterJobGuard job_guard;
+    job_guard.hdc = hdc;
     const double dpi_x = GetDeviceCaps(hdc, LOGPIXELSX);
     const double dpi_y = GetDeviceCaps(hdc, LOGPIXELSY);
     // Printer DCs draw in PRINTABLE-AREA coordinates: device (0,0) sits
@@ -1509,7 +1763,6 @@ class Win32Services final : public EngineServices {
                               units_per_inch(doc.units)};
     auto rendered = render_to_trace(doc, target, merge, false);
     if (!rendered) {
-      DeleteDC(hdc);
       return Result<PrintOutput, ContractError>::err(rendered.error());
     }
 
@@ -1529,7 +1782,6 @@ class Win32Services final : public EngineServices {
     std::vector<DegradationNotice> device_notices;
     const auto tiles = split_tiles(rendered.value());
     if (tiles.empty()) {
-      DeleteDC(hdc);
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id,
           "render trace contained no printable tiles"});
@@ -1566,10 +1818,10 @@ class Win32Services final : public EngineServices {
     }
 
     if (StartDocW(hdc, &di) <= 0) {
-      DeleteDC(hdc);
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id, "StartDoc failed"});
     }
+    job_guard.doc_started = true;
     for (int copy = 0; copy < n_copies && !aborted; ++copy) {
       for (const auto& tile : tiles) {
         if (StartPage(hdc) <= 0) {
@@ -1633,6 +1885,13 @@ class Win32Services final : public EngineServices {
             }
             Gdiplus::Graphics gp(hdc);
             gp.SetPageUnit(Gdiplus::UnitPixel);
+            // Strictly-1:1 integer blit: pin half-pixel offset + nearest
+            // neighbour so GDI+ cannot resample band edges (the defaults
+            // blend edge rows -> faint seams between adjacent 512px bands
+            // and a half-pixel shift versus the single-bitmap preview;
+            // INV-5).
+            gp.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+            gp.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
             // Opaque blit -> crisp. Status checked: a failed band blit
             // (driver OOM) previously printed a blank 512px stripe with no
             // notice.
@@ -1659,20 +1918,18 @@ class Win32Services final : public EngineServices {
       }
     }
     if (aborted) {
-      AbortDoc(hdc);  // never a silent partial (v2.0 §5.2)
-      DeleteDC(hdc);
+      // job_guard AbortDocs + DeleteDCs (never a silent partial, v2.0 §5.2).
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id, fail_detail});
     }
     // EndDoc can still fail (spooler/driver rejects the document); an
     // unchecked call reported success while nothing reached paper.
     if (EndDoc(hdc) <= 0) {
-      DeleteDC(hdc);
       return Result<PrintOutput, ContractError>::err(ContractError{
           ContractErrorCode::PrintDeviceError, printer_id,
           "EndDoc failed (document rejected by spooler/driver)"});
     }
-    DeleteDC(hdc);
+    job_guard.doc_started = false;  // committed; guard only DeleteDCs now
 
     PrintOutput job;
     job.job_id = "win32-" + printer_id;
@@ -1718,9 +1975,17 @@ class Win32Services final : public EngineServices {
     if (paper_count <= 0) return;
     std::vector<wchar_t> names(static_cast<std::size_t>(paper_count) * 64);
     std::vector<POINT> sizes(static_cast<std::size_t>(paper_count));
-    DeviceCapabilitiesW(printer, nullptr, DC_PAPERNAMES, names.data(), nullptr);
-    DeviceCapabilitiesW(printer, nullptr, DC_PAPERSIZE,
-                        reinterpret_cast<LPWSTR>(sizes.data()), nullptr);
+    // Re-validate the fill counts against the sizing call: a driver race
+    // (paper list changed between calls) or a failing second call would
+    // otherwise read uninitialized name cells / POINTs into the stock list.
+    const int names_count = DeviceCapabilitiesW(printer, nullptr, DC_PAPERNAMES,
+                                                names.data(), nullptr);
+    const int sizes_count = DeviceCapabilitiesW(
+        printer, nullptr, DC_PAPERSIZE, reinterpret_cast<LPWSTR>(sizes.data()),
+        nullptr);
+    if (names_count != paper_count || sizes_count != paper_count) {
+      return;  // inconsistent driver answers: no stocks beats garbage stocks
+    }
     HDC hdc = CreateDCW(L"WINSPOOL", printer, nullptr, nullptr);
     const double dpix = hdc ? GetDeviceCaps(hdc, LOGPIXELSX) : 300.0;
     const double dpiy = hdc ? GetDeviceCaps(hdc, LOGPIXELSY) : 300.0;

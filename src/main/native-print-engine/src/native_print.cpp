@@ -159,10 +159,12 @@ NativeSurfaceResult render_to_native_surface_trace(
   for (const auto& page : document.pages) {
     for (const auto& node : page.paint) {
       if (node.kind == PaintKind::Image && !starts_with_png_signature(node.image_data)) {
+        // This is the PORTABLE pre-decode gate (GDI+ never ran here); the
+        // old "GDI+ bitmap decode failed" text mislabeled the failure site.
         return NativeSurfaceResult::err(ContractError{
           ContractErrorCode::ImageDecodeError,
           page.id,
-          "GDI+ bitmap decode failed"
+          "image payload is not a PNG (signature mismatch)"
         });
       }
     }

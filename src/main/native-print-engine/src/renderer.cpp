@@ -97,6 +97,72 @@ void push_notice_unique(std::vector<DegradationNotice>& notices, DegradationNoti
   }
 }
 
+// Axis-aligned rect subtraction: removes `cut` from `piece`, appending the
+// up-to-4 remaining rects to `out`. Used by the tile-coverage check below.
+void subtract_rect(const Rect& piece, const Rect& cut, std::vector<Rect>& out) {
+  const double px2 = piece.x + piece.w;
+  const double py2 = piece.y + piece.h;
+  const double cx1 = std::max(piece.x, cut.x);
+  const double cy1 = std::max(piece.y, cut.y);
+  const double cx2 = std::min(px2, cut.x + cut.w);
+  const double cy2 = std::min(py2, cut.y + cut.h);
+  if (cx1 >= cx2 || cy1 >= cy2) {
+    out.push_back(piece);  // no overlap
+    return;
+  }
+  if (cy1 > piece.y) {
+    out.push_back(Rect{piece.x, piece.y, piece.w, cy1 - piece.y});
+  }
+  if (cy2 < py2) {
+    out.push_back(Rect{piece.x, cy2, piece.w, py2 - cy2});
+  }
+  if (cx1 > piece.x) {
+    out.push_back(Rect{piece.x, cy1, cx1 - piece.x, cy2 - cy1});
+  }
+  if (cx2 < px2) {
+    out.push_back(Rect{cx2, cy1, px2 - cx2, cy2 - cy1});
+  }
+}
+
+// True when any part of `box` clamped to the page lies outside the union of
+// all tiles by more than `tolerance` in both axes. The renderer's per-tile
+// clip silently drops such content (the page-escape notice only covers
+// content past the PAGE extent), so the caller surfaces it loudly.
+[[nodiscard]] bool escapes_tile_union(
+    const Rect& box,
+    const Rect& page_rect,
+    const std::vector<TileSummary>& tiles,
+    double tolerance) {
+  // Clamp to the page first: content past the page already has its own
+  // notice, and the slop pad must not double-count there.
+  const double bx1 = std::max(box.x, page_rect.x);
+  const double by1 = std::max(box.y, page_rect.y);
+  const double bx2 = std::min(box.x + box.w, page_rect.x + page_rect.w);
+  const double by2 = std::min(box.y + box.h, page_rect.y + page_rect.h);
+  if (bx2 - bx1 <= tolerance || by2 - by1 <= tolerance) {
+    return false;
+  }
+  std::vector<Rect> pieces{Rect{bx1, by1, bx2 - bx1, by2 - by1}};
+  for (const auto& tile : tiles) {
+    const Rect tile_rect{tile.origin.x, tile.origin.y, tile.size.w, tile.size.h};
+    std::vector<Rect> next;
+    next.reserve(pieces.size() * 2);
+    for (const auto& piece : pieces) {
+      subtract_rect(piece, tile_rect, next);
+    }
+    pieces = std::move(next);
+    if (pieces.empty()) {
+      return false;
+    }
+  }
+  for (const auto& piece : pieces) {
+    if (piece.w > tolerance && piece.h > tolerance) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Hard line breaks are preserved; the device sink does all real metric
 // layout (§2 measure-at-the-sink). No fake-metric helpers remain here.
 [[nodiscard]] std::string join_lines(const std::vector<std::string>& lines) {
@@ -139,6 +205,18 @@ RenderResult render_to_trace(
         push_notice_unique(trace.notices, make_notice(
           DegradationNoticeType::HardwareMarginClip, page.id,
           "diagram extends beyond the selected paper and was clipped"));
+        break;
+      }
+    }
+
+    // The per-tile clip silently drops content that sits inside the page
+    // but outside every tile -- a mis-baked tiling (production bakes always
+    // cover the page exactly) would otherwise lose ink with no signal.
+    for (const auto& node : page.paint) {
+      if (escapes_tile_union(node.box, page_rect, page.tiles, escape_tolerance)) {
+        push_notice_unique(trace.notices, make_notice(
+          DegradationNoticeType::TileCoverageGap, page.id,
+          "content inside the page is not covered by any print tile and was clipped"));
         break;
       }
     }

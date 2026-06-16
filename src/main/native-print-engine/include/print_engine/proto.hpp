@@ -130,7 +130,11 @@ enum class NoticeKind {
   ProtoMinorAhead,
   // Device-side success notice for embedded SVG that was rasterized by an
   // external backend. Carries backend identity in `detail`; never silent.
-  SvgArtworkRasterized
+  SvgArtworkRasterized,
+  // Content inside the page but outside the union of its tiles (would be
+  // silently clipped by the per-tile clip). Unknown kinds fail safe to
+  // 'degradation' severity on the JS side, so this is wire-additive.
+  TileCoverageGap
 };
 
 [[nodiscard]] const char* to_wire(NoticeKind kind) noexcept;

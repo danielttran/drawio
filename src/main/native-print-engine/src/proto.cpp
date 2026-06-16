@@ -163,6 +163,7 @@ const char* to_wire(NoticeKind kind) noexcept {
     case NoticeKind::SchemaMinorAhead:  return "SchemaMinorAhead";
     case NoticeKind::ProtoMinorAhead:   return "ProtoMinorAhead";
     case NoticeKind::SvgArtworkRasterized: return "SvgArtworkRasterized";
+    case NoticeKind::TileCoverageGap:   return "TileCoverageGap";
   }
   return "StubbedBarcode";
 }
@@ -175,6 +176,7 @@ NoticeKind map_notice(DegradationNoticeType type) noexcept {
     case DegradationNoticeType::FontSubstitution:  return NoticeKind::FontSubstituted;
     case DegradationNoticeType::MergeClip:         return NoticeKind::MergeClip;
     case DegradationNoticeType::SvgArtworkRasterized: return NoticeKind::SvgArtworkRasterized;
+    case DegradationNoticeType::TileCoverageGap:   return NoticeKind::TileCoverageGap;
   }
   return NoticeKind::StubbedBarcode;
 }

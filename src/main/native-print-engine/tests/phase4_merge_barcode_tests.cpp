@@ -25,12 +25,15 @@ namespace {
     R"(]}]}})";
 }
 
-[[nodiscard]] std::string merge_fixture_with_width(std::string overflow, double box_width, int max_len = 32) {
+[[nodiscard]] std::string merge_fixture_with_width(std::string overflow, double box_width, int max_len = 32,
+                                                   std::string sample = "Sample") {
+  // The loader statically requires sample <= maxLen (the sample renders in
+  // design previews), so fixtures must carry a consistent sample.
   const std::string shrink = overflow == "shrink" ? R"(,"shrinkFloorPx":6)" : "";
   return
     R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
     R"({"id":"page-1","size":{"w":120,"h":80},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":120,"h":80}}],"paint":[)"
-    R"({"kind":"text","box":{"x":10,"y":20,"w":)" + std::to_string(box_width) + R"(,"h":20},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":"Sample","maxLen":)"
+    R"({"kind":"text","box":{"x":10,"y":20,"w":)" + std::to_string(box_width) + R"(,"h":20},"font":{"family":"Arial","sizePx":12,"weight":400,"italic":false,"color":"#000000"},"align":{"h":"left","v":"top"},"content":{"type":"merge","key":"NAME","sample":")" + sample + R"(","maxLen":)"
     + std::to_string(max_len) +
     R"(,"wrap":"none","overflow":")" + overflow + R"(")" + shrink + R"(}})"
     R"(]}]}})";
@@ -94,7 +97,7 @@ TEST_CASE("Phase 4 rejects merge value beyond maxLen") {
 }
 
 TEST_CASE("Phase 4 accepts merge value exactly at maxLen") {
-  const auto loaded = load_baked_contract(merge_fixture_with_width("clip", 200.0, 4));
+  const auto loaded = load_baked_contract(merge_fixture_with_width("clip", 200.0, 4, "ABCD"));
   REQUIRE(loaded);
 
   const auto rendered = render_to_trace(

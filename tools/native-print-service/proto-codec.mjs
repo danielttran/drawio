@@ -13,6 +13,16 @@ const MAX_FRAME_LEN = 64 * 1024 * 1024;
 export function encodeFrame(type, streamId, payload) {
   const p = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
   const frameLen = 1 + 4 + p.length;
+  // Encode-side refusal mirroring C++ encode_frame: an oversize frame is a
+  // TYPED error here. Without this guard the peer's decoder hard-fails on
+  // the length prefix and kills the transport (opaque HOST_CLOSED + respawn
+  // instead of a diagnosable refusal).
+  if (frameLen > MAX_FRAME_LEN) {
+    const err = new Error(
+      `frame payload too large: ${p.length} bytes exceeds the ${MAX_FRAME_LEN} frame limit`);
+    err.code = 'FRAME_TOO_LARGE';
+    throw err;
+  }
   const out = Buffer.allocUnsafe(4 + frameLen);
   out.writeUInt32LE(frameLen, 0);
   out[4] = type;

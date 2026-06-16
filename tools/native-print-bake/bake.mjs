@@ -161,7 +161,13 @@ async function bakePage(pageData, exporterOpts, fetchFn) {
   const page0 = first.contract.document.pages[0];
   const inkMin = pageInkMin(page0);
   const PAD = 2.5; // exporter SVG_PAD slop: boxes legitimately sit ~2px out
-  if (inkMin.x < -PAD || inkMin.y < -PAD) {
+  // Author-fixed page size: positions are PAGE-RELATIVE truth — ink past
+  // the page edge is the owner-ruled HardwareMarginClip edge-clip case,
+  // and shifting the anchor would move every cell off its authored
+  // position. The shift only applies to auto-fit pages, whose origin is
+  // derived from (halo-blind) geometry bounds in the first place.
+  if (!(pageData.paper && pageData.paper.explicit) &&
+      (inkMin.x < -PAD || inkMin.y < -PAD)) {
     const shiftX = Math.min(0, inkMin.x + PAD);
     const shiftY = Math.min(0, inkMin.y + PAD);
     const b = graph.getGraphBounds();
@@ -200,14 +206,19 @@ export async function bake(drawioXml, options) {
   const opts = options || {};
   const parsed = parseDrawio(drawioXml);
 
-  // Determine which pages to bake
-  let pagesToBake = parsed.pages;
-  if (Array.isArray(opts.pages) && opts.pages.length > 0) {
+  // Determine which pages to bake. An EXPLICITLY empty selection is a
+  // caller bug, refused loudly — treating it as "all pages" printed the
+  // whole document when an unattended caller's filter matched nothing.
+  let pagesToBake = parsed.pages.map((p, i) => ({ page: p, ordinal: i }));
+  if (Array.isArray(opts.pages)) {
+    if (opts.pages.length === 0) {
+      throw new RangeError('pages: [] selects nothing; omit the option to bake all pages');
+    }
     pagesToBake = opts.pages.map((i) => {
       if (i < 0 || i >= parsed.pages.length) {
         throw new RangeError(`page index ${i} out of range (file has ${parsed.pages.length} page(s))`);
       }
-      return parsed.pages[i];
+      return { page: parsed.pages[i], ordinal: i };
     });
   }
 
@@ -216,13 +227,15 @@ export async function bake(drawioXml, options) {
   let bakeMeta = null;
 
   for (let idx = 0; idx < pagesToBake.length; idx++) {
-    const pageData = pagesToBake[idx];
+    const pageData = pagesToBake[idx].page;
     const result = await bakePage(
       pageData, { ...(opts.exporterOpts || {}), headless: true }, opts.fetchFn);
     allNotices.push(...result.notices);
-    // Take the single page the exporter produced, tag with ordinal id
+    // Tag with the DOCUMENT ordinal (not the selection index): renumbering
+    // a selected subset made engine notices' pageId point at the wrong
+    // document page.
     const page = result.contract.document.pages[0];
-    page.id = `page-${idx + 1}`;
+    page.id = `page-${pagesToBake[idx].ordinal + 1}`;
     pxPages.push(page);
     // Capture meta from first page (all pages share the same bake mode).
     if (!bakeMeta && result.contract.meta) bakeMeta = result.contract.meta;

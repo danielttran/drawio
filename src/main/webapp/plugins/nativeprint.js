@@ -32,10 +32,22 @@
   // service uses) and forwards a frozen contract to the engine. There is no
   // browser/live-DOM bake — printing has zero browser dependency.
 
-  // Get the current diagram XML for the headless bake.  Returns a bare
-  // <mxGraphModel> string which the headless bake accepts (§3.1 parser).
+  // Get the diagram XML for the headless bake. Multi-page files send the
+  // FULL <mxfile> (the bake produces ALL pages per spec §3.2 — the old
+  // current-page-model export silently never printed pages 2..N); a
+  // single-page editor still sends the bare <mxGraphModel>.
   function getDiagramXml() {
     try {
+      if (ui.pages != null && ui.pages.length > 1 &&
+          typeof ui.getFileData === 'function') {
+        // getFileData(forceVisible, .., .., uncompressed): full file, all
+        // pages, uncompressed XML (the parser also accepts deflate).
+        var fileXml = ui.getFileData(true, null, null, null, null, null,
+          null, null, null, true);
+        if (typeof fileXml === 'string' && fileXml.indexOf('<mxfile') >= 0) {
+          return fileXml;
+        }
+      }
       var codec = new mxCodec();
       var node = codec.encode(ui.editor.graph.getModel());
       return mxUtils.getXml(node);
@@ -221,7 +233,11 @@
         return;
       }
       try {
-        var probeResult = ex.buildResult(ui.editor.graph, paperPx(), { headless: true });
+        // Probe with the SAME inputs the broker bake uses: the document's
+        // own page (no stock-size override), so the compatibility verdict
+        // is about the contract that actually prints. Baking the probe at
+        // the stock size could disagree with the production bake.
+        var probeResult = ex.buildResult(ui.editor.graph, null, { headless: true });
         var blocking = (probeResult.notices || []).filter(function (n) {
           return PROBE_BLOCKING.indexOf(n.kind) >= 0;
         });
@@ -515,6 +531,22 @@
       printRpc.then(function (m) {
         if (m.result === 'PrintResult') {
           status.textContent = 'Printed. Job ' + m.jobId + '.';
+          // PRINT-TIME notices exist that the preview can never produce
+          // (FontSubstituted on the device, StubbedSvgArtwork on a raster
+          // failure, MergeClip): discarding them meant the sheet was
+          // already out with a silent post-print fidelity loss. Surface
+          // them in the same notice panel (degradations show loudly; the
+          // job is done, so this is the operator's record, not a gate).
+          if (m.notices && m.notices.length) {
+            showNotices(m.notices);
+            var printedDegradations = (m.notices || []).filter(function (n) {
+              return severityOf(n.kind) === 'degradation';
+            });
+            if (printedDegradations.length) {
+              status.textContent = 'Printed. Job ' + m.jobId + ' — with ' +
+                printedDegradations.length + ' degradation notice(s); see below.';
+            }
+          }
         } else {
           status.textContent = 'Print failed: ' +
             (m.error || '') + ' ' + (m.detail || '');

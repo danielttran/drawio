@@ -1353,21 +1353,33 @@
   // labelPosition=right is paired with align=left so text starts at the right
   // edge). Width/height for the external band are generous so text isn't clipped.
   function externalLabelBox(style, box) {
+    // Exact mxGraphView.updateVertexLabelOffset + mxCellRenderer label
+    // bounds: the external band is the FULL cell size shifted by one cell
+    // extent (not an invented fontSize-derived band, which landed
+    // band-interior align combos tens of px off), and labelWidth overrides
+    // the band width (center: shifted inside the cell by the align dx).
     var lp = style && style.labelPosition;
     var vlp = style && style.verticalLabelPosition;
+    var lwOver = style && style.labelWidth != null && style.labelWidth !== ''
+      ? number(style.labelWidth, 0) : null;
     var horiz = lp && lp !== 'center';
     var vert = vlp && vlp !== 'middle';
-    if (!horiz && !vert) return box;
+    if (!horiz && !vert && lwOver == null) return box;
     var bx = box.x, by = box.y, bw = box.w, bh = box.h;
     if (vert) {
-      var bandH = Math.max(16, number(style.fontSize, 12) * 1.5);
-      if (vlp === 'bottom') { by = box.y + box.h; bh = bandH; }
-      else if (vlp === 'top') { by = box.y - bandH; bh = bandH; }
+      if (vlp === 'bottom') { by = box.y + box.h; }
+      else if (vlp === 'top') { by = box.y - box.h; }
     }
-    if (horiz) {
-      var sideW = Math.max(box.w, number(style.fontSize, 12) * 8);
-      if (lp === 'right') { bx = box.x + box.w; bw = sideW; }
-      else if (lp === 'left') { bx = box.x - sideW; bw = sideW; }
+    if (lp === 'left') {
+      bw = lwOver != null ? lwOver : box.w;
+      bx = box.x - bw;
+    } else if (lp === 'right') {
+      bx = box.x + box.w;
+      if (lwOver != null) bw = lwOver;
+    } else if (lwOver != null) {
+      var dxA = style.align === 'right' ? 1 : (style.align === 'left' ? 0 : 0.5);
+      bx = box.x - (lwOver - box.w) * dxA;
+      bw = lwOver;
     }
     return { x: bx, y: by, w: bw, h: bh };
   }
@@ -1391,7 +1403,12 @@
     if (plain || s.indexOf('<') < 0) {
       var lit = plain ? String(s) : decodeHtmlEntities(s);
       return lit.split('\n').map(function (line) {
-        return { text: line, size: Math.max(1, number(style.fontSize, 12)),
+        // drawio's plain-text path emits SVG <text> with DEFAULT xml:space:
+        // the browser collapses whitespace runs and trims line edges, so the
+        // editor shows "a b" for "a   b". Preserving the runs printed wider
+        // text than the screen. NBSP survives (it is not XML whitespace).
+        return { text: line.replace(/[ \t]+/g, ' ').replace(/^ | $/g, ''),
+          size: Math.max(1, number(style.fontSize, 12)),
           weight: ((parseInt(style.fontStyle || 0, 10) || 0) & 1) ? 700 : 400,
           gap: 0 };
       });
@@ -2382,7 +2399,11 @@
           richEls = body;
         }
       }
-      var richClipped = style.overflow === 'hidden' || style.overflow === 'fill';
+      // 'block' clips too: mxSvgCanvas2D.createCss block branch caps the
+      // label at max-height=round(h) — the bake printed the overflow lines
+      // the editor clips.
+      var richClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
+        style.overflow === 'block';
       // Label-space overflow: rows can overhang horizontally (minX<0 /
       // maxX>contentW) and the paragraph stack can overhang the top (negative
       // oy for too-tall middle/bottom labels) and/or the bottom.
@@ -2417,19 +2438,30 @@
       }
       wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
-          lineH: b.size * 1.2, gap: b.gap, align: b.align,   // mxConstants.LINE_HEIGHT
+          // plain labels: drawio ROUNDS the line pitch
+          // (mxSvgCanvas2D.plainText lh = Math.round(size * LINE_HEIGHT));
+          // unrounded 1.2 drifted 0.4px per line on e.g. fontSize 13. HTML
+          // labels keep unrounded CSS 1.2 via renderRichLabel, not here.
+          lineH: Math.round(b.size * 1.2), gap: b.gap, align: b.align,
           underline: !!b.underline });
       });
     });
-    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14.4, gap: 0 });
+    if (!rows.length) rows.push({ text: String(label || ''), size: 12, weight: 400, lineH: 14, gap: 0 });
     var totalH = rows.reduce(function (sum, r, i) {
       return sum + r.lineH + (i === 0 ? 0 : r.gap);
     }, 0);
     // mxText.getSpacing(ALIGN_MIDDLE): dy = (spacingTop - spacingBottom)/2.
     // No clamp to 0: a too-tall middle/bottom label spills ABOVE the box
     // (drawio overflow=visible semantics); the viewport grows upward below.
-    var y = v === 'middle' ? (lh - totalH) / 2 + (pt - pb) / 2 :
-      v === 'bottom' ? lh - totalH - pb : pt;
+    // EXCEPT when the label is CLIPPED: mxSvgCanvas2D.plainText
+    // (matchHtmlAlignment) clamps the effective text height to min(H, box)
+    // before applying valign, so the clip window shows the FIRST lines --
+    // the unclamped offset showed the MIDDLE/LAST lines instead.
+    var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
+      style.overflow === 'block';  // createCss block branch clips at round(h)
+    var effTotalH = plainClipped ? Math.min(totalH, lh) : totalH;
+    var y = v === 'middle' ? (lh - effTotalH) / 2 + (pt - pb) / 2 :
+      v === 'bottom' ? lh - effTotalH - pb : pt;
     var yTop = y;
     var decoration = [];
     if (fst & 4) decoration.push('underline');
@@ -2493,7 +2525,6 @@
         textEls + '</g>';
     }
     lastLabelExtent = extentFromLabelSpace(exMinX, yTop, exMaxX, yEnd);
-    var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill';
     return labelSvgAssemble(box, textEls, clipId, plainClipped, gOpacityAttr,
       rotateOverflow(plainOver, vertical));
   }
@@ -2665,9 +2696,19 @@
   // shadowOpacity / shadowOffsetX / shadowOffsetY overrides. The bake previously
   // used black@0.18 at (4,4) — too light and too far offset.
   function shadowParams(style) {
+    // The APP overrides the raw mxConstants defaults (Graph.js:161-162:
+    // SHADOW_OPACITY=0.25, SHADOWCOLOR='#000000'; offsets stay 2,3) — the
+    // earlier #808080@1 matched mxgraph-the-library, not what the drawio
+    // editor actually shows.
+    // mxSvgCanvas2D.createShadow CLONES the painted node (which keeps its
+    // own fill/stroke-opacity from the shape's opacity style) and sets the
+    // clone's group opacity to shadowAlpha — so the effective shadow ink is
+    // shadowAlpha * shape alpha. A flat shadowAlpha printed translucent
+    // shapes' shadows twice as dark as the editor.
     return {
-      color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#808080',
-      alpha: number(style && style.shadowOpacity, 1),
+      color: (style && isPaintable(style.shadowColor)) ? style.shadowColor : '#000000',
+      alpha: number(style && style.shadowOpacity, 0.25) *
+        (style ? opacity(style, 'opacity') : 1),
       dx: number(style && style.shadowOffsetX, 2),
       dy: number(style && style.shadowOffsetY, 3)
     };
@@ -2783,9 +2824,10 @@
   // triangle, hexagon, parallelogram, step, trapezoid, card, manualInput,
   // loopLimit, offPageConnector, corner, tee, singleArrow, doubleArrow) and
   // process round faithfully via roundedPoly/roundedRectPath and are NOT
-  // listed. folder/callout/zigzag mix curves or multi-part paint with the
-  // rounding and are not practically portable in this pass — loud, not silent.
-  var ROUNDED_NOT_YET = { folder: 1, callout: 1, zigzag: 1 };
+  // listed; zigzag rounded=1 is the faithful cubic wave in builtinShapeSvg.
+  // folder/callout mix curves or multi-part paint with the rounding and are
+  // not practically portable in this pass — loud, not silent.
+  var ROUNDED_NOT_YET = { folder: 1, callout: 1 };
 
   function ellipsePath(x, y, w, h) {
     var rx = w / 2, ry = h / 2, cx = x + rx, cy = y + ry;
@@ -3234,19 +3276,20 @@
     // multi-paint shapes handled before shapePath (noteInner/builtinShapeSvg);
     // no silent single-path flattening here.
     if (shape === 'umlState') return roundedRectPath(x, y, w, h, Math.min(w, h) * 0.12);
-    if (shape === 'transparent') return rectPath(x, y, w, h);
+    // transparent / link-as-vertex paint NOTHING in drawio (TransparentShape
+    // fills NONE; LinkShape has no paintVertexShape) — emitVertex skips the
+    // body for both, so they never reach this dispatcher.
     // umlFrame (title pentagon + L-border) is handled by builtinShapeSvg.
-    if (shape === 'ext' || shape === 'message') return rectPath(x, y, w, h);
-    if (shape === 'umlBoundary' || shape === 'umlEntity' || shape === 'umlControl' || shape === 'lollipop' || shape === 'waypoint') return ellipsePath(x, y, w, h);
+    // ext;double=1 (inner rect) and message (rect + flap) are multi-paint
+    // shapes in builtinShapeSvg; a plain ext is the mxRectangleShape rect.
+    if (shape === 'ext') return rectPath(x, y, w, h);
+    // umlBoundary/umlEntity/umlControl/umlLifeline, lollipop/requires/waypoint,
+    // curlyBracket, the *Ellipse decorations, tapeData, dimension, zigzag and
+    // the git* shapes are multi-element or stroke/fill-rule-bending painters —
+    // ported faithfully in builtinShapeSvg (their old single-path mappings here
+    // were wrong silhouettes).
     if (shape === 'umlDestroy') return 'M ' + p(x, y) + ' L ' + p(x + w, y + h) + ' M ' + p(x + w, y) + ' L ' + p(x, y + h);
-    if (shape === 'umlLifeline') return rectPath(x, y, w, h) + ' M ' + p(x + w / 2, y + h * 0.25) + ' L ' + p(x + w / 2, y + h);
-    // requiredInterface / providedRequiredInterface / module are multi-paint
-    // shapes ported faithfully in builtinShapeSvg (the old ellipse/rect
-    // mappings here were wrong silhouettes).
-    if (shape === 'requires') return ellipsePath(x, y, w, h);
     if (shape === 'startState') return ellipsePath(x, y, w, h);
-    if (shape === 'link') return 'M ' + p(x, y + h / 2) + ' C ' + p(x + w / 3, y) + ' ' + p(x + 2 * w / 3, y + h) + ' ' + p(x + w, y + h / 2);
-    if (shape === 'curlyBracket') return 'M ' + p(x + w, y) + ' C ' + p(x, y) + ' ' + p(x + w, y + h / 2) + ' ' + p(x, y + h / 2) + ' C ' + p(x + w, y + h / 2) + ' ' + p(x, y + h) + ' ' + p(x + w, y + h);
     if (shape === 'parallelMarker') return 'M ' + p(x + w * 0.25, y) + ' L ' + p(x + w * 0.25, y + h) + ' M ' + p(x + w * 0.75, y) + ' L ' + p(x + w * 0.75, y + h);
     if (shape === 'corner') {
       // CornerShape (Shapes.js): FILLED L-polygon, dx/dy default 20 clamped to
@@ -3276,20 +3319,53 @@
         { x: x, y: y + teDy }
       ], polyArcSize(style), true);
     }
-    if (shape === 'or' || shape === 'xor' || shape === 'orEllipse' || shape === 'sumEllipse' || shape === 'lineEllipse') return ellipsePath(x, y, w, h);
+    if (shape === 'or') {
+      // OrShape (Shapes.js:3639-3646): D-shape M0,0 Q(w,0)(w,h/2) Q(w,h)(0,h)
+      // Z — was a full ellipse.
+      return 'M ' + p(x, y) + ' Q ' + p(x + w, y) + ' ' + p(x + w, y + h / 2) +
+        ' Q ' + p(x + w, y + h) + ' ' + p(x, y + h) + ' Z';
+    }
+    if (shape === 'xor') {
+      // XorShape (Shapes.js:3658-3666): the OrShape D plus a concave back quad
+      // through (w/2,h/2) to (0,0) — was a full ellipse.
+      return 'M ' + p(x, y) + ' Q ' + p(x + w, y) + ' ' + p(x + w, y + h / 2) +
+        ' Q ' + p(x + w, y + h) + ' ' + p(x, y + h) +
+        ' Q ' + p(x + w / 2, y + h / 2) + ' ' + p(x, y) + ' Z';
+    }
     if (shape === 'sortShape') return rhombusPath(x, y, w, h) + ' M ' + p(x, y + h / 2) + ' L ' + p(x + w, y + h / 2);
     if (shape === 'collate') return 'M ' + p(x, y) + ' L ' + p(x + w, y) + ' L ' + p(x + w / 2, y + h / 2) + ' Z M ' + p(x, y + h) + ' L ' + p(x + w, y + h) + ' L ' + p(x + w / 2, y + h / 2) + ' Z';
-    if (shape === 'dimension') return rectPath(x, y, w, h);
-    if (shape === 'tapeData') return tapePath(x, y, w, h);
-    if (shape === 'gitTag') return 'M ' + p(x, y) + ' L ' + p(x + w * 0.78, y) + ' L ' + p(x + w, y + h / 2) + ' L ' + p(x + w * 0.78, y + h) + ' L ' + p(x, y + h) + ' Z';
-    if (shape === 'gitMergeCommit' || shape === 'gitCherryPick' || shape === 'mindmapBang' || shape === 'ishikawaHead' || shape === 'mermaidOdd') return ellipsePath(x, y, w, h);
-    if (shape === 'zigzag') {
-      var zz = 'M ' + p(x, y + h);
-      var steps = 16;
-      for (var zi = 1; zi <= steps; zi++) {
-        zz += ' L ' + p(x + w * zi / steps, y + (zi % 2 ? 0 : h));
-      }
-      return zz;
+    if (shape === 'mindmapBang') {
+      // MindmapBangShape (Shapes.js:6575-6618): starburst of elliptical arcs —
+      // design box W,H = 0.8*cell offset by (0.10W, 0.10H) so the spike tips
+      // touch the cell edges. Verbatim port of the arcTo delta sequence
+      // (4 top, 3 right, 4 bottom, 3 left). Was a plain ellipse.
+      var bW = w * 0.8, bH = h * 0.8;
+      var bR = bW * 0.15, bR8 = bR * 0.8;
+      var bPx = bW * 0.10, bPy = bH * 0.10;
+      var bD = 'M ' + p(x + bPx, y + bPy);
+      var bArc = function (r, dx2, dy2) {
+        bPx += dx2; bPy += dy2;
+        bD += ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 0 ' + p(x + bPx, y + bPy);
+      };
+      bArc(bR, bW * 0.25, -bH * 0.10); bArc(bR, bW * 0.25, 0);
+      bArc(bR, bW * 0.25, 0); bArc(bR, bW * 0.25, bH * 0.10);
+      bArc(bR, bW * 0.15, bH * 0.33); bArc(bR8, 0, bH * 0.34); bArc(bR, -bW * 0.15, bH * 0.33);
+      bArc(bR, -bW * 0.25, bH * 0.15); bArc(bR, -bW * 0.25, 0);
+      bArc(bR, -bW * 0.25, 0); bArc(bR, -bW * 0.25, -bH * 0.15);
+      bArc(bR, -bW * 0.10, -bH * 0.33); bArc(bR8, 0, -bH * 0.34); bArc(bR, bW * 0.10, -bH * 0.33);
+      return bD + ' Z';
+    }
+    if (shape === 'ishikawaHead') {
+      // IshikawaHeadShape (Shapes.js:6647-6654): flat left edge + quadTo(2w,
+      // h/2) teardrop bulge back to the origin. Was a plain ellipse.
+      return 'M ' + p(x, y) + ' L ' + p(x, y + h) +
+        ' Q ' + p(x + 2 * w, y + h / 2) + ' ' + p(x, y) + ' Z';
+    }
+    if (shape === 'mermaidOdd') {
+      // OddShape (Shapes.js:6672-6683): rectangle with an inward left chevron
+      // notch = h/4. Was a plain ellipse.
+      return 'M ' + p(x, y) + ' L ' + p(x + h / 4, y + h / 2) + ' L ' + p(x, y + h) +
+        ' L ' + p(x + w, y + h) + ' L ' + p(x + w, y) + ' Z';
     }
     if (shape === 'rectangle' || shape === 'label' || !shape) {
       return boolish(style.rounded)
@@ -3857,6 +3933,297 @@
       var mbStrk = strk.replace(/stroke-linejoin="[^"]*"/, 'stroke-linejoin="round"');
       return '<path d="' + mbD + '"' + fill + mbStrk + '/>';
     }
+    if (shape === 'orEllipse' || shape === 'sumEllipse' ||
+        shape === 'lineEllipse' || shape === 'tapeData') {
+      // mxEllipse subclasses that paint the full ellipse (fillAndStroke) plus
+      // STROKE-ONLY decoration lines — previously the lines were silently
+      // dropped (the whole shape baked as a bare ellipse):
+      //   orEllipse  (Shapes.js:3750-3766): horizontal AND vertical mid lines.
+      //   sumEllipse (Shapes.js:3778-3795): two diagonals inset by s2=0.145.
+      //   lineEllipse(Shapes.js:3983-4003): one mid line, vertical when
+      //                                     line=vertical, else horizontal.
+      //   tapeData   (Shapes.js:3729-3738): bottom-center -> bottom-right line.
+      var oeBody = '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h / 2) + '"' + fill + strk + '/>';
+      var oeD;
+      if (shape === 'orEllipse') {
+        oeD = 'M ' + p(0, h / 2) + ' L ' + p(w, h / 2) +
+          ' M ' + p(w / 2, 0) + ' L ' + p(w / 2, h);
+      } else if (shape === 'sumEllipse') {
+        var seS2 = 0.145;
+        oeD = 'M ' + p(w * seS2, h * seS2) + ' L ' + p(w * (1 - seS2), h * (1 - seS2)) +
+          ' M ' + p(w * (1 - seS2), h * seS2) + ' L ' + p(w * seS2, h * (1 - seS2));
+      } else if (shape === 'lineEllipse') {
+        oeD = style.line === 'vertical'
+          ? 'M ' + p(w / 2, 0) + ' L ' + p(w / 2, h)
+          : 'M ' + p(0, h / 2) + ' L ' + p(w, h / 2);
+      } else {
+        oeD = 'M ' + p(w / 2, h) + ' L ' + p(w, h);
+      }
+      return oeBody + '<path d="' + oeD + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'dimension') {
+      // DimensionShape (Shapes.js:3856-3882): STROKE-ONLY double-headed
+      // dimension arrow — end bars full height, the measure line + arrowheads
+      // near the bottom. sw = strokeWidth/2, al = 10 + 2*sw, cy = h - al/2.
+      // fillColor is never painted. Was a filled rectangle.
+      var dmSw = Math.max(0.1, number(style.strokeWidth, 1)) / 2;
+      var dmAl = 10 + 2 * dmSw;
+      var dmCy = h - dmAl / 2;
+      var dmD = 'M ' + p(0, 0) + ' L ' + p(0, h) +
+        ' M ' + p(dmSw, dmCy) + ' L ' + p(dmSw + dmAl, dmCy - dmAl / 2) +
+        ' M ' + p(dmSw, dmCy) + ' L ' + p(dmSw + dmAl, dmCy + dmAl / 2) +
+        ' M ' + p(dmSw, dmCy) + ' L ' + p(w - dmSw, dmCy) +
+        ' M ' + p(w, 0) + ' L ' + p(w, h) +
+        ' M ' + p(w - dmSw, dmCy) + ' L ' + p(w - dmAl - dmSw, dmCy - dmAl / 2) +
+        ' M ' + p(w - dmSw, dmCy) + ' L ' + p(w - dmAl - dmSw, dmCy + dmAl / 2);
+      return '<path d="' + dmD + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'umlBoundary') {
+      // UmlBoundaryShape (Shapes.js:2397-2418): stroke-only left bar h/4->3h/4
+      // and connector (0,h/2)->(w/6,h/2), then the ellipse at (w/6,0,5w/6,h)
+      // fillAndStroke. Was a full-cell ellipse without the bar/connector.
+      return '<path d="M ' + p(0, h / 4) + ' L ' + p(0, h * 3 / 4) +
+        ' M ' + p(0, h / 2) + ' L ' + p(w / 6, h / 2) + '" fill="none"' + strk + '/>' +
+        '<ellipse cx="' + fmt(w * 7 / 12) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(w * 5 / 12) + '" ry="' + fmt(h / 2) + '"' + fill + strk + '/>';
+    }
+    if (shape === 'umlEntity') {
+      // UmlEntityShape (Shapes.js:2430-2438): ellipse + stroke-only bottom
+      // underline from w/8 to 7w/8 at y+h. The underline was silently dropped.
+      return '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h / 2) + '"' + fill + strk + '/>' +
+        '<path d="M ' + p(w / 8, h) + ' L ' + p(w * 7 / 8, h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'umlControl') {
+      // UmlControlShape (Shapes.js:2479-2502): upper arrow stroke (3w/8,
+      // 1.1h/8)->(5w/8,0), ellipse at (0,h/8,w,7h/8) fillAndStroke, then the
+      // lower arrow stroke (3w/8,1.1h/8)->(5w/8,h/4) in paintForeground.
+      return '<path d="M ' + p(w * 3 / 8, h / 8 * 1.1) + ' L ' + p(w * 5 / 8, 0) + '" fill="none"' + strk + '/>' +
+        '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 8 + h * 7 / 16) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h * 7 / 16) + '"' + fill + strk + '/>' +
+        '<path d="M ' + p(w * 3 / 8, h / 8 * 1.1) + ' L ' + p(w * 5 / 8, h / 4) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'umlLifeline') {
+      // UmlLifeline (Shapes.js:2530-2561): header of height size (default 40,
+      // clamped to h) — the default mxRectangleShape rect, or the participant=
+      // sub-shape when it names another registered shape — plus the stem
+      // (w/2,size)->(w/2,h) dashed per lifelineDashed (default on). Previously
+      // the FULL cell was a filled rect with a solid stem from 0.25h.
+      var llSz = Math.max(0, Math.min(h, number(style.size, 40)));
+      var llOut = null;
+      // drawio resolves participant via cellRenderer.getShape and refuses
+      // UmlLifeline itself; mirror with the builtin/shapePath dispatchers
+      // (emitVertex emits the LOUD notice when this resolution fails).
+      if (style.participant && style.participant !== 'umlLifeline') {
+        var llSub = Object.assign({}, style, { shape: style.participant });
+        llOut = builtinShapeSvgImpl(llSub, w, llSz, gradId);
+        if (llOut == null) {
+          var llD = shapePath(llSub, 0, 0, w, llSz);
+          if (llD) llOut = '<path d="' + llD + '"' + fill + strk + '/>';
+        }
+      }
+      if (llOut == null) {
+        llOut = boolish(style.rounded)
+          ? '<path d="' + roundedRectPath(0, 0, w, llSz, roundedRectRadius(style, w, llSz)) + '"' + fill + strk + '/>'
+          : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(llSz) + '"' + fill + strk + '/>';
+        if (boolish(style.glass) && isPaintable(style.fillColor)) {
+          llOut += glassOverlaySvg(style, w, llSz);
+        }
+      }
+      if (llSz < h) {
+        var llDashed = String(style.lifelineDashed == null ? '1' : style.lifelineDashed) === '1';
+        llOut += '<path d="M ' + p(w / 2, llSz) + ' L ' + p(w / 2, h) + '" fill="none"' +
+          strokeSvgAttrs(Object.assign({}, style, { dashed: llDashed ? '1' : '0' })) + '/>';
+      }
+      return llOut;
+    }
+    if (shape === 'message') {
+      // MessageShape (Shapes.js:2325-2342, mxCylinder two-pass): rect
+      // background fillAndStroke + STROKE-ONLY envelope flap 0,0 -> w/2,h/2 ->
+      // w,0. The flap was silently dropped.
+      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
+        '<path d="M 0 0 L ' + p(w / 2, h / 2) + ' L ' + p(w, 0) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'lollipop') {
+      // LollipopShape (Shapes.js:3028-3041): size circle (default 10) at the
+      // top-center (fillAndStroke) + stroke-only stem to the bottom. Was a
+      // full-cell ellipse.
+      var lpSz = number(style.size, 10);
+      return '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(lpSz / 2) +
+        '" rx="' + fmt(lpSz / 2) + '" ry="' + fmt(lpSz / 2) + '"' + fill + strk + '/>' +
+        '<path d="M ' + p(w / 2, lpSz) + ' L ' + p(w / 2, h) + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'requires') {
+      // RequiresShape (Shapes.js:3057-3074): STROKE-ONLY stem + open half-arc
+      // around the (would-be) lollipop, inset = (style inset default 2) +
+      // strokewidth; size default 10. Never filled. Was a filled ellipse.
+      var rqSz = number(style.size, 10);
+      var rqIn = number(style.inset, 2) + Math.max(0.1, number(style.strokeWidth, 1));
+      return '<path d="M ' + p(w / 2, rqSz + rqIn) + ' L ' + p(w / 2, h) + '" fill="none"' + strk + '/>' +
+        '<path d="M ' + p((w - rqSz) / 2 - rqIn, rqSz / 2) +
+        ' Q ' + p((w - rqSz) / 2 - rqIn, rqSz + rqIn) + ' ' + p(w / 2, rqSz + rqIn) +
+        ' Q ' + p((w + rqSz) / 2 + rqIn, rqSz + rqIn) + ' ' + p((w + rqSz) / 2 + rqIn, rqSz / 2) +
+        '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'waypoint') {
+      // WaypointShape (Shapes.js:500-510): a centered dot of diameter
+      // max(0,size-2)+2*sw (size default 6) FILLED with the STROKE color
+      // (c.setFillColor(this.stroke); c.fill()) — never stroked; the cell rect
+      // is filled NONE (invisible). Was a full-cell fillColor ellipse.
+      var wpS = Math.max(0, number(style.size, 6) - 2) +
+        2 * Math.max(0.1, number(style.strokeWidth, 1));
+      if (!isPaintable(style.strokeColor) || wpS <= 0) return '';
+      var wpA = opacity(style, 'fillOpacity');
+      return '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(wpS / 2) + '" ry="' + fmt(wpS / 2) +
+        '" fill="' + hex(style.strokeColor) + '"' +
+        (wpA < 1 ? ' fill-opacity="' + fmt(wpA) + '"' : '') + ' stroke="none"/>';
+    }
+    if (shape === 'curlyBracket') {
+      // CurlyBracketShape (Shapes.js:1535-1544): c.setFillColor(null) — NEVER
+      // filled; open polyline (w,0)(s,0)(s,h/2)(0,h/2)(s,h/2)(s,h)(w,h) with
+      // s = w*size (default 0.5), rounded via addPoints (close=false). Was a
+      // closed, fillable double-C of invented cubics.
+      var cbS = w * Math.max(0, Math.min(1, number(style.size, 0.5)));
+      var cbD = roundedPoly([
+        { x: w, y: 0 }, { x: cbS, y: 0 }, { x: cbS, y: h / 2 }, { x: 0, y: h / 2 },
+        { x: cbS, y: h / 2 }, { x: cbS, y: h }, { x: w, y: h }
+      ], polyArcSize(style), false);
+      return '<path d="' + cbD + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'zigzag') {
+      // ZigzagShape (Shapes.js:5708-5796): optional UNSTROKED background rect
+      // in fillColor, then the stroke-only tooth line from (0,h/2) to (w,h/2):
+      // numFull = max(1, round(w/size)-1) peak-to-peak segments (size default
+      // 10, min 5) between half-width end segments, peaks inset by sw (sw/2
+      // when rounded); rounded=1 draws the cubic wave with k=0.4. Was a fixed
+      // 16-step full-height sawtooth that ignored size/fill/rounded.
+      var zzOut = '';
+      if (isPaintable(style.fillColor)) {
+        zzOut += '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' +
+          fill + ' stroke="none"/>';
+      }
+      var zzSize = Math.max(5, number(style.size, 10));
+      var zzCy = h / 2;
+      var zzSw = Math.max(0.1, number(style.strokeWidth, 1));
+      var zzRounded = boolish(style.rounded);
+      var zzInset = zzRounded ? zzSw / 2 : zzSw;
+      var zzTop = zzInset, zzBot = h - zzInset;
+      var zzN = Math.max(1, Math.round(w / zzSize) - 1);
+      var zzHalf = w / (zzN + 1);
+      var zzEnd = zzHalf / 2;
+      var zzD = 'M ' + p(0, zzCy);
+      var zzJ;
+      if (zzRounded) {
+        var zzK = 0.4;
+        zzD += ' C ' + p(zzK * zzEnd, zzCy - (zzCy - zzTop) * zzK) + ' ' +
+          p((1 - zzK) * zzEnd, zzTop) + ' ' + p(zzEnd, zzTop);
+        for (zzJ = 0; zzJ < zzN; zzJ++) {
+          var zzSx = zzEnd + zzJ * zzHalf, zzEx = zzSx + zzHalf;
+          var zzSy = (zzJ % 2 === 0) ? zzTop : zzBot;
+          var zzEy = (zzJ % 2 === 0) ? zzBot : zzTop;
+          zzD += ' C ' + p(zzSx + zzK * zzHalf, zzSy) + ' ' +
+            p(zzEx - zzK * zzHalf, zzEy) + ' ' + p(zzEx, zzEy);
+        }
+        var zzLx = zzEnd + zzN * zzHalf;
+        var zzLy = (zzN % 2 === 0) ? zzTop : zzBot;
+        var zzDir = (zzLy === zzTop) ? 1 : -1;
+        zzD += ' C ' + p(zzLx + zzK * zzEnd, zzLy) + ' ' +
+          p(w - zzK * zzEnd, zzCy - zzDir * (zzCy - zzTop) * zzK) + ' ' + p(w, zzCy);
+      } else {
+        zzD += ' L ' + p(zzEnd, zzTop);
+        for (zzJ = 0; zzJ < zzN; zzJ++) {
+          zzD += ' L ' + p(zzEnd + (zzJ + 1) * zzHalf, (zzJ % 2 === 0) ? zzBot : zzTop);
+        }
+        zzD += ' L ' + p(w, zzCy);
+      }
+      return zzOut + '<path d="' + zzD + '" fill="none"' + strk + '/>';
+    }
+    if (shape === 'gitTag') {
+      // GitTagShape (Shapes.js:6424-6468): paper-tag polygon — flat tab tip of
+      // height tabInset (default 4) centered on the left, tab extent tabSize
+      // (default 8) — fillAndStroke, plus the pierce-hole circle (holeSize
+      // default 1) at (tabSize/2, h/2) fill+stroke in holeColor (default
+      // fontColor default #333333). Was a generic arrow-left pentagon.
+      var gtTab = Math.max(0, Math.min(w, number(style.tabSize, 8)));
+      var gtIns = Math.max(0, Math.min(h, number(style.tabInset, 4)));
+      var gtY1 = (h - gtIns) / 2, gtY2 = gtY1 + gtIns;
+      var gtOut = '<path d="M ' + p(0, gtY1) + ' L ' + p(0, gtY2) +
+        ' L ' + p(gtTab, h) + ' L ' + p(w, h) + ' L ' + p(w, 0) +
+        ' L ' + p(gtTab, 0) + ' Z"' + fill + strk + '/>';
+      var gtHole = Math.max(0, number(style.holeSize, 1));
+      if (gtHole > 0) {
+        var gtHc = hex(style.holeColor || style.fontColor || '#333333');
+        gtOut += '<ellipse cx="' + fmt(gtTab / 2) + '" cy="' + fmt(h / 2) +
+          '" rx="' + fmt(gtHole) + '" ry="' + fmt(gtHole) +
+          '" fill="' + gtHc + '" stroke="' + gtHc +
+          '" stroke-width="' + fmt(Math.max(0.1, number(style.strokeWidth, 1))) + '"/>';
+      }
+      return gtOut;
+    }
+    if (shape === 'gitMergeCommit') {
+      // GitMergeCommitShape (Shapes.js:6488-6505): outer circle fillAndStroke
+      // + inner circle of diameter min(w,h)*0.6 fill+stroke in innerColor
+      // (default #ECECFF). The inner circle was silently dropped.
+      var gmC = hex(style.innerColor || '#ECECFF');
+      var gmR = Math.min(w, h) * 0.6 / 2;
+      return '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h / 2) + '"' + fill + strk + '/>' +
+        '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
+        '" rx="' + fmt(gmR) + '" ry="' + fmt(gmR) +
+        '" fill="' + gmC + '" stroke="' + gmC +
+        '" stroke-width="' + fmt(Math.max(0.1, number(style.strokeWidth, 1))) + '"/>';
+    }
+    if (shape === 'gitCherryPick') {
+      // GitCherryPickShape (Shapes.js:6519-6552): circle fillAndStroke +
+      // featureColor (default #fff) details — two eye circles r=2.75s at
+      // (cx±3s, cy+2s) painted with strokeWidth 0 (fill only) and the
+      // inverted-V stem strokes (cx±3s,cy+s)->(cx,cy-5s) at width 1*s,
+      // s = min(w,h)/20. The details were silently dropped.
+      var gcF = hex(style.featureColor || '#fff');
+      var gcS = Math.min(w, h) / 20;
+      var gcCx = w / 2, gcCy = h / 2, gcEye = 2.75 * gcS;
+      return '<ellipse cx="' + fmt(gcCx) + '" cy="' + fmt(gcCy) +
+        '" rx="' + fmt(w / 2) + '" ry="' + fmt(h / 2) + '"' + fill + strk + '/>' +
+        '<ellipse cx="' + fmt(gcCx - 3 * gcS) + '" cy="' + fmt(gcCy + 2 * gcS) +
+        '" rx="' + fmt(gcEye) + '" ry="' + fmt(gcEye) + '" fill="' + gcF + '" stroke="none"/>' +
+        '<ellipse cx="' + fmt(gcCx + 3 * gcS) + '" cy="' + fmt(gcCy + 2 * gcS) +
+        '" rx="' + fmt(gcEye) + '" ry="' + fmt(gcEye) + '" fill="' + gcF + '" stroke="none"/>' +
+        '<path d="M ' + p(gcCx + 3 * gcS, gcCy + gcS) + ' L ' + p(gcCx, gcCy - 5 * gcS) +
+        ' M ' + p(gcCx - 3 * gcS, gcCy + gcS) + ' L ' + p(gcCx, gcCy - 5 * gcS) +
+        '" fill="none" stroke="' + gcF + '" stroke-width="' + fmt(gcS) + '"/>';
+    }
+    if (shape === 'ext' && String(style['double']) === '1') {
+      // ExtendedShape (Shapes.js:2220-2236) with double=1: the outer
+      // mxRectangleShape rect + an inner rect inset by margin = max(2, sw+1) +
+      // style margin (both fillAndStroke; rounded honored on both like
+      // mxRectangleShape.paintBackground). symbol0..n sub-shapes are NOT
+      // rendered — emitVertex raises a LOUD ExporterUnsupportedShape notice
+      // for them. Previously double=1 baked as a single plain rect.
+      var exM = Math.max(2, Math.max(0.1, number(style.strokeWidth, 1)) + 1) +
+        number(style.margin, 0);
+      var exRounded = boolish(style.rounded);
+      var exOut = exRounded
+        ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
+        : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      var exW = w - 2 * exM, exH = h - 2 * exM;
+      if (exW > 0 && exH > 0) {
+        exOut += exRounded
+          ? '<path d="' + roundedRectPath(exM, exM, exW, exH, roundedRectRadius(style, exW, exH)) + '"' + fill + strk + '/>'
+          : '<rect x="' + fmt(exM) + '" y="' + fmt(exM) + '" width="' + fmt(exW) +
+            '" height="' + fmt(exH) + '"' + fill + strk + '/>';
+        // glass paints over the INNER rect (paintForeground sees the inset
+        // arguments object — sloppy-mode aliasing in Shapes.js:2312).
+        if (glassEl) {
+          exOut += '<g transform="translate(' + fmt(exM) + ' ' + fmt(exM) + ')">' +
+            glassOverlaySvg(style, exW, exH) + '</g>';
+        }
+      } else if (glassEl) {
+        exOut += glassEl;
+      }
+      return exOut;
+    }
     if (shape === 'tableRow' || shape === 'partialRectangle') {
       // Fill rect + selective border lines — PartialRectangleShape/TableRowShape, Shapes.js
       // Default: all borders ON (mxUtils.getValue default '1'); explicit '0' turns them off.
@@ -3878,7 +4245,38 @@
     return null;
   }
 
-  function edgePath(points, rounded, curved, radius) {
+  function edgePath(points, rounded, curved, radius, bezier) {
+    // mxPolyline.paintEdgeShape checks STYLE_BEZIER FIRST: waypoints are
+    // cubic CONTROL points when they fit the 3n+1 pattern, else
+    // through-point quads. Without this branch bezier=1 edges printed as
+    // (rounded) straight polylines through the control points — silently.
+    if (bezier && points.length > 2) {
+      var bd = 'M ' + p(points[0].x, points[0].y);
+      var n = points.length;
+      if ((n - 1) % 3 === 0) {
+        for (var bi = 1; bi + 2 < n; bi += 3) {
+          bd += ' C ' + p(points[bi].x, points[bi].y) + ' ' +
+            p(points[bi + 1].x, points[bi + 1].y) + ' ' +
+            p(points[bi + 2].x, points[bi + 2].y);
+        }
+        return bd;
+      }
+      var bcur = points[0];
+      var bquad = function (cp, ep) {
+        var c1 = { x: bcur.x + (2 / 3) * (cp.x - bcur.x),
+                   y: bcur.y + (2 / 3) * (cp.y - bcur.y) };
+        var c2 = { x: ep.x + (2 / 3) * (cp.x - ep.x),
+                   y: ep.y + (2 / 3) * (cp.y - ep.y) };
+        bd += ' C ' + p(c1.x, c1.y) + ' ' + p(c2.x, c2.y) + ' ' + p(ep.x, ep.y);
+        bcur = ep;
+      };
+      for (var bj = 1; bj < n - 2; bj++) {
+        var b0 = points[bj], b1 = points[bj + 1];
+        bquad(b0, { x: (b0.x + b1.x) / 2, y: (b0.y + b1.y) / 2 });
+      }
+      bquad(points[n - 2], points[n - 1]);
+      return bd;
+    }
     if (curved && points.length > 2) {
       // mxPolyline.paintCurvedLine: quadratics through successive segment
       // midpoints, for ANY point count (the old 4-point-only cubic left
@@ -3911,12 +4309,24 @@
     // LINE_ARCSIZE=20) / 2 = 10 by default. Was a hardcoded 8.
     var radius = radius > 0 ? radius : 10;
     var out = 'M ' + p(points[0].x, points[0].y);
+    // mxShape.addPoints: the corner curve is a QUADRATIC with control at
+    // the corner (its exact cubic elevation is c = a + 2/3(corner - a));
+    // the old `C corner corner a2` cubic bulged ~1.77px past the true arc
+    // apex at the default radius. The incoming arm's available length is
+    // measured from the PREVIOUS arc end (pe), not the original corner, so
+    // consecutive short segments shorten exactly like the editor.
+    var pe = points[0];
     for (var j = 1; j < points.length - 1; j++) {
-      var prev = points[j - 1], cur = points[j], next = points[j + 1];
-      var a1 = cornerPoint(cur, prev, radius);
+      var cur = points[j], next = points[j + 1];
+      var a1 = cornerPoint(cur, pe, radius);
       var a2 = cornerPoint(cur, next, radius);
-      out += ' L ' + p(a1.x, a1.y) + ' C ' + p(cur.x, cur.y) + ' ' +
-        p(cur.x, cur.y) + ' ' + p(a2.x, a2.y);
+      var cc1 = { x: a1.x + (2 / 3) * (cur.x - a1.x),
+                  y: a1.y + (2 / 3) * (cur.y - a1.y) };
+      var cc2 = { x: a2.x + (2 / 3) * (cur.x - a2.x),
+                  y: a2.y + (2 / 3) * (cur.y - a2.y) };
+      out += ' L ' + p(a1.x, a1.y) + ' C ' + p(cc1.x, cc1.y) + ' ' +
+        p(cc2.x, cc2.y) + ' ' + p(a2.x, a2.y);
+      pe = a2;
     }
     var last = points[points.length - 1];
     return out + ' L ' + p(last.x, last.y);
@@ -4393,11 +4803,16 @@
       y = mid.y;
     }
     // mxUtils.getAlignmentAsPoint: top → dy=0 (label hangs fully below the
-    // anchor), bottom → dy=-1 (fully above), middle → dy=-0.5.
+    // anchor), bottom → dy=-1 (fully above), middle → dy=-0.5. The SAME rule
+    // applies horizontally: align=left puts the label's LEFT edge at the
+    // anchor (dx=0), right its right edge (dx=-1); always centering shifted
+    // left/right-aligned edge labels by half the label width.
     var dyOff = style.verticalAlign === 'bottom' ? height + 2 :
       style.verticalAlign === 'top' ? 0 : height / 2;
+    var dxOff = style.align === 'left' ? 0 :
+      style.align === 'right' ? width : width / 2;
     return {
-      x: (x - origin.x) / scale - width / 2,
+      x: (x - origin.x) / scale - dxOff,
       y: (y - origin.y) / scale - dyOff,
       w: width,
       h: height
@@ -4514,9 +4929,33 @@
     // (dy=-0.5) — previously every valign was treated as middle.
     var vA = alignV(style.verticalAlign || 'middle');
     var elY = vA === 'top' ? cyw : vA === 'bottom' ? cyw - lh : cyw - lh / 2;
-    var elBox = { x: cxw - lw / 2, y: elY, w: lw, h: lh };
-    labelNodes(graph, cell, state, style, elBox, label, notices, resolved)
-      .forEach(function (n) { paint.push(n); });
+    // getAlignmentAsPoint horizontally too: align=left anchors the label's
+    // LEFT edge at the point, right its right edge (was always centered).
+    var elX = style.align === 'left' ? cxw :
+      style.align === 'right' ? cxw - lw : cxw - lw / 2;
+    var elBox = { x: elX, y: elY, w: lw, h: lh };
+    var nodes = labelNodes(graph, cell, state, style, elBox, label, notices, resolved);
+    // mxShape.getTextRotation: a rotation= style on the label child rotates
+    // the rendered text about the label center; it was silently dropped.
+    var elRot = number(style.rotation, 0);
+    if (elRot) {
+      nodes = nodes.map(function (n) {
+        if (!n || n.kind !== 'svg') return n;
+        var inner = (typeof Buffer !== 'undefined' && Buffer.from)
+          ? Buffer.from(n.source, 'base64').toString('utf8')
+          : decodeUtf8B64(n.source);
+        var open = inner.indexOf('>');
+        var close = inner.lastIndexOf('</svg>');
+        if (open < 0 || close < 0) return n;
+        var wrapped = inner.slice(0, open + 1) +
+          '<g transform="rotate(' + fmt(elRot) + ' ' + fmt(n.box.w / 2) + ' ' +
+          fmt(n.box.h / 2) + ')">' + inner.slice(open + 1, close) + '</g>' +
+          inner.slice(close);
+        return { kind: 'svg', box: n.box, aspect: n.aspect,
+          format: n.format, source: base64(wrapped) };
+      });
+    }
+    nodes.forEach(function (n) { paint.push(n); });
     return true;
   }
 
@@ -4761,7 +5200,60 @@
       (typeof style.image === 'string' && style.image !== '');
   }
 
-  function imageNode(style, box, parsed) {
+  // mxImageShape clip semantics: the `clipPath` style (drawio's Crop Image
+  // UI writes `inset(T% R% B% L%[ round RR%])`) and `rounded=1` (which
+  // appends/synthesizes the round clause from getArcSize) crop the drawn
+  // image. Returns null when no crop applies (with a loud notice for
+  // unsupported clip forms), or { defs, attr } to wrap the SVG <image>.
+  var imgClipCounter = 0;
+  function imageClipDecor(style, box, notices, cellId) {
+    var r = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+    var clip = typeof style.clipPath === 'string' && style.clipPath !== ''
+      ? String(style.clipPath) : null;
+    if (r > 0) {
+      var roundVal = ' round ' + (r * 100 / Math.min(box.w, box.h)) + '%';
+      if (clip != null && clip.substring(0, 5) === 'inset' && clip.indexOf('round') < 0) {
+        clip = clip.replace(')', roundVal + ')');
+      } else if (clip == null) {
+        clip = 'inset(0% 0% 0% 0%' + roundVal + ')';
+      }
+    }
+    if (clip == null) return null;
+    var m = /^inset\(\s*([^\s)]+)(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?\s*(?:round\s+([^\s)]+)\s*)?\)$/i
+      .exec(clip.trim());
+    if (!m) {
+      // circle()/ellipse()/polygon() crops have no headless port yet:
+      // print the FULL image with a loud notice, never a silent wrong crop.
+      if (notices) {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
+      }
+      return null;
+    }
+    var len = function (v, ref) {
+      if (v == null) return 0;
+      var n = parseFloat(v);
+      if (!Number.isFinite(n)) return 0;
+      return /%$/.test(v) ? n / 100 * ref : n;
+    };
+    // CSS inset(): 1-4 values per margin shorthand order T R B L.
+    var t = len(m[1], box.h);
+    var rr = len(m[2] != null ? m[2] : m[1], box.w);
+    var b = len(m[3] != null ? m[3] : m[1], box.h);
+    var l = len(m[4] != null ? m[4] : (m[2] != null ? m[2] : m[1]), box.w);
+    var rad = m[5] != null ? len(m[5], Math.min(box.w, box.h)) : 0;
+    var cw = Math.max(0, box.w - l - rr);
+    var ch = Math.max(0, box.h - t - b);
+    var id = 'imgclip' + (imgClipCounter++);
+    return {
+      defs: '<clipPath id="' + id + '"><rect x="' + fmt(l) + '" y="' + fmt(t) +
+        '" width="' + fmt(cw) + '" height="' + fmt(ch) +
+        (rad > 0 ? '" rx="' + fmt(rad) + '" ry="' + fmt(rad) : '') + '"/></clipPath>',
+      attr: ' clip-path="url(#' + id + ')"'
+    };
+  }
+
+  function imageNode(style, box, parsed, notices, cellId) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -4774,7 +5266,8 @@
     var fh = boolish(style.imageFlipH) || boolish(style.flipH);
     var fv = boolish(style.imageFlipV) || boolish(style.flipV);
     var op = opacity(style, 'opacity');
-    if (op < 1) {
+    var clipDecor = imageClipDecor(style, box, notices, cellId);
+    if (op < 1 || clipDecor) {
       // kind:image has no opacity field in the frozen contract; route through an
       // svg <image opacity> so a translucent image (style opacity<100) prints
       // faithfully instead of fully opaque.
@@ -4784,8 +5277,11 @@
         fmt(fv ? box.h : 0) + ') scale(' + sx + ',' + sy + ')"' : '';
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
         'width="' + fmt(box.w) + '" height="' + fmt(box.h) + '">' +
+        (clipDecor ? '<defs>' + clipDecor.defs + '</defs>' : '') +
         '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-        '" preserveAspectRatio="' + fit + '" opacity="' + fmt(op) + '"' + tf +
+        '" preserveAspectRatio="' + fit + '"' +
+        (op < 1 ? ' opacity="' + fmt(op) + '"' : '') + tf +
+        (clipDecor ? clipDecor.attr : '') +
         ' xlink:href="data:image/png;base64,' + parsed.data + '"/></svg>';
       return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
     }
@@ -4805,7 +5301,7 @@
   // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
-  function dataUriImageSvgNode(mime, data, box, style) {
+  function dataUriImageSvgNode(mime, data, box, style, notices, cellId) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -4817,12 +5313,25 @@
     }
     var fit = String(style && style.imageAspect) === '0'
       ? 'none' : 'xMidYMid meet';
+    var clipDecor2 = imageClipDecor(style || {}, box, notices, cellId);
+    var img = '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
+      '" preserveAspectRatio="' + fit + '"' +
+      (clipDecor2 ? clipDecor2.attr : '') + ' xlink:href="data:' + mime +
+      ';base64,' + data + '"/>';
+    // mxShape.updateTransform applies flips to every image regardless of
+    // format; the PNG path carries flipH/flipV on the contract node, but
+    // this SVG-wrapped path (JPEG/GIF/SVG payloads) dropped them silently.
+    if (style && (boolish(style.flipH) || boolish(style.flipV))) {
+      img = '<g transform="translate(' +
+        fmt(boolish(style.flipH) ? box.w : 0) + ' ' +
+        fmt(boolish(style.flipV) ? box.h : 0) + ') scale(' +
+        (boolish(style.flipH) ? -1 : 1) + ' ' +
+        (boolish(style.flipV) ? -1 : 1) + ')">' + img + '</g>';
+    }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
       'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
       '" height="' + fmt(box.h) + '">' +
-      '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
-      '" preserveAspectRatio="' + fit + '" xlink:href="data:' + mime +
-      ';base64,' + data + '"/></svg>';
+      (clipDecor2 ? '<defs>' + clipDecor2.defs + '</defs>' : '') + img + '</svg>';
     return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
   }
 
@@ -5089,6 +5598,7 @@
     // remain byte-for-byte deterministic even when HTML labels contain flattened
     // foreignObject clip paths.
     richClipCounter = 0;
+    imgClipCounter = 0;
     // Native print renders every shape from its stencil geometry with zero
     // browser dependency — there is no live-DOM / rendered-SVG path. The
     // WYSIWYG guarantee holds by construction (faithful re-derivation or a loud
@@ -5108,21 +5618,35 @@
     // margin the author left between the page edge and the first shape (the
     // "output shifted up-and-left one block" report). Anchoring to the page
     // origin makes every cell keep its on-page position, so the margin prints
-    // exactly as drawn. Headless fixtures with no live view fall back to bounds.
-    var origin;
-    if (view && view.translate && (view.translate.x || view.translate.y)) {
-      origin = { x: view.translate.x * scale, y: view.translate.y * scale };
-    } else {
-      origin = {
-        x: bounds && bounds.width > 0 ? bounds.x : 0,
-        y: bounds && bounds.height > 0 ? bounds.y : 0
-      };
-    }
+    // exactly as drawn.
     var page = (paper && paper.wPx > 0 && paper.hPx > 0)
       ? { w: Math.max(1, Math.round(paper.wPx)),
           h: Math.max(1, Math.round(paper.hPx)) }
       : { w: Math.max(1, Math.ceil((bounds ? bounds.width : 1) / scale)),
           h: Math.max(1, Math.ceil((bounds ? bounds.height : 1) / scale)) };
+    var origin;
+    if (view && view.translate && (view.translate.x || view.translate.y)) {
+      origin = { x: view.translate.x * scale, y: view.translate.y * scale };
+    } else if (paper && paper.explicit && bounds && bounds.width > 0) {
+      // The AUTHOR fixed the page size (File > Page Setup), so cells keep
+      // their on-page position even headless (mxPrintPreview semantics):
+      // the origin is the PAGE-GRID cell containing the content, never the
+      // content corner. floor() generalises to content drawn on a far grid
+      // cell — the editor shows it on that page, and the print shows the
+      // same sheet with the same in-page margins.
+      var pgw = page.w * scale;
+      var pgh = page.h * scale;
+      origin = {
+        x: pgw * Math.floor(bounds.x / pgw),
+        y: pgh * Math.floor(bounds.y / pgh)
+      };
+    } else {
+      // Auto-fit page (no explicit dims): bounds-anchoring is faithful.
+      origin = {
+        x: bounds && bounds.width > 0 ? bounds.x : 0,
+        y: bounds && bounds.height > 0 ? bounds.y : 0
+      };
+    }
 
     // Page background colour (File > Page Setup) prints behind all content as a
     // full-page filled rect. Skipped for white (paper is already white) / none.
@@ -5246,6 +5770,41 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
     }
+    if (/^vertical-/.test(String(style.textDirection || '').toLowerCase())) {
+      // mxText renders vertical-lr/vertical-rl writing modes; the headless
+      // label renderer lays out horizontally — keep it LOUD, never silent.
+      notices.push(degradation('ExporterUnsupportedShape',
+        'vertical textDirection "' + style.textDirection +
+        '" is not applied to the label (printed horizontal).', cell.id));
+    }
+    // ExtendedShape (shape=ext) symbol0..n sub-shapes (Shapes.js:2240-2308)
+    // are not rendered — the double-rect body still bakes faithfully, but a
+    // configured symbol must never vanish silently.
+    if (style.shape === 'ext') {
+      var extSyms = Object.keys(style).filter(function (k) {
+        return /^symbol\d+$/.test(k) && style[k];
+      });
+      if (extSyms.length) {
+        notices.push(degradation('ExporterUnsupportedShape',
+          'ext symbol sub-shape(s) ' + extSyms.map(function (k) {
+            return k + '=' + style[k];
+          }).join(', ') + ' are not rendered.', cell.id));
+      }
+    }
+    // UmlLifeline participant= names another registered shape to paint as the
+    // header (Shapes.js:2533-2551). builtinShapeSvg resolves it through the
+    // builtin/shapePath dispatchers; when neither knows the shape the default
+    // header rect is printed instead — LOUD, never silent.
+    if (style.shape === 'umlLifeline' && style.participant &&
+        style.participant !== 'umlLifeline') {
+      var llpStyle = Object.assign({}, style, { shape: style.participant });
+      if (builtinShapeSvg(llpStyle, 10, 10) == null &&
+          shapePath(llpStyle, 0, 0, 10, 10) == null) {
+        notices.push(degradation('ExporterUnsupportedShape',
+          'umlLifeline participant "' + style.participant +
+          '" is not rendered (default header rectangle printed).', cell.id));
+      }
+    }
     // LOUD-OR-FAITHFUL for rounded corners: polygon shapes round faithfully
     // via roundedPoly (mxShape.addPoints port); the few curve/multi-part
     // shapes in ROUNDED_NOT_YET would print square corners on rounded=1 —
@@ -5260,6 +5819,40 @@
 
     // Edge child-label cell (multi-label edge): position along the parent edge.
     if (emitEdgeChildLabel(graph, cell, state, style, origin, scale, paint, notices, resolved, label)) {
+      return;
+    }
+    // Degenerate geometry, faithful to the editor: NEGATIVE extents paint
+    // nothing in drawio (invalid SVG rect attributes are ignored), a ZERO
+    // extent paints a hairline along the surviving dimension. The old
+    // Math.max(1,...) clamp silently inflated both into a 1px outlined box.
+    // (Edge child labels above are exempt: they carry 0x0 geometry by design
+    // and are laid out by the label renderer.)
+    if (!(state.width > 0 && state.height > 0)) {
+      if (state.width < 0 || state.height < 0) {
+        return;
+      }
+      var degenStroke = strokeOf(style);
+      var dgx = (state.x - origin.x) / scale;
+      var dgy = (state.y - origin.y) / scale;
+      if (degenStroke && (state.width > 0 || state.height > 0)) {
+        paint.push({
+          kind: 'path',
+          d: 'M ' + fmt(dgx) + ' ' + fmt(dgy) + ' L ' +
+            fmt(dgx + state.width / scale) + ' ' + fmt(dgy + state.height / scale),
+          fill: null,
+          stroke: degenStroke
+        });
+      }
+      // The LABEL still renders in drawio (mxText ignores the degenerate
+      // body) — e.g. a labelled horizontal divider line. Dropping it here
+      // was a silent text loss.
+      if (label !== '') {
+        labelNodes(graph, cell, state, style,
+          { x: dgx, y: dgy, w: Math.max(0, state.width / scale),
+            h: Math.max(0, state.height / scale) },
+          label, notices, resolved)
+          .forEach(function (n) { paint.push(n); });
+      }
       return;
     }
 
@@ -5285,8 +5878,8 @@
       var lImgSrc = (resolved && resolved[style.image]) || style.image;
       var lImg = parseImage(lImgSrc);
       var lMime = embeddableImageMime(lImg);
-      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg));
-      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style));
+      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg, notices, cell.id));
+      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style, notices, cell.id));
       else {
         notices.push(degradation('ExporterUnsupportedImage',
           'label image could not be embedded — placeholder box printed.', cell.id));
@@ -5381,13 +5974,13 @@
             aspect: 'preserve'
           });
         } else {
-          paint.push(imageNode(style, box, img));      // faithful — WYSIWYG
+          paint.push(imageNode(style, box, img, notices, cell.id));  // faithful — WYSIWYG
         }
       } else if (mime) {
         // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
         // -> build the SVG <image> from the bytes (no live-DOM dependency, so
         // it's faithful headless AND in-browser). No notice.
-        paint.push(dataUriImageSvgNode(mime, img.data, box, style));
+        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices, cell.id));
       } else {
         // Genuinely cannot embed faithfully (external URL that could not be
         // fetched — cross-origin without CORS, 404, offline; non-base64; or a
@@ -5437,7 +6030,14 @@
     // they are label-only objects. Emitting a bbox path here is both invisible
     // (fill/stroke are none) and wrongly raised an ExporterUnsupportedShape
     // notice. Skip the body; just lay out the label.
-    if (style.shape !== 'text' && style.shape !== 'html' && style.shape !== 'curvedText') {
+    // `transparent` paints NOTHING (TransparentShape fills NONE and never
+    // strokes, Shapes.js:1933-1940) and `link` as a VERTEX paints nothing
+    // (LinkShape only defines paintEdgeShape; mxShape's default
+    // paintBackground/paintForeground are no-ops) — both previously baked
+    // invented ink (a rect / an S-curve). Faithful = no body, label only.
+    if (style.shape !== 'text' && style.shape !== 'html' &&
+        style.shape !== 'curvedText' && style.shape !== 'transparent' &&
+        style.shape !== 'link') {
 
       // --- Stencil registry lookup (covers all mxgraph.* shapes and inline stencil shapes) ---
       var stencilName = style.shape || '';
@@ -5490,6 +6090,26 @@
         }
         var stencilSvg = stencilToSvg(stencilNode, box.w, box.h, style, notices, resolved);
         if (stencilSvg) {
+          // shadow=1 is canvas-level in drawio (every fill/stroke duplicated
+          // recolored + offset UNDER the shape, mxSvgCanvas2D createShadow)
+          // and applies to stencils too — it was silently dropped here.
+          if (boolish(style.shadow)) {
+            var shadowS = shadowParams(style);
+            var innerShadowS = stencilSvg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+            paint.push(paddedSvgShapeNode(
+              '<g opacity="' + fmt(shadowS.alpha) + '">' +
+              shadowRecolorSvg(innerShadowS, hex(shadowS.color)) + '</g>',
+              { x: box.x + shadowS.dx, y: box.y + shadowS.dy, w: box.w, h: box.h },
+              style));
+          }
+          // sketch=1 (roughjs hand-drawn texture + hachure/dots fills) has no
+          // headless port on the stencil branch: LOUD, never a silent clean
+          // print of a sketch-styled diagram.
+          if (boolish(style.sketch)) {
+            notices.push(degradation('ExporterUnsupportedShape',
+              'sketch=1 hand-drawn texture is not applied to stencil "' +
+              String(stencilName || style.shape) + '" (printed clean).', cell.id));
+          }
           var rotDegS = number(style.rotation, 0);
           if (rotDegS) {
             // Rotated stencil: expand viewport to axis-aligned bbox, rotate content and label
@@ -5530,26 +6150,10 @@
               aspect: 'preserve'
             });
             if (label !== '') {
-              // For non-rotated stencils, emit label as separate text node centered on cell
-              var lblBoxS = box;
-              // Check for external label position overrides
-              var lposS = style.labelPosition, vlposS = style.verticalLabelPosition;
-              var lblW = style.labelWidth ? parseFloat(style.labelWidth) : null;
-              if (lposS === 'left') {
-                var lw = lblW || box.w;
-                lblBoxS = { x: box.x - lw, y: box.y, w: lw, h: box.h };
-              } else if (lposS === 'right') {
-                var lw = lblW || box.w;
-                lblBoxS = { x: box.x + box.w, y: box.y, w: lw, h: box.h };
-              } else if (lblW) {
-                lblBoxS = { x: box.x, y: box.y, w: lblW, h: box.h };
-              }
-              if (vlposS === 'top') {
-                lblBoxS = { x: lblBoxS.x, y: box.y - box.h, w: lblBoxS.w, h: box.h };
-              } else if (vlposS === 'bottom') {
-                lblBoxS = { x: lblBoxS.x, y: box.y + box.h, w: lblBoxS.w, h: box.h };
-              }
-              labelNodes(graph, cell, state, style, lblBoxS, label, notices, resolved)
+              // External label bands + labelWidth: one shared exact port
+              // (externalLabelBox) so stencils match the generic path.
+              labelNodes(graph, cell, state, style, externalLabelBox(style, box),
+                label, notices, resolved)
                 .forEach(function (n) { paint.push(n); });
             }
           }
@@ -5593,6 +6197,14 @@
         // mxSvgCanvas2D.createShadow prepends its translate to the node
         // transform, so the offset does NOT rotate with the shape. Previously
         // shadow=1 was silently dropped on this branch.
+        // sketch=1 fills (hachure/dots/cross-hatch) render faithfully only
+        // on the generic single-path branch (sketchFillSvg); on this
+        // multi-element branch the texture was silently dropped -> LOUD.
+        if (boolish(style.sketch)) {
+          notices.push(degradation('ExporterUnsupportedShape',
+            'sketch=1 hand-drawn texture is not applied to shape "' +
+            String(style.shape) + '" (printed clean).', cell.id));
+        }
         var shadowBI = boolish(style.shadow) ? shadowParams(style) : null;
         var shadowContentBI = shadowBI
           ? '<g opacity="' + fmt(shadowBI.alpha) + '">' +
@@ -5643,23 +6255,9 @@
           }
           paint.push(paddedSvgShapeNode(builtinContent, box, style, extraPadBI));
           if (label !== '') {
-            var lblBoxBI = box;
-            var lposBI = style.labelPosition, vlposBI = style.verticalLabelPosition;
-            var lblWBI = style.labelWidth ? parseFloat(style.labelWidth) : null;
-            if (lposBI === 'left') {
-              var lwBI = lblWBI || box.w;
-              lblBoxBI = { x: box.x - lwBI, y: box.y, w: lwBI, h: box.h };
-            } else if (lposBI === 'right') {
-              var lwBI = lblWBI || box.w;
-              lblBoxBI = { x: box.x + box.w, y: box.y, w: lwBI, h: box.h };
-            } else if (lblWBI) {
-              lblBoxBI = { x: box.x, y: box.y, w: lblWBI, h: box.h };
-            }
-            if (vlposBI === 'top') {
-              lblBoxBI = { x: lblBoxBI.x, y: box.y - box.h, w: lblBoxBI.w, h: box.h };
-            } else if (vlposBI === 'bottom') {
-              lblBoxBI = { x: lblBoxBI.x, y: box.y + box.h, w: lblBoxBI.w, h: box.h };
-            }
+            // External label bands + labelWidth: one shared exact port
+            // (externalLabelBox) so builtins match the generic path.
+            var lblBoxBI = externalLabelBox(style, box);
             if (style.shape === 'table') {
               var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
@@ -5671,6 +6269,14 @@
                 x: box.x, y: box.y,
                 w: Math.min(box.w, Math.max(10, number(style.width, 60))),
                 h: Math.min(box.h, Math.max(15, number(style.height, 30)))
+              };
+            }
+            if (style.shape === 'umlLifeline') {
+              // UmlLifeline.getLabelBounds: the label lives in the header box
+              // (size tall, default 40), not centered over the whole stem.
+              lblBoxBI = {
+                x: box.x, y: box.y, w: box.w,
+                h: Math.max(0, Math.min(box.h, number(style.size, 40)))
               };
             }
             labelNodes(graph, cell, state, style, lblBoxBI, label, notices, resolved)
@@ -6117,21 +6723,11 @@
       notices.push(degradation('ExporterUnsupportedShape',
         'jumpStyle=' + style.jumpStyle + ' line jumps are not rendered — crossings print as plain lines', cell.id));
     }
-    // perimeterSpacing (+ source/targetPerimeterSpacing) creates a gap between
-    // the shape edge and the connector endpoints (drawio grows the perimeter by
-    // the spacing). Pull each endpoint inward along the edge by that amount so
-    // the gap appears, instead of the line touching the shape. Was ignored.
-    var perimBase = number(style.perimeterSpacing, 0);
-    var srcSp = perimBase + number(style.sourcePerimeterSpacing, 0);
-    var tgtSp = perimBase + number(style.targetPerimeterSpacing, 0);
-    var nudge = function (from, toward, dist) {
-      var dx = toward.x - from.x, dy = toward.y - from.y;
-      var len = Math.sqrt(dx * dx + dy * dy);
-      if (len <= 0.001 || dist <= 0) return from;
-      return { x: from.x + dx / len * dist, y: from.y + dy / len * dist };
-    };
-    if (srcSp > 0) points[0] = nudge(points[0], points[1], srcSp);
-    if (tgtSp > 0) points[points.length - 1] = nudge(points[points.length - 1], points[points.length - 2], tgtSp);
+    // perimeterSpacing now lives where mxGraph applies it: the headless
+    // router (drawio-parser terminalPoint) GROWS the perimeter bounds
+    // before intersecting, floating ends only. The old endpoint nudge here
+    // double-spaced routed edges, mis-spaced diagonal approaches, and
+    // wrongly spaced FIXED exitX/exitY anchors.
     var stroke = strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 });
 
     // JS-registered edge shapes: exact headless transcription from source.
@@ -6199,9 +6795,31 @@
     var linePts = points.slice();
     if (startRes && startRes.pe) linePts[0] = startRes.pe;
     if (endRes && endRes.pe) linePts[linePts.length - 1] = endRes.pe;
+    var lineD = edgePath(linePts, boolish(style.rounded), boolish(style.curved),
+      number(style.arcSize, 20) / 2, boolish(style.bezier));
+    if (boolish(style.shadow) && stroke) {
+      // mxConnector.paintEdgeShape: the LINE paints with the shadow, the
+      // markers explicitly without (c.setShadow(false) before them).
+      // shadow=1 edges previously printed with no shadow and no notice.
+      var esp = shadowParams(style);
+      var eShadowPts = linePts.map(function (pt) {
+        return { x: pt.x + esp.dx, y: pt.y + esp.dy };
+      });
+      paint.push({
+        kind: 'path',
+        d: edgePath(eShadowPts, boolish(style.rounded), boolish(style.curved),
+          number(style.arcSize, 20) / 2, boolish(style.bezier)),
+        fill: null,
+        stroke: {
+          paint: solid(esp.color, esp.alpha),
+          width: stroke.width, cap: stroke.cap, join: stroke.join,
+          miterLimit: stroke.miterLimit, dash: stroke.dash
+        }
+      });
+    }
     paint.push({
       kind: 'path',
-      d: edgePath(linePts, boolish(style.rounded), boolish(style.curved), number(style.arcSize, 20) / 2),
+      d: lineD,
       fill: null,
       stroke: stroke
     });

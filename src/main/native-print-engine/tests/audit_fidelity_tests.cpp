@@ -279,3 +279,169 @@ TEST_CASE("minor-ahead contract carries SchemaMinorAhead on render paths") {
     CHECK(found);
   }
 }
+
+// ===========================================================================
+// Audit round 7: loader/validator parity + tile-coverage loudness.
+// Each case below pins a gate asymmetry or silent-loss class found while
+// auditing the engine against the JS validator and the host draw path.
+// ===========================================================================
+
+TEST_CASE("audit7: zero or negative box extents are refused at load") {
+  // escapes_page only tests left/top+extent edges, and GDI+ silently MIRRORS
+  // a negative-width image destination -- these boxes must never load.
+  const auto zero_h = load_baked_contract(one_node_contract(
+    "px", 200.0, 110.0, svg_node(10.0, 10.0, 50.0, 0.0)));
+  REQUIRE_FALSE(zero_h);
+  CHECK(zero_h.error().code == ContractErrorCode::ContractValueError);
+
+  const auto neg_w = load_baked_contract(one_node_contract(
+    "px", 200.0, 110.0, svg_node(500.0, 10.0, -100.0, 20.0)));
+  REQUIRE_FALSE(neg_w);
+  CHECK(neg_w.error().code == ContractErrorCode::ContractValueError);
+}
+
+TEST_CASE("audit7: empty static lines array is refused (validator parity)") {
+  const std::string node =
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},)"
+    R"("font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},)"
+    R"("align":{"h":"left","v":"top"},"content":{"type":"static","lines":[]}})";
+  const auto loaded = load_baked_contract(one_node_contract("px", 200.0, 110.0, node));
+  REQUIRE_FALSE(loaded);
+  CHECK(loaded.error().code == ContractErrorCode::ContractValueError);
+}
+
+TEST_CASE("audit7: svg source with mid-stream base64 padding is refused at load") {
+  // is_base64_like permits "QQ==QQ==", which decode_base64 refuses at DRAW
+  // time -- an engine-"valid" contract previously printed a crosshatch stub.
+  const std::string node =
+    R"({"kind":"svg","box":{"x":1,"y":2,"w":40,"h":10},)"
+    R"("format":"svg+xml;base64","aspect":"preserve","source":"QQ==QQ=="})";
+  const auto loaded = load_baked_contract(one_node_contract("px", 200.0, 110.0, node));
+  REQUIRE_FALSE(loaded);
+  CHECK(loaded.error().code == ContractErrorCode::ContractValueError);
+}
+
+TEST_CASE("audit7: negative schema minor is refused") {
+  const auto loaded = load_baked_contract(
+    R"({"schema":{"major":1,"minor":-1},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]}]}})");
+  REQUIRE_FALSE(loaded);
+  CHECK(loaded.error().code == ContractErrorCode::ContractVersionError);
+}
+
+TEST_CASE("audit7: duplicate page ids are refused (notices are keyed by page id)") {
+  const auto loaded = load_baked_contract(
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]},)"
+    R"({"id":"p","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]})"
+    R"(]}})");
+  REQUIRE_FALSE(loaded);
+  CHECK(loaded.error().code == ContractErrorCode::ContractValueError);
+
+  const auto distinct = load_baked_contract(
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p1","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]},)"
+    R"({"id":"p2","size":{"w":100,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":50}}],"paint":[]})"
+    R"(]}})");
+  REQUIRE(distinct);
+}
+
+TEST_CASE("audit7: huge-but-finite page/tile extents are refused at load") {
+  // 1e300 survives every isfinite() guard; std::lround of the derived device
+  // extent is unspecified downstream (observed: silent 1x1 white preview).
+  const auto huge_page = load_baked_contract(
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":1e300,"h":50},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":1e300,"h":50}}],"paint":[]}]}})");
+  REQUIRE_FALSE(huge_page);
+  CHECK(huge_page.error().code == ContractErrorCode::ContractValueError);
+
+  const auto huge_origin = load_baked_contract(
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":100,"h":50},"tiles":[{"origin":{"x":1e30,"y":0},"size":{"w":100,"h":50}}],"paint":[]}]}})");
+  REQUIRE_FALSE(huge_origin);
+
+  // A real large-format banner-scale extent stays accepted (1e7 um = 10 m).
+  const auto banner = load_baked_contract(
+    R"({"schema":{"major":1,"minor":1},"document":{"units":"um","pages":[)"
+    R"({"id":"p","size":{"w":1e7,"h":914400},"tiles":[{"origin":{"x":0,"y":0},"size":{"w":1e7,"h":914400}}],"paint":[]}]}})");
+  REQUIRE(banner);
+}
+
+TEST_CASE("audit7: merge sample exceeding its own maxLen is refused at load") {
+  // The sample renders in design previews; statically inconsistent nodes
+  // previously surfaced only as a render-time MergeOverflowError.
+  const std::string text_node =
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},)"
+    R"("font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},)"
+    R"("align":{"h":"left","v":"top"},)"
+    R"("content":{"type":"merge","key":"NAME","sample":"TOO-LONG-SAMPLE","maxLen":4,"wrap":"none","overflow":"clip"}})";
+  const auto text_loaded = load_baked_contract(one_node_contract("px", 200.0, 110.0, text_node));
+  REQUIRE_FALSE(text_loaded);
+  CHECK(text_loaded.error().code == ContractErrorCode::ContractValueError);
+
+  const std::string barcode_node =
+    R"({"kind":"barcode","box":{"x":1,"y":2,"w":40,"h":10},"symbology":"stub","params":{},)"
+    R"("value":{"type":"merge","key":"CODE","sample":"123456","maxLen":4,"errorOnUnencodable":true}})";
+  const auto barcode_loaded = load_baked_contract(one_node_contract("px", 200.0, 110.0, barcode_node));
+  REQUIRE_FALSE(barcode_loaded);
+  CHECK(barcode_loaded.error().code == ContractErrorCode::ContractValueError);
+
+  // Multi-byte sample at exactly maxLen counts CODE POINTS, not bytes.
+  const std::string unicode_node =
+    R"({"kind":"text","box":{"x":1,"y":2,"w":40,"h":10},)"
+    R"("font":{"family":"Arial","sizePx":8,"weight":400,"italic":false,"color":"#000000"},)"
+    R"("align":{"h":"left","v":"top"},)"
+    R"("content":{"type":"merge","key":"NAME","sample":"éééé","maxLen":4,"wrap":"none","overflow":"clip"}})";
+  REQUIRE(load_baked_contract(one_node_contract("px", 200.0, 110.0, unicode_node)));
+}
+
+TEST_CASE("audit7: content outside the tile union fires a loud TileCoverageGap") {
+  // One tile covers only the LEFT half of the page; the node sits fully
+  // inside the page but in the uncovered right half -- the per-tile clip
+  // would silently drop it.
+  const std::string gap_contract =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":200,"h":100},)"
+    R"("tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":100}}],)"
+    R"("paint":[)" + svg_node(150.0, 10.0, 40.0, 40.0) + R"(]}]}})";
+  const auto gap_loaded = load_baked_contract(gap_contract);
+  REQUIRE(gap_loaded);
+  const auto gap_rendered = render_to_trace(gap_loaded.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(gap_rendered);
+  int gap_notices = 0;
+  for (const auto& n : gap_rendered.value().notices) {
+    if (n.type == DegradationNoticeType::TileCoverageGap) ++gap_notices;
+  }
+  CHECK(gap_notices == 1);
+
+  // An exact two-tile cover of the same page must NOT fire the notice.
+  const std::string covered_contract =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":200,"h":100},)"
+    R"("tiles":[{"origin":{"x":0,"y":0},"size":{"w":100,"h":100}},)"
+    R"({"origin":{"x":100,"y":0},"size":{"w":100,"h":100}}],)"
+    R"("paint":[)" + svg_node(150.0, 10.0, 40.0, 40.0) + R"(]}]}})";
+  const auto covered = load_baked_contract(covered_contract);
+  REQUIRE(covered);
+  const auto covered_rendered = render_to_trace(covered.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(covered_rendered);
+  for (const auto& n : covered_rendered.value().notices) {
+    CHECK(n.type != DegradationNoticeType::TileCoverageGap);
+  }
+
+  // A node hanging past the PAGE with full tile cover keeps firing ONLY the
+  // page-escape notice (no double-report from the coverage check).
+  const std::string overhang_contract =
+    R"({"schema":{"major":1,"minor":0},"document":{"units":"px","pages":[)"
+    R"({"id":"p","size":{"w":200,"h":100},)"
+    R"("tiles":[{"origin":{"x":0,"y":0},"size":{"w":200,"h":100}}],)"
+    R"("paint":[)" + svg_node(180.0, 10.0, 60.0, 40.0) + R"(]}]}})";
+  const auto overhang = load_baked_contract(overhang_contract);
+  REQUIRE(overhang);
+  const auto overhang_rendered = render_to_trace(overhang.value(), RenderTarget{96.0, 96.0});
+  REQUIRE(overhang_rendered);
+  CHECK(margin_clip_count(overhang_rendered.value()) == 1);
+  for (const auto& n : overhang_rendered.value().notices) {
+    CHECK(n.type != DegradationNoticeType::TileCoverageGap);
+  }
+}

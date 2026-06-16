@@ -18,7 +18,13 @@ enum class DegradationNoticeType {
   // which external rasterizer produced the pixels (for regulated traceability).
   // The engine's StubbedSvgArtwork notice stays unchanged until the spec owner
   // formally lifts that posture; this is additive (a softer success notice).
-  SvgArtworkRasterized
+  SvgArtworkRasterized,
+  // Content lies INSIDE the page but outside the union of the page's tiles:
+  // the per-tile clip would drop it with no other signal (the page-escape
+  // notice only covers content past the page extent). Bake-produced tilings
+  // always cover the page exactly, so this fires only for a mis-baked
+  // contract -- but then it is real silent content loss, hence loud.
+  TileCoverageGap
 };
 
 struct DegradationNotice {

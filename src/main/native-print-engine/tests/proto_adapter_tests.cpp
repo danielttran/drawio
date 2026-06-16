@@ -529,6 +529,10 @@ TEST_CASE("GetContractFields reports the MINIMUM maxLen across nodes sharing"
   // First-wins dedupe reported 10; a 3..10 char value then overflowed the
   // maxLen=2 node at render time. The binding constraint is 2.
   CHECK(fields.items()[0].get("maxLen")->as_number() == 2.0);
+  // audit7: the sample must stay PAIRED with the binding maxLen — keeping
+  // the first node's "Sample" (6 cp) advertised a sample the reported
+  // maxLen=2 field could never accept.
+  CHECK(fields.items()[0].get("sampleValue")->as_string() == "Sm");
 }
 
 TEST_CASE("Print refuses non-string printerId / stockId loudly",

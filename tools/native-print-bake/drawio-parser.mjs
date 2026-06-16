@@ -244,6 +244,10 @@ function flattenObjectWrappers(xml) {
 function parseCells(xml) {
   xml = flattenObjectWrappers(xml);
   const cells = {};
+  // DOCUMENT order, not dict order: JS objects iterate integer-LIKE keys
+  // numerically ascending, which inverted "Bring to Front"/"Send to Back"
+  // stacking for numeric ids when building the z-order tree below.
+  const docOrder = [];
 
   // Match each mxCell — self-closing or paired.
   // Note: the value attribute may contain HTML entities but not raw '<>'
@@ -310,10 +314,12 @@ function parseCells(xml) {
     }
 
     cells[id] = cell;
+    docOrder.push(cell);
   }
 
-  // Build parent→children tree (for collectCellsInZOrder)
-  for (const cell of Object.values(cells)) {
+  // Build parent→children tree (for collectCellsInZOrder) in DOCUMENT
+  // order — mxGraphModel child order IS the z-order (last paints on top).
+  for (const cell of docOrder) {
     if (cell.parent != null && cells[cell.parent]) {
       cells[cell.parent].children.push(cell);
     }
@@ -342,6 +348,25 @@ function absolutePos(cell, cells) {
       const relX = (parent.geometry.width  || 0) * (g.x || 0) + ox;
       const relY = (parent.geometry.height || 0) * (g.y || 0) + oy;
       const { ax: pax, ay: pay } = absolutePos(parent, cells);
+      // mxGraphView.updateVertexState: a RELATIVE child of a rotated parent
+      // rotates its CENTER around the parent center (absolute-geometry
+      // children stay put — the editor bakes rotation into their geometry).
+      // Without this the child printed at the unrotated spot while the
+      // parent body rotated away from it.
+      const pStyle = parent.resolvedStyle || parent.style || {};
+      const rot = parseFloat(pStyle.rotation || 0) || 0;
+      if (rot !== 0) {
+        const cw = g.width || 0, ch = g.height || 0;
+        const pcx = pax + (parent.geometry.width || 0) / 2;
+        const pcy = pay + (parent.geometry.height || 0) / 2;
+        const cx = pax + relX + cw / 2;
+        const cy = pay + relY + ch / 2;
+        const rad = rot * Math.PI / 180;
+        const cos = Math.cos(rad), sin = Math.sin(rad);
+        const dx = cx - pcx, dy = cy - pcy;
+        return { ax: pcx + dx * cos - dy * sin - cw / 2,
+                 ay: pcy + dx * sin + dy * cos - ch / 2 };
+      }
       return { ax: pax + relX, ay: pay + relY };
     }
   }
@@ -379,6 +404,14 @@ function resolveVisibleTerminal(terminalId, cells) {
   const chain = [];
   let cur = cell;
   while (cur) { chain.push(cur); cur = cur.parent != null ? cells[cur.parent] : null; }
+  // mxGraphView.updateEdgeState: a terminal on a HIDDEN layer/cell has no
+  // visible state, and the editor then shows NO edge at all. Returning the
+  // hidden terminal here printed an edge into empty space -- a silent
+  // divergence. The HIDDEN marker tells edgePoints to drop the edge (vs a
+  // dangling/unconnected end, which legitimately floats).
+  for (const link of chain) {
+    if (link.visible === false) return 'HIDDEN';
+  }
   // The OUTERMOST collapsed ancestor above the terminal is the visible one.
   for (let i = chain.length - 1; i > 0; i--) {
     if (chain[i].collapsed) return chain[i];
@@ -399,7 +432,10 @@ function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
   const style = edge.style || {};
   const pxKey = isSource ? 'exitX' : 'entryX';
   const pyKey = isSource ? 'exitY' : 'entryY';
-  if (style[pxKey] != null || style[pyKey] != null) {
+  // mxGraph.getConnectionConstraint: a FIXED anchor needs BOTH coordinates;
+  // a lone exitX/entryX leaves the end FLOATING (the 0.5 default invented
+  // an anchor the editor does not draw).
+  if (style[pxKey] != null && style[pyKey] != null) {
     const px = parseFloat(style[pxKey] ?? 0.5);
     const py = parseFloat(style[pyKey] ?? 0.5);
     const dx = parseFloat(style[isSource ? 'exitDx' : 'entryDx'] || 0) || 0;
@@ -423,7 +459,23 @@ function terminalPoint(edge, cells, terminalId, isSource, toward, orthogonal) {
   // printed edges visibly detach from non-rectangular shapes.
   const tStyle = terminal && terminal.resolvedStyle
     ? terminal.resolvedStyle : (terminal && terminal.style) || {};
-  const pt = perimeterPoint(box, tStyle, toward, !!orthogonal);
+  // mxGraphView.updateFloatingTerminalPoint + getPerimeterBounds: the
+  // perimeter spacing GROWS the perimeter bounds before the intersection
+  // (edge perimeterSpacing + per-end source/targetPerimeterSpacing + the
+  // TERMINAL's own perimeterSpacing style), for FLOATING ends only (fixed
+  // exitX/exitY anchors returned above untouched). The old endpoint nudge
+  // along the line gave wrong geometry on diagonal approaches and spaced
+  // fixed anchors too.
+  const eStyle = edge.resolvedStyle || edge.style || {};
+  let border = parseFloat(eStyle.perimeterSpacing || 0) || 0;
+  border += parseFloat(
+    eStyle[isSource ? 'sourcePerimeterSpacing' : 'targetPerimeterSpacing'] || 0) || 0;
+  border += parseFloat(tStyle.perimeterSpacing || 0) || 0;
+  const pBox = border !== 0
+    ? { x: box.x - border, y: box.y - border,
+        width: box.width + 2 * border, height: box.height + 2 * border }
+    : box;
+  const pt = perimeterPoint(pBox, tStyle, toward, !!orthogonal);
   if (pt) return pt;
   return { x: cx, y: cy };
 }
@@ -432,12 +484,22 @@ function edgePoints(cell, cells) {
   const g = cell.geometry;
   const { ax, ay } = absolutePos(cell, cells);
   const waypoints = (g.points || []).map((pt) => ({ x: pt.x + ax, y: pt.y + ay }));
-  const style = cell.style || {};
+  // Route with the stylesheet-RESOLVED style, exactly like the editor: the
+  // routers read defaulted keys the raw style omits (e.g. jettySize=auto
+  // reads endArrow/endSize from defaultEdge), so raw-style routing produced
+  // different jetties than the editor for customized arrow sizes.
+  const style = cell.resolvedStyle || cell.style || {};
   const noEdgeStyle = styleFlag(style, 'noEdgeStyle');
   const styleName = !noEdgeStyle && style.edgeStyle != null ? String(style.edgeStyle) : null;
 
-  const srcCell = resolveVisibleTerminal(cell.source, cells);
-  const tgtCell = resolveVisibleTerminal(cell.target, cells);
+  const srcResolved = resolveVisibleTerminal(cell.source, cells);
+  const tgtResolved = resolveVisibleTerminal(cell.target, cells);
+  // mxGraphView.updateEdgeState removes any edge whose CONNECTED terminal
+  // has no visible state -- the editor shows no edge at all, so printing
+  // one (into the hidden shape's empty space) was a silent divergence.
+  if (srcResolved === 'HIDDEN' || tgtResolved === 'HIDDEN') return null;
+  const srcCell = srcResolved;
+  const tgtCell = tgtResolved;
   const sourceBox = absoluteBox(srcCell, cells);
   const targetBox = absoluteBox(tgtCell, cells);
   const sourceCenter = sourceBox
@@ -456,8 +518,9 @@ function edgePoints(cell, cells) {
   const literalTgt = (!tgtCell && g.targetPoint)
     ? { x: g.targetPoint.x + ax, y: g.targetPoint.y + ay } : null;
 
-  const hasExit = style.exitX != null || style.exitY != null;
-  const hasEntry = style.entryX != null || style.entryY != null;
+  // BOTH coordinates make a fixed anchor (mxGraph.getConnectionConstraint).
+  const hasExit = style.exitX != null && style.exitY != null;
+  const hasEntry = style.entryX != null && style.entryY != null;
 
   // Self-loop: mxGraphView.isLoopStyleEnabled -- source == target, fewer
   // than 2 hints, and (orthogonalLoop unset OR no fixed exit/entry point)
@@ -469,7 +532,12 @@ function edgePoints(cell, cells) {
     (!styleFlag(style, 'orthogonalLoop') || (!hasExit && !hasEntry));
   const effStyleName = isLoop ? 'loopEdgeStyle' : styleName;
 
-  const orth = effStyleName ? isOrthogonalStyle(effStyleName, style) : false;
+  // mxGraph.isOrthogonal: the bare style flag DECIDES when present (a plain
+  // no-edgeStyle edge with orthogonal=1 projects its floating terminals
+  // orthogonally); only when absent does the edge style imply it.
+  const orth = style.orthogonal != null
+    ? String(style.orthogonal) === '1'
+    : (effStyleName ? isOrthogonalStyle(effStyleName, style) : false);
   const fixedSrc = literalSrc ||
     (hasExit && sourceBox ? terminalPoint(cell, cells, cell.source, true, null, orth) : null);
   const fixedTgt = literalTgt ||
@@ -505,18 +573,30 @@ function edgePoints(cell, cells) {
   const out = waypoints.slice();
   if (literalSrc) out.unshift(literalSrc);
   if (literalTgt) out.push(literalTgt);
+  if (out.length === 0 && sourceCenter && targetCenter) {
+    // No waypoints: mxGraphView.updateFloatingTerminalPoints computes the
+    // TARGET point first (aiming at the source center), then aims the
+    // source at that POINT (getNextPoint picks the freshly-set pe). Aiming
+    // both ends at the opposite CENTER gave the same ray for disjoint
+    // shapes but flipped the attachment side when the shapes overlap.
+    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter, orth)
+      || targetCenter;
+    const start = terminalPoint(cell, cells, cell.source, true, end, orth)
+      || sourceCenter;
+    return [start, end];
+  }
   const firstToward = out.length > (literalSrc ? 1 : 0) ? out[literalSrc ? 1 : 0] : (out[0] || targetCenter);
   const lastToward = out[out.length - 1] || sourceCenter;
   const src = literalSrc ? null
-    : terminalPoint(cell, cells, cell.source, true, firstToward, false);
+    : terminalPoint(cell, cells, cell.source, true, firstToward, orth);
   const tgt = literalTgt ? null
-    : terminalPoint(cell, cells, cell.target, false, lastToward, false);
+    : terminalPoint(cell, cells, cell.target, false, lastToward, orth);
   if (src) out.unshift(src);
   if (tgt) out.push(tgt);
 
   if (out.length < 2 && sourceCenter && targetCenter) {
-    const start = terminalPoint(cell, cells, cell.source, true, targetCenter, false) || sourceCenter;
-    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter, false) || targetCenter;
+    const end = terminalPoint(cell, cells, cell.target, false, sourceCenter, orth) || targetCenter;
+    const start = terminalPoint(cell, cells, cell.source, true, end, orth) || sourceCenter;
     return [start, end];
   }
 
@@ -597,9 +677,27 @@ function computeBounds(cells) {
         parseFloat(st.endWidth) || 0,
         parseFloat(st.strokeWidth) || 1) / 2 + markerHalo;
       try {
-        for (const pt of edgePoints(cell, cells)) {
+        const pts = edgePoints(cell, cells) || [];
+        for (const pt of pts) {
           include(pt.x - halo, pt.y - halo);
           include(pt.x + halo, pt.y + halo);
+        }
+        // The edge's own LABEL extends the graph bounds too (drawio
+        // getGraphBounds includes label bboxes): an auto-fit page cropped
+        // dragged/long edge labels that stuck out past the route.
+        if (pts.length >= 2 && cell.value != null && String(cell.value) !== '') {
+          const fs2 = parseFloat(st.fontSize) || 12;
+          const text2 = String(cell.value).replace(/<[^>]+>/g, '');
+          const lw2 = Math.max(24, text2.length * fs2 * 0.65);
+          const lh2 = Math.max(fs2 * 1.4, text2.split('\n').length * fs2 * 1.25);
+          let mid = pts[Math.floor(pts.length / 2)];
+          if (pts.length % 2 === 0) {
+            const a = pts[pts.length / 2 - 1], b = pts[pts.length / 2];
+            mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          }
+          const offp = cell.geometry && cell.geometry.offset ? cell.geometry.offset : { x: 0, y: 0 };
+          include(mid.x + offp.x - lw2 / 2, mid.y + offp.y - lh2 / 2);
+          include(mid.x + offp.x + lw2 / 2, mid.y + offp.y + lh2 / 2);
         }
       } catch {
         const { ax, ay } = absolutePos(cell, cells);
@@ -669,7 +767,9 @@ function cellToState(cell, cells) {
     // Include source/target terminal points when draw.io stores them as cell
     // references instead of literal mxPoint entries.
     const points = edgePoints(cell, cells);
-    if (points.length < 2) return null;
+    // null = the edge has no visible state (hidden terminal) and must not
+    // print; < 2 points = nothing routable either way.
+    if (!points || points.length < 2) return null;
     const state = {
       x: 0, y: 0, width: 0, height: 0,
       absolutePoints: points
@@ -694,14 +794,23 @@ function parseModel(modelXml) {
   const modelOpen = /<mxGraphModel([^>]*)>/i.exec(modelXml);
   const modelAttrs = modelOpen ? parseAttrs(modelOpen[1]) : {};
 
-  const pageW = parseFloat(modelAttrs.pageWidth  || 0) || 0;
-  const pageH = parseFloat(modelAttrs.pageHeight || 0) || 0;
+  // View > Page Scale: the on-canvas page covers pageFormat * pageScale
+  // model units (drawio computes page breaks as pageFormat*pageScale).
+  // Ignoring it printed files authored at != 100% page scale mis-fit.
+  const pageScale = parseFloat(modelAttrs.pageScale || 1) || 1;
+  const pageW = (parseFloat(modelAttrs.pageWidth  || 0) || 0) * pageScale;
+  const pageH = (parseFloat(modelAttrs.pageHeight || 0) || 0) * pageScale;
 
   const cells = parseCells(modelXml);
 
   const bounds = computeBounds(cells);
+  // `explicit` records that the AUTHOR fixed the page size (File > Page
+  // Setup): the bake must then keep every cell's on-page position (the
+  // page origin is model 0,0), not normalise content to the paper corner.
+  // Without page dims the page is auto-fit to content and bounds-anchoring
+  // is the faithful choice.
   const paper = (pageW > 0 && pageH > 0)
-    ? { wPx: pageW, hPx: pageH }
+    ? { wPx: pageW, hPx: pageH, explicit: true }
     : { wPx: Math.max(1, bounds.width), hPx: Math.max(1, bounds.height) };
   // Page background colour (File > Page Setup) prints behind all content.
   if (modelAttrs.background && modelAttrs.background !== 'none') {
@@ -743,12 +852,20 @@ export function buildGraph(cells, paper) {
 
   const allBounds = computeBounds(cells);
 
-  // collectCellsInZOrder fallback: use Object.values order.
+  // Expose the real mxGraphModel tree API so the exporter's TRUE z-order
+  // walk engages. The Object.keys fallback iterates integer-LIKE ids
+  // numerically ascending regardless of XML document order (JS object
+  // semantics), so "Bring to Front"/"Send to Back" arrangements with
+  // numeric ids printed in INVERTED stacking order.
+  const rootCell = cells['0'] || Object.values(cells).find((c) => c && c.parent == null) || null;
   const model = {
     cells,
     isVertex: (c) => !!(c && c.vertex),
     isEdge:   (c) => !!(c && c.edge),
-    getStyle: (c) => (c && c.rawStyle) || ''
+    getStyle: (c) => (c && c.rawStyle) || '',
+    getRoot:  () => rootCell,
+    getChildCount: (c) => (c && c.children ? c.children.length : 0),
+    getChildAt: (c, i) => (c && c.children ? c.children[i] : null)
   };
 
   return {
@@ -765,7 +882,14 @@ export function buildGraph(cells, paper) {
       height: allBounds.height
     }),
     getCellStyle: (cell) => (cell && cell.resolvedStyle) ? cloneStyle(cell.resolvedStyle) : {},
-    getLabel:     (cell) => (cell && cell.value != null ? String(cell.value) : ''),
+    // mxGraph.getLabel returns '' when STYLE_NOLABEL is set — hidden labels
+    // (noLabel=1) previously PRINTED, a silent divergence.
+    getLabel:     (cell) => {
+      if (!cell || cell.value == null) return '';
+      const st = cell.resolvedStyle || cell.style;
+      if (st && st.noLabel != null && String(st.noLabel) === '1') return '';
+      return String(cell.value);
+    },
     isHtmlLabel:  (cell) => !!(cell && cell.style && String(cell.style.html) === '1'),
     nativePrintOptions: null
   };
