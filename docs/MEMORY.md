@@ -1264,3 +1264,24 @@ regenerated: master-test-rich-text (L4 line height), test (process/folder label
 inset) — coordinate-only. Matrix green: exporter 205, bake 312, validate 64,
 ctest 216/216 (real resvg), production-audit 86+8910 zero notices/all inked/0
 blank, render-gate pass. Visually confirmed all shapes through production resvg.
+
+## UPDATE 2026-06-16 — round 7b (advisor pass 2 follow-up, same branch)
+
+Advisor pass 2 verified all five round-7 fixes correct/no-regression, but found the
+label-margin dispatch was INCOMPLETE — more margin-defining shapes still diverged
+silently. Extended `labelMargins` to cover them all:
+- **umlControl** (getLabelBounds, UNCONDITIONAL top h/8) and **umlBoundary**
+  (getLabelMargins, UNCONDITIONAL left w/6) — every labelled instance was centered
+  over the whole shape; now inset.
+- **note2 boundedLbl**: added the BOTTOM inset (size) the round-7 port dropped.
+- **note boundedLbl** (inherits mxCylinder: top min(40, h*size*2)), **cylinder3
+  boundedLbl** (top min(h,size*2), bottom size*0.3, lid=0 halves size), **tape
+  boundedLbl** (h/v-aware top+bottom or left+right by size*extent), **rhombus/ext
+  double=1** (inset all sides by the double-border margin).
+- Gated the cube/note multi-paint label branches on external-label position
+  (the advisor's non-blocking note): an external-labelled cube/note2 is no longer
+  wrongly inset.
+
++4 regression tests (bake 316). No golden drift (none of these configs are in the
+fixture corpus). Matrix green: exporter 205, bake 316, validate 64, ctest 216/216,
+production-audit 86+8910 zero notices/all inked, render-gate pass.

@@ -1433,7 +1433,45 @@
       return { l: 0, t: Math.min(40, h * number(style.size, 0.15) * 2), r: 0, b: 0 };
     }
     if (shape === 'note2' && bounded) {
-      return { l: 0, t: Math.min(h, number(style.size, 15)), r: 0, b: 0 };
+      // NoteShape2.getLabelMargins (Shapes.js:1453): top AND bottom by size.
+      var n2 = number(style.size, 15);
+      return { l: 0, t: Math.min(h, n2), r: 0, b: Math.max(0, n2) };
+    }
+    if (shape === 'note' && bounded) {
+      // NoteShape extends mxCylinder → inherits mxCylinder.getLabelMargins:
+      // top = min(maxHeight=40, h*size*2), size default 0.15.
+      return { l: 0, t: Math.min(40, h * number(style.size, 0.15) * 2), r: 0, b: 0 };
+    }
+    if (shape === 'cylinder3' && bounded) {
+      // CylinderShape3.getLabelMargins (Shapes.js:1377): top min(h,size*2),
+      // bottom size*0.3; size halves when lid=false. size default 15.
+      var c3 = number(style.size, 15);
+      if (String(style.lid) === '0') c3 /= 2;
+      return { l: 0, t: Math.min(h, c3 * 2), r: 0, b: Math.max(0, c3 * 0.3) };
+    }
+    if (shape === 'tape' && bounded) {
+      // TapeShape.getLabelBounds (Shapes.js:1282): for the horizontal (east/west
+      // or undefined) direction, top AND bottom by h*size (size default 0.4).
+      var tdir = String(style.direction || 'east');
+      if (tdir === 'east' || tdir === 'west') {
+        var tdy = h * number(style.size, 0.4);
+        return { l: 0, t: tdy, r: 0, b: tdy };
+      }
+      var twx = w * number(style.size, 0.4); // vertical tape insets left+right
+      return { l: twx, t: 0, r: twx, b: 0 };
+    }
+    if ((shape === 'rhombus' || shape === 'ext') && String(style.double) === '1') {
+      // mxRhombus/ExtendedShape double=1 (Shapes.js:2076/2206): inset all sides.
+      // rhombus margin = max(2,sw+1)*2 + STYLE_MARGIN; ext = max(2,sw+1) + margin.
+      var base = Math.max(2, sw + 1);
+      var dm = (shape === 'rhombus' ? base * 2 : base) + number(style.margin, 0);
+      return { l: dm, t: dm, r: dm, b: dm };
+    }
+    if (shape === 'umlControl') { // getLabelBounds, UNCONDITIONAL: top h/8
+      return { l: 0, t: h / 8, r: 0, b: 0 };
+    }
+    if (shape === 'umlBoundary') { // getLabelMargins, UNCONDITIONAL: left w/6
+      return { l: w / 6, t: 0, r: 0, b: 0 };
     }
     if (shape === 'document' && bounded) {
       return { l: 0, t: 0, r: 0, b: number(style.size, 0.3) * h };
@@ -6592,8 +6630,11 @@
         }
         paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
-          // note2 with boundedLbl insets the label below the fold (getLabelMargins).
-          paint.push(labelTextNode(graph, cell, state, style, applyLabelMargins(box, style), label, notices, resolved));
+          // note2 with boundedLbl insets the label below the fold (getLabelMargins);
+          // external labels (labelPosition/verticalLabelPosition) are not inset.
+          var noteExt = externalLabelBox(style, box);
+          var noteLb = (noteExt === box) ? applyLabelMargins(box, style) : noteExt;
+          paint.push(labelTextNode(graph, cell, state, style, noteLb, label, notices, resolved));
         }
         return;
       }
@@ -6610,8 +6651,11 @@
         paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
           // The default General-sidebar cube carries boundedLbl=1 → inset the
-          // label by `size` (left+top) per CubeShape.getLabelMargins.
-          paint.push(labelTextNode(graph, cell, state, style, applyLabelMargins(box, style), label, notices, resolved));
+          // label by `size` (left+top) per CubeShape.getLabelMargins. External
+          // labels (labelPosition/verticalLabelPosition) are not inset.
+          var cubeExt = externalLabelBox(style, box);
+          var cubeLb = (cubeExt === box) ? applyLabelMargins(box, style) : cubeExt;
+          paint.push(labelTextNode(graph, cell, state, style, cubeLb, label, notices, resolved));
         }
         return;
       }

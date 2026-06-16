@@ -4677,3 +4677,47 @@ test('cube direction=north paints in a swapped viewport (no overflow on non-squa
   // box stays ~200x80 (+stroke halo), not a swapped/overflowed extent.
   assert.ok(svgN.box.w > svgN.box.h, `cube box keeps its 200x80 aspect: ${svgN.box.w}x${svgN.box.h}`);
 });
+
+test('label margin: umlControl insets the label top by h/8 (unconditional, getLabelBounds)', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Ctl" style="shape=umlControl;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'umlControl label emitted');
+  // top inset = 120/8 = 15 → label box top ≳ 15 (vs 0 unmargined).
+  assert.ok(l.box.y >= 13, `umlControl label inset top by h/8: box.y=${l.box.y}`);
+});
+
+test('label margin: umlBoundary insets the label left by w/6 (unconditional, getLabelMargins)', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="B" style="shape=umlBoundary;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="180" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'umlBoundary label emitted');
+  // left inset = 180/6 = 30 → label box left ≳ 28.
+  assert.ok(l.box.x >= 26, `umlBoundary label inset left by w/6: box.x=${l.box.x}`);
+});
+
+test('label margin: note2 boundedLbl insets BOTH top and bottom by size', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="N" style="shape=note2;fillColor=#eee;boundedLbl=1;size=30;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'note2 label emitted');
+  // top=30, bottom=30 → label box h ≈ 120 - 60 = 60.
+  assert.ok(l.box.y >= 28 && l.box.h <= 64, `note2 inset top+bottom by size: y=${l.box.y} h=${l.box.h}`);
+});
+
+test('label margin: ext double=1 insets the label on all sides', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="E" style="shape=ext;double=1;fillColor=#eee;strokeWidth=2;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'ext double label emitted');
+  // margin = max(2, sw+1)=3 each side → box inset by ~3, h ≈ 120-6.
+  assert.ok(l.box.x >= 2 && l.box.h <= 116, `ext double inset all sides: x=${l.box.x} h=${l.box.h}`);
+});
