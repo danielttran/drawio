@@ -4721,3 +4721,57 @@ test('label margin: ext double=1 insets the label on all sides', async () => {
   // margin = max(2, sw+1)=3 each side → box inset by ~3, h ≈ 120-6.
   assert.ok(l.box.x >= 2 && l.box.h <= 116, `ext double inset all sides: x=${l.box.x} h=${l.box.h}`);
 });
+
+test('label margin: doubleEllipse insets the label by margin on all sides (unconditional)', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="DE" style="ellipse;shape=doubleEllipse;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'doubleEllipse label emitted');
+  // margin = min(3+sw, min(160/5,120/5)) = min(4,24)=4 → inset ~4 each side.
+  assert.ok(l.box.x >= 3 && l.box.h <= 114, `doubleEllipse inset all sides: x=${l.box.x} h=${l.box.h}`);
+});
+
+test('label margin: gitTag insets the label past the tab (tabSize)', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="v1" style="shape=gitTag;fillColor=#eee;tabSize=20;" parent="1"><mxGeometry x="20" y="20" width="160" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'gitTag label emitted');
+  assert.ok(l.box.x >= 18, `gitTag label past the tab: box.x=${l.box.x}`);
+});
+
+test('label margin: mermaidOdd insets the label by the notch (h/4)', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="O" style="shape=mermaidOdd;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="160" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'mermaidOdd label emitted');
+  // notch = 80/4 = 20 → label box left ≳ 18.
+  assert.ok(l.box.x >= 18, `mermaidOdd label inset by notch: box.x=${l.box.x}`);
+});
+
+test('label margin: mindmapBang insets the label to the inner 80%', async () => {
+  const c = (await bake(`<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="!" style="shape=mindmapBang;fillColor=#eee;" parent="1"><mxGeometry x="20" y="20" width="200" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true })).contract;
+  const l = labelTextY(c);
+  assert.ok(l, 'mindmapBang label emitted');
+  // 10% inset → left ≳ 18 (200*0.1=20), h ≲ 120-24.
+  assert.ok(l.box.x >= 18 && l.box.h <= 100, `mindmapBang inner 80%: x=${l.box.x} h=${l.box.h}`);
+});
+
+test('label margin: umlState insets left 10 only with boundedLbl + umlStateConnection', async () => {
+  const mk = (extra) => `<mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="S" style="shape=umlState;fillColor=#eee;${extra}" parent="1"><mxGeometry x="20" y="20" width="160" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const conn = labelTextY((await bake(mk('boundedLbl=1;umlStateConnection=connPointRef;'), { keepPx: true })).contract);
+  const plain = labelTextY((await bake(mk(''), { keepPx: true })).contract);
+  assert.ok(conn && plain, 'umlState labels emitted');
+  assert.ok(conn.box.x > plain.box.x + 5, `umlState+connection insets left 10: ${conn.box.x} vs ${plain.box.x}`);
+});

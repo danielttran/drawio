@@ -1473,6 +1473,25 @@
     if (shape === 'umlBoundary') { // getLabelMargins, UNCONDITIONAL: left w/6
       return { l: w / 6, t: 0, r: 0, b: 0 };
     }
+    if (shape === 'umlState' && bounded && style.umlStateConnection != null &&
+        style.umlStateConnection !== '') { // left inset 10 only with a connection
+      return { l: 10, t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'doubleEllipse') { // mxDoubleEllipse.getLabelBounds, UNCONDITIONAL
+      var dem = (style.margin != null && style.margin !== '')
+        ? number(style.margin, 0)
+        : Math.min(3 + sw, Math.min(w / 5, h / 5));
+      return { l: dem, t: dem, r: dem, b: dem };
+    }
+    if (shape === 'gitTag') { // body is right of the tab (tabSize default 8)
+      return { l: number(style.tabSize, 8), t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'mindmapBang') { // inner 80% rect (10% inset each side)
+      return { l: w * 0.1, t: h * 0.1, r: w * 0.1, b: h * 0.1 };
+    }
+    if (shape === 'mermaidOdd') { // notch = h/4 on the left
+      return { l: h / 4, t: 0, r: 0, b: 0 };
+    }
     if (shape === 'document' && bounded) {
       return { l: 0, t: 0, r: 0, b: number(style.size, 0.3) * h };
     }

@@ -1285,3 +1285,17 @@ silently. Extended `labelMargins` to cover them all:
 +4 regression tests (bake 316). No golden drift (none of these configs are in the
 fixture corpus). Matrix green: exporter 205, bake 316, validate 64, ctest 216/216,
 production-audit 86+8910 zero notices/all inked, render-gate pass.
+
+## UPDATE 2026-06-16 — round 7c (exhaustive label-margin coverage, same branch)
+
+Proactively enumerated EVERY getLabelMargins/getLabelBounds in Shapes.js +
+mxgraph/src/shape (24 defs) and cross-checked against the dispatch instead of
+waiting for another advisor round. Added the 5 still-missing: umlState (boundedLbl
++ umlStateConnection → left 10), doubleEllipse (mxDoubleEllipse, unconditional all-
+sides margin = getValue(margin, min(3+sw, min(w,h)/5))), gitTag (left tabSize,
+default 8), mindmapBang (inner 80%), mermaidOdd (left notch h/4). Now ALL 24
+label-margin/bounds shapes are covered (15 in labelMargins + swimlane/table/
+umlFrame/umlLifeline special-cased at the label sites; mxShape base = null).
++5 regression tests (bake 321). Golden drift: master-test (doubleEllipse inset,
+coordinate-only). Matrix green: exporter 205, bake 321, validate 64, ctest
+216/216 (real resvg), production-audit 86+8910 zero notices/all inked, render-gate.
