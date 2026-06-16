@@ -1181,3 +1181,172 @@ Residuals — all LOUD or documented, none silent: sketch/roughjs texture
 umlLifeline unknown participant (loud), non-inset image clips (loud),
 vertical/rtl textDirection (loud), Win32-only wave-B changes compile in CI
 (no Windows box here).
+
+## UPDATE 2026-06-16 — round 6 audit (branch claude/optimistic-archimedes-ka4th1)
+
+**Goal:** end-to-end WYSIWYG audit (export → C++ engine); fix every silent
+divergence; advisor sign-off; push to fork. Five parallel object-by-object
+audits (vertex shapes / edges / labels / stencils+images / C++ engine) returned
+**18 verified findings**; all fixed with red→green regression tests, full matrix
+green before commit.
+
+**Fixes (each matched to drawio mxShape/mxStencil/mxText source):**
+- *S1 (HIGH):* stencil-internal `<text>` was seeded from the CELL font; drawio
+  mxShape.configureCanvas sets NO font, so stencil text uses the canvas defaults
+  (#000000/11/Arial,Helvetica/normal) unless the stencil emits its own font cmds
+  (mxStencil.js:952-968). Every stencil's decorative lettering (e.g. electrical
+  logic-gate J/K/Q/D) mis-rendered when the cell carried a non-default font.
+- *V1 (HIGH):* datastore drew 1 of 3 stacked-disk rim curves + flat bottom;
+  now 3 rims + body bottom control h+dy/3 (DataStoreShape.redrawPath).
+- *V2 (HIGH):* callout had hard-coded rounded corners, ignored size/position/
+  position2/base, and put the tail tip BELOW the cell; now the faithful square
+  7-point polygon with the tail tip ON the bottom edge (CalloutShape).
+- *V3:* cylinder cap used a circle-bezier (too shallow) + ignored size; now the
+  drawio control points (-dy/3, h+dy/3, 2dy) + size override (mxCylinder).
+- *V4:* cube darkOpacity/darkOpacity2 shaded faces were dropped; now emitted via
+  cubeInner (CubeShape.paintVertexShape).
+- *V5:* swimlane/table startSize default 30 → 40 (mxConstants.DEFAULT_STARTSIZE).
+- *V6/V7:* associativeEntity rounded=1 (rect+diamond) and glass=1 were ignored;
+  now faithful (mxRectangleShape + addPoints).
+- *E1:* flexArrow / wedgeArrowDashed2 shadow=1 silently dropped; now an offset
+  filled shadow band.
+- *E2:* fixed exitX/exitY anchor ignored the terminal's perimeterSpacing; now
+  grows the box like mxGraph.getConnectionPoint/getPerimeterBounds.
+- *S2:* mxLabel image icon was letterboxed; mxLabel.paintImage stretches
+  (aspect=false). *S3:* stencil `<image>` dropped state.alpha. *S4:* image-cell
+  opacity ignored fillOpacity (now opacity*fillOpacity, incl. non-PNG path).
+- *L1:* overflow=width never clipped (grew the viewport); now clips to the cell.
+  *L2/L3:* rich-text `<table>` forced equal columns + ignored colspan/rowspan;
+  now content-proportional widths + an occupancy-grid honoring spans. *L4:*
+  sup/sub didn't expand the line box; now CSS max-ascent+max-descent. *L5:*
+  plain-label wrap ignored letterSpacing.
+- *C1/C2 (validator parity):* schema.minor now isLoaderInt (INT32) like the
+  loader; iCCP-profiled PNGs now refused pre-print (mirrors png_has_iccp_profile).
+
+Goldens regenerated: test (was already stale at HEAD — bake.test doesn't assert
+it), master-test, master-test-rich-text (coordinate/base64-only). Matrix on this
+box: exporter 205/1-skip, bake 307, validate 64, service 19, render-gate 1/1,
+production-audit 86+8910 zero notices / all inked / 0 blank, ctest 216/216 (real
+resvg cdylib). C3 (tile-coverage tolerance can swallow a sub-1058um in-page strip)
+left as a documented LOW residual — only a mis-baked tiling, production tiles
+cover the page exactly.
+
+## UPDATE 2026-06-16 — round 7 (advisor follow-up, same branch)
+
+Independent advisor verified all 18 round-6 fixes as correct (no regressions) but
+found 2 blocking + a systemic label-margin gap. All addressed:
+
+- **BLOCKING-2 + label-margin family (systemic):** the exporter honored
+  getLabelMargins/getLabelBounds ONLY for umlFrame/umlLifeline, so every other
+  margin-defining shape painted its label over the reserved region. Added a
+  `labelMargins(style,w,h)` dispatch + `applyLabelMargins` (direction-rotated per
+  mxUtils.getDirectedBounds) covering cube(boundedLbl), datastore, callout,
+  cylinder(boundedLbl), note2(boundedLbl), document(boundedLbl), manualInput
+  (boundedLbl), folder(boundedLbl), process/process2(getLabelBounds). Applied at
+  all THREE internal-label sites (generic fallback, builtin, shapePath). The
+  DEFAULT sidebar cube (boundedLbl=1) now insets its label clear of the depth band.
+- **BLOCKING-1 L4 sup/sub:** re-derived from mxSvgCanvas2D.getSupSubLineExpansion —
+  the baseline does NOT move; only the line DESCENDER grows, after absorbing the
+  CSS half-leading (lineFontSize*(LINE_HEIGHT-1)/2). (Round-6 grew the ascent,
+  moving the baseline — close but not faithful.)
+- **S3 (completed):** stencil `<image>` ALWAYS stretches (aspect=false in
+  mxStencil.drawShape; the `aspect` attr controls the SHAPE, not the image),
+  honors node flipH/flipV, opacity = alpha*fillAlpha.
+- **Cube direction=north/south:** cubeInner now paints in a w↔h-SWAPPED viewport
+  then rotates+translates (mxShape.isPaintBoundsInverted), like the builtin
+  dirInvBI path — correct proportions for non-square N/S cubes.
+- **Table rowspan:** the height deficit is distributed EVENLY across the spanned
+  rows (was dumped on the last row).
+
+Ragged-row right-edge border gap left as-is (border-model-dependent; matches
+`border="1"` separate-border tables). +12 regression tests (bake 312). Goldens
+regenerated: master-test-rich-text (L4 line height), test (process/folder label
+inset) — coordinate-only. Matrix green: exporter 205, bake 312, validate 64,
+ctest 216/216 (real resvg), production-audit 86+8910 zero notices/all inked/0
+blank, render-gate pass. Visually confirmed all shapes through production resvg.
+
+## UPDATE 2026-06-16 — round 7b (advisor pass 2 follow-up, same branch)
+
+Advisor pass 2 verified all five round-7 fixes correct/no-regression, but found the
+label-margin dispatch was INCOMPLETE — more margin-defining shapes still diverged
+silently. Extended `labelMargins` to cover them all:
+- **umlControl** (getLabelBounds, UNCONDITIONAL top h/8) and **umlBoundary**
+  (getLabelMargins, UNCONDITIONAL left w/6) — every labelled instance was centered
+  over the whole shape; now inset.
+- **note2 boundedLbl**: added the BOTTOM inset (size) the round-7 port dropped.
+- **note boundedLbl** (inherits mxCylinder: top min(40, h*size*2)), **cylinder3
+  boundedLbl** (top min(h,size*2), bottom size*0.3, lid=0 halves size), **tape
+  boundedLbl** (h/v-aware top+bottom or left+right by size*extent), **rhombus/ext
+  double=1** (inset all sides by the double-border margin).
+- Gated the cube/note multi-paint label branches on external-label position
+  (the advisor's non-blocking note): an external-labelled cube/note2 is no longer
+  wrongly inset.
+
++4 regression tests (bake 316). No golden drift (none of these configs are in the
+fixture corpus). Matrix green: exporter 205, bake 316, validate 64, ctest 216/216,
+production-audit 86+8910 zero notices/all inked, render-gate pass.
+
+## UPDATE 2026-06-16 — round 7c (exhaustive label-margin coverage, same branch)
+
+Proactively enumerated EVERY getLabelMargins/getLabelBounds in Shapes.js +
+mxgraph/src/shape (24 defs) and cross-checked against the dispatch instead of
+waiting for another advisor round. Added the 5 still-missing: umlState (boundedLbl
++ umlStateConnection → left 10), doubleEllipse (mxDoubleEllipse, unconditional all-
+sides margin = getValue(margin, min(3+sw, min(w,h)/5))), gitTag (left tabSize,
+default 8), mindmapBang (inner 80%), mermaidOdd (left notch h/4). Now ALL 24
+label-margin/bounds shapes are covered (15 in labelMargins + swimlane/table/
+umlFrame/umlLifeline special-cased at the label sites; mxShape base = null).
++5 regression tests (bake 321). Golden drift: master-test (doubleEllipse inset,
+coordinate-only). Matrix green: exporter 205, bake 321, validate 64, ctest
+216/216 (real resvg), production-audit 86+8910 zero notices/all inked, render-gate.
+
+## UPDATE 2026-06-16 — round 7d (advisor pass 3 follow-up, same branch)
+
+Advisor pass 3 confirmed all 24 label-margin shapes correctly covered; found 1
+blocking + 2 low, all from the mxGraph `'0'`-is-truthy quirk:
+- **BLOCKING-1 cylinder3;lid=0** (SHIPPED Basic-sidebar shape): mxGraph reads lid
+  via `if(getValue(style,'lid',true))` — the string `'0'` is JS-truthy, so the app
+  ALWAYS draws the lid (the no-lid branch is dead for string styles). The headless
+  parser numericizes `'0'`→`0` (falsy), so the exporter dropped the lid AND halved
+  the label band — a silent silhouette+label divergence on every print of that
+  library shape. Fixed with a new `drawioFlag(v,def)` helper (matches drawio's
+  string-truthiness: only ''/false/null are falsy; numeric 0 → truthy) applied to
+  both the lid paint and the cylinder3 label-margin halving. CORRECTED a stale
+  test that had asserted the wrong no-lid behavior.
+- **NB-1 rotated boundedLbl shapes** skipped the label inset: `rotatedLabelEls`
+  now applies `applyLabelMargins` pre-rotation (internal labels only), so a
+  rotated cube/datastore/process/etc. is inset like the app (getLabelBounds is
+  computed pre-rotation).
+- **NB-2** (boundedLbl=0 string-truthy parity) — not triggerable by any shipped
+  style (grep clean); documented, not gating. `boolish` stays correct for the
+  `=='1'`-style flags drawio compares explicitly.
+
++3 regression tests (bake 323), 1 stale test corrected. No golden drift. Matrix
+green: exporter 205, bake 323, validate 64, ctest 216/216 (real resvg),
+production-audit 86+8910 zero notices/all inked, render-gate pass.
+
+## UPDATE 2026-06-16 — round 7f + ADVISOR SIGN-OFF (same branch)
+
+**Advisor pass 4 VERDICT: PRODUCTION-READY — no blocking findings.** Verified
+pass-3's fixes line-by-line, confirmed the mxGraph `'0'`-is-truthy class is FULLY
+closed (drawioFlag sound; only `lid`/`boundedLbl` are bare-truthy reachable reads,
+both fixed; every other boolean flag drawio reads with `==`/`!=` so `boolish` is
+correct; the only shipped trigger `cylinder3;lid=0` is fixed). Fresh sweep across
+edges/engine/labels found no silent divergence beyond the inherent (accepted)
+no-browser font-metric approximation.
+
+Closed the one optional polish the advisor named: `getAutosizeTextFontSizeHeadless`
+now threads letterSpacing into its wrap and rounds the line pitch
+(Math.round(size*1.2)) so the autosize fit-check is identical to the render path
+(was a ≤1-unit drift on autosizeText=1 cells). No golden drift.
+
+**FINAL MATRIX (this box):** exporter 205 pass/1 skip, bake 324, validate 64,
+service 19, ctest 216/216 (real resvg cdylib), production-audit 86 shapes + 8910
+stencils zero notices / all inked / 0 blank, render-gate pass. Visually confirmed
+through the production resvg path: round-6 shapes, round-7 label margins, round-7c
+margin shapes, and the flagship test.drawio — all WYSIWYG.
+
+**AUDIT COMPLETE.** Rounds 6→7f closed ~30 verified silent divergences + the full
+getLabelMargins/getLabelBounds family (24 shapes) + the '0'-truthy flag class.
+Independent advisor signed off production-ready. Branch:
+claude/optimistic-archimedes-ka4th1 (fork only).

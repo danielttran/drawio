@@ -47,6 +47,30 @@ function isLoaderInt(v) {
     v >= -2147483648 && v <= 2147483647;
 }
 
+// Mirrors the loader's png_has_iccp_profile (contract_loader.cpp:633-666):
+// the engine refuses any PNG carrying an iCCP (embedded ICC colour profile)
+// chunk with ImageColorError. Without this mirror, a profiled PNG passes the
+// pre-print gate and then the engine rejects the whole job at draw time.
+// `b64` is the base64 payload (already strict-base64 validated by the caller).
+function pngHasIccpProfile(b64) {
+  let bytes;
+  try { bytes = Buffer.from(b64, 'base64'); } catch { return false; }
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length < 12) return false;
+  for (let i = 0; i < 8; i++) { if (bytes[i] !== sig[i]) return false; }
+  let pos = 8;
+  while (pos + 8 <= bytes.length) {
+    const length = (bytes[pos] << 24 >>> 0) + (bytes[pos + 1] << 16) +
+      (bytes[pos + 2] << 8) + bytes[pos + 3];
+    if (pos + 12 + length > bytes.length) return false;
+    const type = String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]);
+    if (type === 'iCCP') return true;
+    if (type === 'IEND') return false;
+    pos += 12 + length;
+  }
+  return false;
+}
+
 // Mirrors the loader's base64 shape check (contract_loader.cpp
 // is_base64_like/decode_base64, with the concurrent tightening that '=' is
 // only legal as FINAL padding, never mid-block): non-empty, length % 4 == 0,
@@ -280,6 +304,10 @@ function validatePaintNode(node, path) {
         // checks at the portable render gate; a non-PNG payload otherwise
         // surfaces as a late, mislabeled GDI+ decode failure mid-job.
         bad(path + '.data', 'payload does not start with the PNG signature');
+      } else if (pngHasIccpProfile(node.data)) {
+        // Loader (contract_loader.cpp:633) refuses iCCP/profiled PNGs; mirror
+        // it here so the operator learns pre-print, not after the job aborts.
+        bad(path + '.data', 'PNG carries an embedded ICC profile (iCCP) the engine refuses; re-export without a colour profile');
       }
       if (node.aspect !== 'preserve' && node.aspect !== 'fill') {
         bad(path + '.aspect', `must be preserve|fill, got ${JSON.stringify(node.aspect)}`);
@@ -471,8 +499,11 @@ function validate(contract) {
   // The engine loader (contract_loader.cpp) require_int's schema.minor too;
   // a contract that omits it passes a major-only validation here, then fails
   // at the engine boundary — the exact drift this validator exists to catch.
-  if (!Number.isInteger(contract.schema?.minor) || contract.schema.minor < 0) {
-    bad('$.schema.minor', `must be a non-negative integer, got ${JSON.stringify(contract.schema?.minor)}`);
+  // Use isLoaderInt (INT32-bounded) like every other engine int: a bare
+  // Number.isInteger lets schema.minor=1e15 pass here while require_int
+  // (contract_loader.cpp:501-505) rejects it out of range.
+  if (!isLoaderInt(contract.schema?.minor) || contract.schema.minor < 0) {
+    bad('$.schema.minor', `must be a non-negative integer in C++ int range, got ${JSON.stringify(contract.schema?.minor)}`);
   }
   if (!required(contract, 'document', '$', 'object')) return;
   if (contract.document?.units !== 'px' && contract.document?.units !== 'um') {

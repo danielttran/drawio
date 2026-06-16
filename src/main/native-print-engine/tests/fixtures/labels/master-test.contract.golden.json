@@ -199,7 +199,7 @@
           },
           {
             "kind": "path",
-            "d": "M 5291.666667 585258.333333 C 5291.666667 580582.352083 55562.5 580582.352083 55562.5 585258.333333 L 55562.5 610658.333333 C 55562.5 615334.314583 5291.666667 615334.314583 5291.666667 610658.333333 Z M 5291.666667 585258.333333 C 5291.666667 589934.314583 55562.5 589934.314583 55562.5 585258.333333",
+            "d": "M 5291.666667 585258.333333 C 5291.666667 573969.35625 55562.5 573969.35625 55562.5 585258.333333 L 55562.5 610658.333333 C 55562.5 621947.310417 5291.666667 621947.310417 5291.666667 610658.333333 Z M 5291.666667 585258.333333 C 5291.666667 593725 55562.5 593725 55562.5 585258.333333",
             "fill": {
               "type": "solid",
               "color": "#e1d5e7",
@@ -694,12 +694,12 @@
           {
             "kind": "svg",
             "box": {
-              "x": 84666.666667,
-              "y": 820208.333333,
-              "w": 31750,
-              "h": 26458.333333
+              "x": 85725,
+              "y": 821266.666667,
+              "w": 29633.333333,
+              "h": 24341.666667
             },
-            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEwMCI+PGc+PHRleHQgeD0iNjAiIHk9IjQzLjUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI0MDAiIGZpbGw9IiMwMDAwMDAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJ0ZXh0LWJlZm9yZS1lZGdlIiB4bWw6c3BhY2U9InByZXNlcnZlIj5EYmwgRWxsaXBzZTwvdGV4dD48L2c+PC9zdmc+",
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTEyIiBoZWlnaHQ9IjkyIj48Zz48dGV4dCB4PSI1NiIgeT0iMzkuNSIgZm9udC1mYW1pbHk9IkFyaWFsLCBBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjQwMCIgZmlsbD0iIzAwMDAwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPkRibCBFbGxpcHNlPC90ZXh0PjwvZz48L3N2Zz4=",
             "aspect": "preserve"
           },
           {
@@ -715,7 +715,7 @@
           },
           {
             "kind": "path",
-            "d": "M 201083.333333 820208.333333 L 232833.333333 820208.333333 L 232833.333333 828145.833333 L 201083.333333 828145.833333 Z",
+            "d": "M 201083.333333 820208.333333 L 232833.333333 820208.333333 L 232833.333333 830791.666667 L 201083.333333 830791.666667 Z",
             "fill": {
               "type": "solid",
               "color": "#dae8fc",
@@ -738,7 +738,7 @@
               "miterLimit": 10,
               "dash": null
             },
-            "d": "M 201083.333333 828145.833333 L 201083.333333 820208.333333 L 232833.333333 820208.333333 L 232833.333333 828145.833333"
+            "d": "M 201083.333333 830791.666667 L 201083.333333 820208.333333 L 232833.333333 820208.333333 L 232833.333333 830791.666667"
           },
           {
             "kind": "path",
@@ -755,7 +755,7 @@
               "miterLimit": 10,
               "dash": null
             },
-            "d": "M 201083.333333 828145.833333 L 201083.333333 846666.666667 L 232833.333333 846666.666667 L 232833.333333 828145.833333"
+            "d": "M 201083.333333 830791.666667 L 201083.333333 846666.666667 L 232833.333333 846666.666667 L 232833.333333 830791.666667"
           },
           {
             "kind": "path",
@@ -772,7 +772,7 @@
               "miterLimit": 10,
               "dash": null
             },
-            "d": "M 201083.333333 828145.833333 L 232833.333333 828145.833333"
+            "d": "M 201083.333333 830791.666667 L 232833.333333 830791.666667"
           },
           {
             "kind": "svg",
@@ -780,9 +780,9 @@
               "x": 201083.333333,
               "y": 820208.333333,
               "w": 31750,
-              "h": 7937.5
+              "h": 10583.333333
             },
-            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjMwIj48Zz48dGV4dCB4PSI2MCIgeT0iOC41IiBmb250LWZhbWlseT0iQXJpYWwsIEFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNDAwIiBmaWxsPSIjMDAwMDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0idGV4dC1iZWZvcmUtZWRnZSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSI+U3dpbWxhbmU8L3RleHQ+PC9nPjwvc3ZnPg==",
+            "source": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjQwIj48Zz48dGV4dCB4PSI2MCIgeT0iMTMuNSIgZm9udC1mYW1pbHk9IkFyaWFsLCBBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjQwMCIgZmlsbD0iIzAwMDAwMCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9InRleHQtYmVmb3JlLWVkZ2UiIHhtbDpzcGFjZT0icHJlc2VydmUiPlN3aW1sYW5lPC90ZXh0PjwvZz48L3N2Zz4=",
             "aspect": "preserve"
           },
           {

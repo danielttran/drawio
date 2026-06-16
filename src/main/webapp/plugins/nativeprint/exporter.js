@@ -158,10 +158,21 @@
       lineJoin: style.lineJoin || 'miter',
       miterLimit: number(style.miterLimit, 10),
       alpha: opacity(style, 'opacity'),
-      fontColor: style.fontColor || '#000000',
-      fontSize: number(style.fontSize, 11),
-      fontFamily: style.fontFamily || 'Arial',
-      fontStyle: number(style.fontStyle, 0)
+      // Stencil-internal <text> commands paint with the CANVAS DEFAULT font
+      // state, NOT the cell style: mxShape.configureCanvas (mxShape.js:1023)
+      // sets alpha/fill/stroke/dash/cap/join/miter but NEVER any font, so the
+      // canvas keeps mxAbstractCanvas2D.createState defaults — fontColor
+      // #000000, fontSize mxConstants.DEFAULT_FONTSIZE=11, fontFamily
+      // DEFAULT_FONTFAMILY='Arial,Helvetica', fontStyle DEFAULT_FONTSTYLE=0.
+      // A stencil only deviates via its own <fontcolor>/<fontsize>/<fontstyle>/
+      // <fontfamily> commands (mxStencil.js:952-968). Seeding these from the
+      // cell's fontColor/fontSize/fontStyle/fontFamily silently mis-rendered
+      // every stencil's decorative lettering (e.g. electrical/logic_gates.xml
+      // JK flip-flop "J/K/Q") whenever the cell carried a non-default font.
+      fontColor: '#000000',
+      fontSize: 11,
+      fontFamily: 'Arial,Helvetica',
+      fontStyle: 0
     };
     var stateStack = [];
 
@@ -579,13 +590,26 @@
             var imgSrc = a.src || '';
             var embeddedImgSrc = (resolved && resolved[imgSrc]) || imgSrc;
             if (embeddedImgSrc.indexOf('data:') === 0) {
-              var imgPar = a.aspect === 'fixed' ? 'xMidYMid meet' : 'none';
-              elems.push('<image href="' + embeddedImgSrc + '"' +
-                ' x="' + fmt(tx(parseFloat(a.x) || 0)) + '"' +
-                ' y="' + fmt(ty(parseFloat(a.y) || 0)) + '"' +
-                ' width="' + fmt(trx(parseFloat(a.w) || 0)) + '"' +
-                ' height="' + fmt(try_(parseFloat(a.h) || 0)) + '"' +
-                ' preserveAspectRatio="' + imgPar + '"/>');
+              // mxStencil.drawShape: canvas.image(...,aspect=false,flipH,flipV) —
+              // stencil images ALWAYS stretch (preserveAspectRatio="none") and
+              // honor the node's flipH/flipV; the `aspect` attr is NOT consulted
+              // (it controls the SHAPE aspect, not the image). opacity = alpha *
+              // fillAlpha (mxSvgCanvas2D.image).
+              var iX = tx(parseFloat(a.x) || 0), iY = ty(parseFloat(a.y) || 0);
+              var iW = trx(parseFloat(a.w) || 0), iH = try_(parseFloat(a.h) || 0);
+              var imgOp = ((state.alpha == null) ? 1 : state.alpha) *
+                clamp01(number(style.fillOpacity, 100) / 100);
+              var iFlipH = String(a.flipH) === '1', iFlipV = String(a.flipV) === '1';
+              var iEl = '<image href="' + embeddedImgSrc + '" x="' + fmt(iX) + '" y="' + fmt(iY) +
+                '" width="' + fmt(iW) + '" height="' + fmt(iH) + '"' +
+                (imgOp < 1 ? ' opacity="' + fmt(imgOp) + '"' : '') +
+                ' preserveAspectRatio="none"/>';
+              if (iFlipH || iFlipV) {
+                iEl = '<g transform="translate(' + fmt(iFlipH ? 2 * iX + iW : 0) + ' ' +
+                  fmt(iFlipV ? 2 * iY + iH : 0) + ') scale(' + (iFlipH ? -1 : 1) + ' ' +
+                  (iFlipV ? -1 : 1) + ')">' + iEl + '</g>';
+              }
+              elems.push(iEl);
             } else {
               if (Array.isArray(notices)) notices.push(degradation('ExporterUnsupportedStencilFeature',
                 'stencil uses <image> with unresolved external URL', ''));
@@ -746,6 +770,19 @@
     return v === true || v === 1 || v === '1' || v === 'true';
   }
 
+  // Replicates drawio's `if (mxUtils.getValue(style, key, def))` truthiness for
+  // flags it reads with a BARE `if(...)` (not an `== '1'` comparison). In the
+  // browser, style values are STRINGS, so '0' and even 'false' are JS-truthy —
+  // only '' / real false / null are falsy; an absent key uses `def`. The headless
+  // parser numericizes '0'->0 (JS-falsy), which would silently flip such a flag,
+  // so coerce a numeric 0 back to truthy to match what the operator sees.
+  // (e.g. CylinderShape3 `lid`: `lid=0` still draws the lid in the app.)
+  function drawioFlag(v, def) {
+    if (v === undefined || v === null) return def;
+    if (v === '' || v === false) return false;
+    return true;
+  }
+
   function clamp01(v) {
     return Math.max(0, Math.min(1, v));
   }
@@ -859,14 +896,19 @@
 
       var rows = [];
       var isWrap = style.whiteSpace === 'wrap';
+      // Keep the fit-check identical to the plain render path: thread
+      // letterSpacing into the wrap and ROUND the line pitch (the render uses
+      // Math.round(size*1.2)); otherwise the autosize fit can disagree with the
+      // final layout by a sub-pixel-per-line drift.
+      var autoLs = number(style.letterSpacing, 0);
       for (var bi = 0; bi < blocks.length; bi++) {
         var b = blocks[bi];
-        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap);
+        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs);
         for (var li = 0; li < wrappedLines.length; li++) {
           rows.push({
             text: wrappedLines[li],
             size: b.size,
-            lineH: b.size * 1.2,   // mxConstants.LINE_HEIGHT
+            lineH: Math.round(b.size * 1.2),   // mxConstants.LINE_HEIGHT, rounded like the render
             gap: li === 0 ? b.gap : 0
           });
         }
@@ -1282,6 +1324,14 @@
   function rotatedLabelEls(graph, cell, style, ox, oy, w, h, label, notices, resolved) {
     var raw = graph && typeof graph.getLabel === 'function' ? graph.getLabel(cell) : label;
     var src = raw != null ? raw : label;
+    // drawio computes getLabelBounds PRE-rotation, then rotates; so inset the
+    // label box by the shape's margin here too (internal labels only) — a
+    // rotated boundedLbl cube/datastore/process/etc. is inset in the app.
+    var rbox = { x: ox, y: oy, w: w, h: h };
+    if (externalLabelBox(style, rbox) === rbox) {
+      var rlm = applyLabelMargins(rbox, style);
+      ox = rlm.x; oy = rlm.y; w = rlm.w; h = rlm.h;
+    }
     // Non-HTML labels are literal text: a '<' must not trigger rich HTML parsing.
     if (isHtmlLabelStyle(style) && String(src == null ? '' : src).indexOf('<') >= 0) {
       var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
@@ -1382,6 +1432,143 @@
       bw = lwOver;
     }
     return { x: bx, y: by, w: bw, h: bh };
+  }
+
+  // Per-shape label INSETS (mxShape.getLabelMargins / getLabelBounds): some
+  // shapes confine the label to a sub-region of the cell (e.g. the cube reserves
+  // the depth band, the datastore the disk stack, the callout the tail recess).
+  // Returns {l,t,r,b} in EAST orientation, or null when the shape applies none.
+  // The exporter previously honored this only for umlFrame/umlLifeline, so every
+  // other margin-defining shape printed its label over the reserved region.
+  function labelMargins(style, w, h) {
+    var shape = style.shape;
+    var sw = number(style.strokeWidth, 1);
+    // drawio reads boundedLbl with `if(getValue(style,'boundedLbl',false))`, so
+    // the string '0' is truthy too — use drawioFlag (not boolish) to match the
+    // app even for the hand-authored boundedLbl=0 case (NB-2).
+    var bounded = drawioFlag(style.boundedLbl, false);
+    if (shape === 'cube' && bounded) {
+      var cs = Math.max(0, Math.min(w, Math.min(h, number(style.size, 20))));
+      return { l: cs, t: cs, r: 0, b: 0 };
+    }
+    if (shape === 'datastore' || shape === 'dataStore') { // unconditional
+      var dy = Math.min(h / 2, Math.round(h / 8) + sw - 1);
+      return { l: 0, t: 2.5 * dy, r: 0, b: 0 };
+    }
+    if (shape === 'callout') { // unconditional
+      return { l: 0, t: 0, r: 0, b: number(style.size, 30) };
+    }
+    if (shape === 'cylinder' && bounded) {
+      return { l: 0, t: Math.min(40, h * number(style.size, 0.15) * 2), r: 0, b: 0 };
+    }
+    if (shape === 'note2' && bounded) {
+      // NoteShape2.getLabelMargins (Shapes.js:1453): top AND bottom by size.
+      var n2 = number(style.size, 15);
+      return { l: 0, t: Math.min(h, n2), r: 0, b: Math.max(0, n2) };
+    }
+    if (shape === 'note' && bounded) {
+      // NoteShape extends mxCylinder → inherits mxCylinder.getLabelMargins:
+      // top = min(maxHeight=40, h*size*2), size default 0.15.
+      return { l: 0, t: Math.min(40, h * number(style.size, 0.15) * 2), r: 0, b: 0 };
+    }
+    if (shape === 'cylinder3' && bounded) {
+      // CylinderShape3.getLabelMargins (Shapes.js:1377): top min(h,size*2),
+      // bottom size*0.3; size halves when lid=false. size default 15.
+      var c3 = number(style.size, 15);
+      // drawio halves only when `!getValue('lid',true)` — i.e. never for a '0'
+      // string. Match the paint's drawioFlag semantics (don't halve for lid=0).
+      if (!drawioFlag(style.lid, true)) c3 /= 2;
+      return { l: 0, t: Math.min(h, c3 * 2), r: 0, b: Math.max(0, c3 * 0.3) };
+    }
+    if (shape === 'tape' && bounded) {
+      // TapeShape.getLabelBounds (Shapes.js:1282): for the horizontal (east/west
+      // or undefined) direction, top AND bottom by h*size (size default 0.4).
+      var tdir = String(style.direction || 'east');
+      if (tdir === 'east' || tdir === 'west') {
+        var tdy = h * number(style.size, 0.4);
+        return { l: 0, t: tdy, r: 0, b: tdy };
+      }
+      var twx = w * number(style.size, 0.4); // vertical tape insets left+right
+      return { l: twx, t: 0, r: twx, b: 0 };
+    }
+    if ((shape === 'rhombus' || shape === 'ext') && String(style.double) === '1') {
+      // mxRhombus/ExtendedShape double=1 (Shapes.js:2076/2206): inset all sides.
+      // rhombus margin = max(2,sw+1)*2 + STYLE_MARGIN; ext = max(2,sw+1) + margin.
+      var base = Math.max(2, sw + 1);
+      var dm = (shape === 'rhombus' ? base * 2 : base) + number(style.margin, 0);
+      return { l: dm, t: dm, r: dm, b: dm };
+    }
+    if (shape === 'umlControl') { // getLabelBounds, UNCONDITIONAL: top h/8
+      return { l: 0, t: h / 8, r: 0, b: 0 };
+    }
+    if (shape === 'umlBoundary') { // getLabelMargins, UNCONDITIONAL: left w/6
+      return { l: w / 6, t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'umlState' && bounded && style.umlStateConnection != null &&
+        style.umlStateConnection !== '') { // left inset 10 only with a connection
+      return { l: 10, t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'doubleEllipse') { // mxDoubleEllipse.getLabelBounds, UNCONDITIONAL
+      var dem = (style.margin != null && style.margin !== '')
+        ? number(style.margin, 0)
+        : Math.min(3 + sw, Math.min(w / 5, h / 5));
+      return { l: dem, t: dem, r: dem, b: dem };
+    }
+    if (shape === 'gitTag') { // body is right of the tab (tabSize default 8)
+      return { l: number(style.tabSize, 8), t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'mindmapBang') { // inner 80% rect (10% inset each side)
+      return { l: w * 0.1, t: h * 0.1, r: w * 0.1, b: h * 0.1 };
+    }
+    if (shape === 'mermaidOdd') { // notch = h/4 on the left
+      return { l: h / 4, t: 0, r: 0, b: 0 };
+    }
+    if (shape === 'document' && bounded) {
+      return { l: 0, t: 0, r: 0, b: number(style.size, 0.3) * h };
+    }
+    if (shape === 'manualInput' && bounded) {
+      return { l: 0, t: number(style.size, 30), r: 0, b: 0 };
+    }
+    if (shape === 'folder' && bounded) { // !labelInHeader: tab band off the top
+      return { l: 0, t: number(style.tabHeight, 15), r: 0, b: 0 };
+    }
+    if (shape === 'process' || shape === 'process2') {
+      // ProcessShape.getLabelBounds: insets left+right by the bar inset, but
+      // ONLY when horizontal == (direction is east/west) — else no inset.
+      var dir = String(style.direction || 'east');
+      var horiz = String(style.horizontal) !== '0';
+      var dirH = dir === 'east' || dir === 'west';
+      if (horiz !== dirH) return null;
+      var inset = number(style.size, 0.1);
+      if (boolish(style.fixedSize)) inset = Math.max(0, Math.min(w, inset));
+      else {
+        inset = w * Math.max(0, Math.min(1, inset));
+        if (boolish(style.rounded)) {
+          var pf = number(style.arcSize, 15) / 100;
+          inset = Math.max(inset, Math.min(w * pf, h * pf));
+        }
+      }
+      inset = Math.round(inset);
+      return { l: inset, t: 0, r: inset, b: 0 };
+    }
+    return null;
+  }
+
+  // Apply labelMargins to an internal-label box, rotating the margin by the
+  // shape direction exactly like mxUtils.getDirectedBounds (m={x:l,y:t,
+  // width:r,height:b}). Returns the box unchanged when no margin applies.
+  function applyLabelMargins(box, style) {
+    var m = labelMargins(style, box.w, box.h);
+    if (!m) return box;
+    var l = Math.max(0, Math.min(box.w, m.l)), t = Math.max(0, Math.min(box.h, m.t));
+    var r = Math.max(0, Math.min(box.w, m.r)), b = Math.max(0, Math.min(box.h, m.b));
+    var dir = String(style.direction || 'east');
+    var mx = l, my = t, mw = r, mh = b; // east default
+    if (dir === 'south') { mx = b; my = l; mw = t; mh = r; }
+    else if (dir === 'west') { mx = r; my = b; mw = l; mh = t; }
+    else if (dir === 'north') { mx = t; my = r; mw = b; mh = l; }
+    return { x: box.x + mx, y: box.y + my,
+      w: Math.max(1, box.w - mw - mx), h: Math.max(1, box.h - mh - my) };
   }
 
   function textDefaultAlign(style) {
@@ -1527,13 +1714,16 @@
     if (ch >= '0' && ch <= '9') return 0.56;
     return 0.52; // typical lowercase / default
   }
-  function textWidthPx(str, size) {
+  function textWidthPx(str, size, letterSpacing) {
     var t = String(str == null ? '' : str), sum = 0;
     for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i));
-    return sum * size;
+    // CSS letter-spacing adds a gap AFTER each glyph (including the last); the
+    // plain SVG emit + extent already add it, so the wrap must too or a spaced
+    // label breaks at the wrong column. Default 0 → identical to before.
+    return sum * size + (letterSpacing > 0 ? letterSpacing * t.length : 0);
   }
 
-  function wrapSvgText(text, size, width, wrap) {
+  function wrapSvgText(text, size, width, wrap, letterSpacing) {
     var rawLines = String(text == null ? '' : text).split('\n');
     if (!wrap) return rawLines;
     var maxW = Math.max(1, width);
@@ -1554,7 +1744,7 @@
       var line = '', lineW = 0;
       tokens.forEach(function (tk, ti) {
         var sp = (tk.sp && ti > 0 && line !== '');
-        var tw = textWidthPx(tk.text, size);
+        var tw = textWidthPx(tk.text, size, letterSpacing);
         var spW = sp ? glyphEmWidth(' ') * size : 0;
         if (line !== '' && lineW + spW + tw > maxW) {
           lines.push(line); line = tk.text; lineW = tw;
@@ -2018,9 +2208,11 @@
           var cst = applyElStyle(tst, cell);
           if (ct === 'th') cst.weight = 700;
           var calign = inlineAlign(cell) || (ct === 'th' ? 'center' : 'left');
+          var cspan = Math.max(1, parseInt(cell.getAttribute && cell.getAttribute('colspan'), 10) || 1);
+          var rspan = Math.max(1, parseInt(cell.getAttribute && cell.getAttribute('rowspan'), 10) || 1);
           cells.push({
             blocks: buildRichModel(cell, cst, calign, resolved, notices, cellId),
-            align: calign
+            align: calign, colspan: cspan, rowspan: rspan
           });
         }
         if (cells.length) rows.push(cells);
@@ -2118,19 +2310,35 @@
         var maxSize = entry.baseSize || 12;
         var imgMax = 0;
         var rowW = 0;
+        // supSubExp grows the line DESCENDER (the baseline stays put), exactly
+        // like mxSvgCanvas2D.getSupSubLineExpansion: a sup/sub run extends past
+        // the normal line box only after the CSS half-leading is absorbed, and
+        // the overflow is added below so the NEXT line is pushed down (the
+        // baseline does not move). Sized off the line font (maxSize).
+        var supSubExp = 0;
         row.forEach(function (tk, i) {
           if (tk.img) { if (tk.img.h > imgMax) imgMax = tk.img.h; }
-          else if (tk.st.size > maxSize) maxSize = tk.st.size;
+          else { if (tk.st.size > maxSize) maxSize = tk.st.size; }
           rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
         });
-        // Baseline = distance from the line-box top. An inline image sits ON the
-        // baseline (CSS-default `vertical-align:baseline`) with its whole height
-        // ABOVE it, so the baseline must clear the tallest image — otherwise a
-        // tall image's top (baseline - img.h) goes negative and overlaps the
-        // line above. Text-only rows are unchanged: ascent = size*0.92,
-        // lineH = size*1.2.
+        var halfLeading = maxSize * (RICH_LINE_FACTOR - 1) / 2;
+        row.forEach(function (tk) {
+          if (tk.img) return;
+          var vs = tk.st.vshift || 0;
+          var sfz = tk.st.size || (maxSize / RICH_LINE_FACTOR);
+          if (vs < 0) { // superscript: extends above the line box
+            supSubExp = Math.max(supSubExp, sfz - maxSize - vs - halfLeading);
+          } else if (vs > 0) { // subscript: extends below the line box
+            supSubExp = Math.max(supSubExp,
+              (vs + sfz * (RICH_LINE_FACTOR - 1)) - maxSize * (RICH_LINE_FACTOR - 1));
+          }
+        });
+        if (supSubExp < 0) supSubExp = 0;
+        // An inline image sits ON the baseline with its whole height above it,
+        // so the baseline must also clear the tallest image. Text-only no-shift
+        // rows reduce to ascent = size*0.92, lineH = size*1.2 (unchanged).
         var ascent = Math.max(maxSize * RICH_ASCENT, imgMax);
-        var lineH = ascent + maxSize * (RICH_LINE_FACTOR - RICH_ASCENT);
+        var lineH = ascent + maxSize * (RICH_LINE_FACTOR - RICH_ASCENT) + supSubExp;
         var baseline = y + ascent;
         var align = alignH(entry.align || defAlign);
         var x0 = indent + (align === 'right' ? (avail - rowW)
@@ -2208,41 +2416,99 @@
     function emitTable(entry) {
       var rows = entry.rows || [];
       if (!rows.length) return;
-      var ncols = 0;
-      rows.forEach(function (r) { if (r.length > ncols) ncols = r.length; });
-      if (ncols === 0) return;
-      var colW = width / ncols;
       var cellPad = 3;
-      extend(0, width);
-      var y0 = y;
-      rows.forEach(function (row) {
-        var rowH = 0;
-        var laid = [];
-        for (var c = 0; c < ncols; c++) {
-          var cell = row[c];
-          if (!cell) { laid.push(null); continue; }
-          var inner = layoutBlocks(cell.blocks, Math.max(1, colW - cellPad * 2),
-            wrap, cell.align);
-          laid.push(inner);
-          if (inner.height + cellPad * 2 > rowH) rowH = inner.height + cellPad * 2;
-        }
-        if (rowH <= 0) rowH = (entry.size || 12) * RICH_LINE_FACTOR + cellPad * 2;
-        for (var c2 = 0; c2 < ncols; c2++) {
-          var cx = c2 * colW;
-          if (entry.border) {
-            parts.push('<rect x="' + fmt(cx) + '" y="' + fmt(y) +
-              '" width="' + fmt(colW) + '" height="' + fmt(rowH) +
-              '" fill="none" stroke="' + (entry.color || '#000000') +
-              '" stroke-width="1"/>');
+      // Place cells into an occupancy grid honoring colspan/rowspan (browser
+      // table model): a spanning cell reserves its columns/rows so following
+      // cells flow into the next free column. Previously colspan/rowspan were
+      // ignored (every <td> took one sequential column → misaligned grids).
+      var placed = [];          // {r,c,colspan,rowspan,cell}
+      var occ = [];             // occ[r][c] = true when covered
+      function isFree(r, c) { return !(occ[r] && occ[r][c]); }
+      var ncols = 0;
+      for (var r = 0; r < rows.length; r++) {
+        var col = 0;
+        var rowCells = rows[r];
+        for (var ci = 0; ci < rowCells.length; ci++) {
+          while (!isFree(r, col)) col++;
+          var cell = rowCells[ci];
+          var cs = Math.max(1, cell.colspan || 1);
+          var rs = Math.max(1, cell.rowspan || 1);
+          for (var rr = r; rr < r + rs; rr++) {
+            if (!occ[rr]) occ[rr] = [];
+            for (var cc = col; cc < col + cs; cc++) occ[rr][cc] = true;
           }
-          if (laid[c2]) {
-            parts.push('<g transform="translate(' + fmt(cx + cellPad) + ' ' +
-              fmt(y + cellPad) + ')">' + laid[c2].svg + '</g>');
-          }
+          placed.push({ r: r, c: col, colspan: cs, rowspan: rs, cell: cell });
+          col += cs;
+          if (col > ncols) ncols = col;
         }
-        y += rowH;
+      }
+      if (ncols === 0) return;
+      // Content-based column widths (CSS auto-layout): measure each cell's
+      // natural (unwrapped) ink width, accumulate the per-column maximum (a
+      // spanning cell contributes its width / colspan to each spanned column),
+      // then distribute the table width proportionally. Was width/ncols (equal).
+      var natural = new Array(ncols).fill(1);
+      placed.forEach(function (pc) {
+        var m = layoutBlocks(pc.cell.blocks, 1e6, false, pc.cell.align);
+        var natW = Math.max(0, (m.maxX || 0) - (m.minX || 0)) + cellPad * 2;
+        var share = natW / pc.colspan;
+        for (var k = pc.c; k < pc.c + pc.colspan; k++) {
+          if (share > natural[k]) natural[k] = share;
+        }
       });
-      void y0;
+      var totalNat = natural.reduce(function (a, b) { return a + b; }, 0);
+      var colW = natural.map(function (n) { return width * n / totalNat; });
+      var colX = [0];
+      for (var x1 = 0; x1 < ncols; x1++) colX.push(colX[x1] + colW[x1]);
+      extend(0, width);
+      // Compute row heights first (a rowspan cell adds to its LAST row).
+      var rowH = new Array(rows.length).fill(0);
+      var laidMap = [];
+      placed.forEach(function (pc) {
+        var boxW = 0;
+        for (var k = pc.c; k < pc.c + pc.colspan; k++) boxW += colW[k];
+        var inner = layoutBlocks(pc.cell.blocks, Math.max(1, boxW - cellPad * 2), wrap, pc.cell.align);
+        pc.laid = inner;
+        var needH = inner.height + cellPad * 2;
+        if (pc.rowspan === 1 && needH > rowH[pc.r]) rowH[pc.r] = needH;
+      });
+      for (var ri = 0; ri < rows.length; ri++) {
+        if (rowH[ri] <= 0) rowH[ri] = (entry.size || 12) * RICH_LINE_FACTOR + cellPad * 2;
+      }
+      // Second pass: ensure rowspan cells fit across their rows. Distribute the
+      // deficit EVENLY across the spanned rows (browsers spread a rowspan cell's
+      // extra height over its rows, not all onto the last one).
+      placed.forEach(function (pc) {
+        if (pc.rowspan > 1) {
+          var have = 0;
+          for (var k = pc.r; k < pc.r + pc.rowspan; k++) have += rowH[k];
+          var need = pc.laid.height + cellPad * 2;
+          if (need > have) {
+            var add = (need - have) / pc.rowspan;
+            for (var k2 = pc.r; k2 < pc.r + pc.rowspan; k2++) rowH[k2] += add;
+          }
+        }
+      });
+      var rowY = [y];
+      for (var ry = 0; ry < rows.length; ry++) rowY.push(rowY[ry] + rowH[ry]);
+      void laidMap;
+      placed.forEach(function (pc) {
+        var cx = colX[pc.c];
+        var cw = colX[pc.c + pc.colspan] - cx;
+        var cy = rowY[pc.r];
+        var ch = rowY[pc.r + pc.rowspan] - cy;
+        if (entry.border) {
+          parts.push('<rect x="' + fmt(cx) + '" y="' + fmt(cy) +
+            '" width="' + fmt(cw) + '" height="' + fmt(ch) +
+            '" fill="none" stroke="' + (entry.color || '#000000') +
+            '" stroke-width="1"/>');
+        }
+        if (pc.laid) {
+          parts.push('<g transform="translate(' + fmt(cx + cellPad) + ' ' +
+            fmt(cy + cellPad) + ')">' + pc.laid.svg + '</g>');
+        }
+      });
+      y = rowY[rows.length];
     }
     // UA/inline block margins: adjacent vertical margins collapse (max of the
     // two); the first/last child's margin stays inside the label container
@@ -2402,8 +2668,12 @@
       // 'block' clips too: mxSvgCanvas2D.createCss block branch caps the
       // label at max-height=round(h) — the bake printed the overflow lines
       // the editor clips.
+      // 'width' clips too: createCss width branch (mxSvgCanvas2D.js:1915-1926)
+      // keeps overflow:hidden + max-height:round(h), so a width-overflow label
+      // clips to the cell instead of growing the viewport (it just uses the
+      // cell width for wrapping). The bake printed the overhang for overflow=width.
       var richClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
-        style.overflow === 'block';
+        style.overflow === 'block' || style.overflow === 'width';
       // Label-space overflow: rows can overhang horizontally (minX<0 /
       // maxX>contentW) and the paragraph stack can overhang the top (negative
       // oy for too-tall middle/bottom labels) and/or the bottom.
@@ -2436,7 +2706,7 @@
         rows.push({ rule: true, size: 0, weight: 400, lineH: b.size, gap: b.gap });
         return;
       }
-      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap').forEach(function (line) {
+      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap', letterSp).forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
           // plain labels: drawio ROUNDS the line pitch
           // (mxSvgCanvas2D.plainText lh = Math.round(size * LINE_HEIGHT));
@@ -2458,7 +2728,7 @@
     // before applying valign, so the clip window shows the FIRST lines --
     // the unclamped offset showed the MIDDLE/LAST lines instead.
     var plainClipped = style.overflow === 'hidden' || style.overflow === 'fill' ||
-      style.overflow === 'block';  // createCss block branch clips at round(h)
+      style.overflow === 'block' || style.overflow === 'width';  // createCss block/width branch clips at round(h)
     var effTotalH = plainClipped ? Math.min(totalH, lh) : totalH;
     var y = v === 'middle' ? (lh - effTotalH) / 2 + (pt - pb) / 2 :
       v === 'bottom' ? lh - effTotalH - pb : pt;
@@ -2849,17 +3119,23 @@
       ' L ' + p(x, y + h) + ' Z';
   }
 
-  function cylinderPath(x, y, w, h) {
-    // drawio mxCylinder.getCylinderSize: min(maxHeight=40, h/5) — width-
-    // independent. Was min(0.18h, 0.28w), giving the wrong cap proportion.
-    var e = Math.min(40, h / 5);
-    var k = 0.5522847498;
+  function cylinderPath(style, x, y, w, h) {
+    // mxCylinder.redrawPath (mxCylinder.js:86-110). The cap controls are the
+    // drawio cubic controls -dy/3 (top), h+dy/3 (bottom), 2*dy (front lid) —
+    // NOT a circle-bezier (k=0.5522), which made the caps far too shallow (a
+    // -dy/3 top rim peaks at the box top y=0; a circle bezier peaked at
+    // ~0.59*dy). getCylinderSize = min(maxHeight=40, round(h/5)), OVERRIDDEN
+    // by style.size to h*clamp01(size) when present (Shapes.js:1351-1363) —
+    // the size key was previously ignored entirely.
+    var e = (style && style.size != null)
+      ? h * Math.max(0, Math.min(1, number(style.size, 0)))
+      : Math.min(40, Math.round(h / 5));
     return 'M ' + p(x, y + e) +
-      ' C ' + p(x, y + e - e * k) + ' ' + p(x + w, y + e - e * k) + ' ' + p(x + w, y + e) +
+      ' C ' + p(x, y - e / 3) + ' ' + p(x + w, y - e / 3) + ' ' + p(x + w, y + e) +
       ' L ' + p(x + w, y + h - e) +
-      ' C ' + p(x + w, y + h + e * k - e) + ' ' + p(x, y + h + e * k - e) + ' ' + p(x, y + h - e) +
+      ' C ' + p(x + w, y + h + e / 3) + ' ' + p(x, y + h + e / 3) + ' ' + p(x, y + h - e) +
       ' Z M ' + p(x, y + e) +
-      ' C ' + p(x, y + e + e * k) + ' ' + p(x + w, y + e + e * k) + ' ' + p(x + w, y + e);
+      ' C ' + p(x, y + 2 * e) + ' ' + p(x + w, y + 2 * e) + ' ' + p(x + w, y + e);
   }
 
   function cloudPath(x, y, w, h) {
@@ -2906,7 +3182,9 @@
   // horizontal=0: header on the left, divider is vertical at x=startSize.
   function swimlanePath(style, x, y, w, h) {
     var isHoriz = String(style.horizontal) !== '0';
-    var startSize = Math.min(Math.max(0, number(style.startSize, 30)), isHoriz ? h : w);
+    // mxSwimlane.getTitleSize falls back to mxConstants.DEFAULT_STARTSIZE=40
+    // when startSize is unset (was 30 here, a 10px header/divider/body shift).
+    var startSize = Math.min(Math.max(0, number(style.startSize, 40)), isHoriz ? h : w);
     var body = boolish(style.rounded)
       ? roundedRectPath(x, y, w, h, roundedRectRadius(style, w, h))
       : rectPath(x, y, w, h);
@@ -2977,20 +3255,23 @@
       ' L ' + p(x, y + h) + ' Z';
   }
 
-  function calloutPath(x, y, w, h) {
-    var r = Math.min(w, h) * 0.12;
-    var tailX = x + w * 0.34, tailY = y + h;
-    var tailTipX = x + w * 0.22, tailTipY = y + h + Math.max(8, h * 0.22);
-    var tailX2 = x + w * 0.50;
-    return 'M ' + p(x + r, y) + ' L ' + p(x + w - r, y) +
-      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + w, y + r) +
-      ' L ' + p(x + w, y + h - r) +
-      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + w - r, y + h) +
-      ' L ' + p(tailX2, y + h) + ' L ' + p(tailTipX, tailTipY) +
-      ' L ' + p(tailX, tailY) + ' L ' + p(x + r, y + h) +
-      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x, y + h - r) +
-      ' L ' + p(x, y + r) +
-      ' A ' + fmt(r) + ' ' + fmt(r) + ' 0 0 1 ' + p(x + r, y) + ' Z';
+  function calloutPath(style, x, y, w, h) {
+    // CalloutShape.redrawPath (Shapes.js:1969-1983), a mxHexagon subclass.
+    // Square-cornered 7-point polygon: body top is the full cell, recedes to
+    // (h - size), and a downward tail tip sits exactly on the bottom edge at
+    // (position*w, h). Defaults size=30, position=0.5, position2=0.5, base=20.
+    // The prior path hard-coded rounded corners, ignored every style key, and
+    // placed the tail tip BELOW the cell (poking past the footprint).
+    // (rounded=1 is loud-noticed via ROUNDED_NOT_YET, so square is faithful here.)
+    var s = Math.max(0, Math.min(h, number(style.size, 30)));
+    var dx = w * Math.max(0, Math.min(1, number(style.position, 0.5)));
+    var dx2 = w * Math.max(0, Math.min(1, number(style.position2, 0.5)));
+    var base = Math.max(0, Math.min(w, number(style.base, 20)));
+    return roundedPoly([
+      { x: x, y: y }, { x: x + w, y: y }, { x: x + w, y: y + h - s },
+      { x: x + Math.min(w, dx + base), y: y + h - s }, { x: x + dx2, y: y + h },
+      { x: x + Math.max(0, dx), y: y + h - s }, { x: x, y: y + h - s }
+    ], 0, true);
   }
 
   function tapePath(x, y, w, h, dyIn) {
@@ -3058,11 +3339,24 @@
       ' M ' + p(ox + 0.5 * m, midY) + ' L ' + p(ox + 0.5 * m, lowY);
   }
 
-  function datastorePath(x, y, w, h) {
-    var dy = Math.min(h / 2, Math.round(h / 8));
-    return 'M ' + p(x, y + dy) + ' C ' + p(x, y + 2 * dy) + ' ' + p(x + w, y + 2 * dy) + ' ' + p(x + w, y + dy) +
-      ' L ' + p(x + w, y + h - dy) + ' C ' + p(x + w, y + h) + ' ' + p(x, y + h) + ' ' + p(x, y + h - dy) + ' Z' +
-      ' M ' + p(x, y + dy) + ' C ' + p(x, y - dy / 3) + ' ' + p(x + w, y - dy / 3) + ' ' + p(x + w, y + dy);
+  function datastorePath(x, y, w, h, sw) {
+    // DataStoreShape.redrawPath (Shapes.js:587-636), a mxCylinder subclass.
+    // dy = min(h/2, round(h/8) + strokewidth - 1). The body silhouette (top
+    // rim arcs UP to -dy/3, bottom bulges DOWN to h+dy/3) plus THREE stacked
+    // "platter" rim curves at relative offsets 0, dy/2, dy (the two c.translate
+    // (0,dy/2) calls). Previously only one rim was drawn and the bottom control
+    // was h (flat) instead of h+dy/3 — the stacked-disk identity was lost.
+    var strokew = (sw == null) ? 1 : sw;
+    var dy = Math.min(h / 2, Math.round(h / 8) + strokew - 1);
+    // body outline
+    var d = 'M ' + p(x, y + dy) + ' C ' + p(x, y - dy / 3) + ' ' + p(x + w, y - dy / 3) + ' ' + p(x + w, y + dy) +
+      ' L ' + p(x + w, y + h - dy) + ' C ' + p(x + w, y + h + dy / 3) + ' ' + p(x, y + h + dy / 3) + ' ' + p(x, y + h - dy) + ' Z';
+    // three stacked rim curves (downward-bulging), each offset by dy/2
+    for (var k = 0; k < 3; k++) {
+      var oy = y + dy + k * (dy / 2);
+      d += ' M ' + p(x, oy) + ' C ' + p(x, oy + dy) + ' ' + p(x + w, oy + dy) + ' ' + p(x + w, oy);
+    }
+    return d;
   }
 
   function manualInputPath(x, y, w, h, sIn) {
@@ -3181,7 +3475,7 @@
         { x: x + w, y: y + h / 2 }, { x: x, y: y + h }], polyArcSize(style), true);
       return trianglePath(x, y, w, h);
     }
-    if (shape === 'cylinder') return cylinderPath(x, y, w, h);
+    if (shape === 'cylinder') return cylinderPath(style, x, y, w, h);
     if (shape === 'cloud') return cloudPath(x, y, w, h);
     if (shape === 'hexagon') {
       var hxS = shapeSize(style, w, 0.25, 1, 20, w * 0.5);
@@ -3202,7 +3496,7 @@
     // isoCube2 is a different shape (IsoCubeShape2) handled by builtinShapeSvg
     // (fill body + stroke-only interior edges); only plain isoCube stays here.
     if (shape === 'isoCube') return isoCubePath(x, y, w, h);
-    if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h);
+    if (shape === 'datastore' || shape === 'dataStore') return datastorePath(x, y, w, h, number(style.strokeWidth, 1));
     if (shape === 'dataStorage') return dataStoragePath(x, y, w, h, shapeSize(style, w, 0.1, 1, 20, w));
     if (shape === 'document') return documentPath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.3))));
     if (shape === 'trapezoid') {
@@ -3261,7 +3555,7 @@
         { x: x + w - stS, y: y + h }, { x: x, y: y + h }, { x: x + stS, y: y + h / 2 }
       ], polyArcSize(style), true);
     }
-    if (shape === 'callout') return calloutPath(x, y, w, h);
+    if (shape === 'callout') return calloutPath(style, x, y, w, h);
     if (shape === 'tape') return tapePath(x, y, w, h, h * Math.max(0, Math.min(1, number(style.size, 0.4))));
     if (shape === 'card') {
       var cdS = Math.max(0, Math.min(w, Math.min(h, number(style.size, 30))));
@@ -3409,7 +3703,7 @@
       return (graph && typeof graph.getCellStyle === 'function') ? (graph.getCellStyle(c) || {}) : (c.style || {});
     };
     var strk = strokeSvgAttrs(style);
-    var header = Math.min(h, Math.max(0, number(style.startSize, 30)));
+    var header = Math.min(h, Math.max(0, number(style.startSize, 40)));
     var colOn = style.columnLines !== '0' && style.columnLines !== 0;
     var rowOn = style.rowLines !== '0' && style.rowLines !== 0;
     var rows = cell.children.filter(function (c) {
@@ -3515,6 +3809,66 @@
     var dir = style.direction || 'east';
     var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
     if (deg) content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) + ')">' + content + '</g>';
+    return content;
+  }
+
+  // Cube with darkOpacity/darkOpacity2 shaded faces (CubeShape.paintVertexShape,
+  // Shapes.js:361-419). The body is fillAndStroke'd, then (when op/op2 != 0) the
+  // top face (0,0)(w-s,0)(w,s)(s,s) and left face (0,0)(s,s)(s,h)(0,h-s) are
+  // FILLED black (op>0) / white (op<0) at |op| alpha, then the interior edges
+  // are stroked. The plain cube path (cubePath) drops both shaded faces with no
+  // notice; this builder is used only when a face opacity is set.
+  function cubeInner(style, w, h, fillOverride, opacityOverride) {
+    // direction=north/south paints in a w↔h-SWAPPED viewport (cw×ch) and then
+    // rotates, exactly like mxShape.isPaintBoundsInverted / the builtin
+    // dirInvBI path — otherwise a non-square N/S cube has the wrong proportions.
+    var dir = style.direction || 'east';
+    var deg = dir === 'west' ? 180 : dir === 'north' ? 270 : dir === 'south' ? 90 : 0;
+    var inv = (dir === 'north' || dir === 'south');
+    var cw = inv ? h : w, ch = inv ? w : h;
+    var s = Math.max(0, Math.min(cw, Math.min(ch, number(style.size, 20))));
+    var op = Math.max(-1, Math.min(1, number(style.darkOpacity, 0)));
+    var op2 = Math.max(-1, Math.min(1, number(style.darkOpacity2, 0)));
+    var body = 'M 0 0 L ' + fmt(cw - s) + ' 0 L ' + fmt(cw) + ' ' + fmt(s) +
+      ' L ' + fmt(cw) + ' ' + fmt(ch) + ' L ' + fmt(s) + ' ' + fmt(ch) +
+      ' L 0 ' + fmt(ch - s) + ' Z';
+    var content;
+    if (fillOverride) {
+      content = '<path d="' + body + '" fill="' + fillOverride + '"' +
+        (opacityOverride != null ? ' fill-opacity="' + fmt(opacityOverride) + '"' : '') +
+        ' stroke="none"/>';
+    } else {
+      var defs = '', fillAttr;
+      var cfa = opacity(style, 'fillOpacity');
+      var cfaAttr = cfa < 1 ? ' fill-opacity="' + fmt(cfa) + '"' : '';
+      if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
+        defs = '<defs>' + linearGradDef('cgrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        fillAttr = ' fill="url(#cgrad)"' + cfaAttr;
+      } else if (isPaintable(style.fillColor)) {
+        fillAttr = ' fill="' + hex(style.fillColor) + '"' + cfaAttr;
+      } else {
+        fillAttr = ' fill="none"';
+      }
+      content = defs + '<path d="' + body + '"' + fillAttr + strokeSvgAttrs(style) + '/>';
+      // setFillAlpha(|op|) REPLACES fillAlpha → painted at alpha*|op| like the note fold.
+      if (op !== 0) {
+        var topFace = 'M 0 0 L ' + fmt(cw - s) + ' 0 L ' + fmt(cw) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(s) + ' Z';
+        content += '<path d="' + topFace + '" fill="' + (op < 0 ? '#ffffff' : '#000000') +
+          '" fill-opacity="' + fmt(Math.abs(op) * opacity(style, 'opacity')) + '" stroke="none"/>';
+      }
+      if (op2 !== 0) {
+        var leftFace = 'M 0 0 L ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(s) + ' ' + fmt(ch) + ' L 0 ' + fmt(ch - s) + ' Z';
+        content += '<path d="' + leftFace + '" fill="' + (op2 < 0 ? '#ffffff' : '#000000') +
+          '" fill-opacity="' + fmt(Math.abs(op2) * opacity(style, 'opacity')) + '" stroke="none"/>';
+      }
+      var edges = 'M ' + fmt(s) + ' ' + fmt(ch) + ' L ' + fmt(s) + ' ' + fmt(s) + ' L 0 0 M ' + fmt(s) + ' ' + fmt(s) + ' L ' + fmt(cw) + ' ' + fmt(s);
+      content += '<path d="' + edges + '" fill="none"' + strokeSvgAttrs(style) + '/>';
+    }
+    content = flipWrapSvg(content, cw, ch, style);
+    if (deg) {
+      content = '<g transform="rotate(' + fmt(deg) + ' ' + fmt(w / 2) + ' ' + fmt(h / 2) +
+        ') translate(' + fmt((w - cw) / 2) + ' ' + fmt((h - ch) / 2) + ')">' + content + '</g>';
+    }
     return content;
   }
 
@@ -3628,8 +3982,12 @@
       if (cySz === 0) {
         return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
       }
-      var cyLid = shape !== 'cylinder3' ||
-        (String(style.lid) !== '0' && String(style.lid) !== 'false');
+      // mxGraph reads lid with `if (getValue(style,'lid',true))` — a string
+      // '0'/'false' is truthy, so drawio ALWAYS draws the lid (the no-lid branch
+      // is effectively dead in the app). Match that via drawioFlag, NOT the
+      // numericized 0 (which previously dropped the lid — a silent divergence on
+      // the shipped Basic-sidebar `cylinder3;lid=0`).
+      var cyLid = shape !== 'cylinder3' || drawioFlag(style.lid, true);
       var cyR = fmt(w * 0.5) + ' ' + fmt(cySz) + ' 0 0 ';
       var cyTop = cyLid
         ? 'M ' + p(0, cySz) + ' A ' + cyR + '1 ' + p(w / 2, 0) + ' A ' + cyR + '1 ' + p(w, cySz)
@@ -3692,10 +4050,19 @@
       return face + eye1 + eye2 + mouth;
     }
     if (shape === 'associativeEntity') {
-      // Rectangle background + diamond stroke overlay — AssociativeEntity, Shapes.js
-      return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>' +
-        '<path d="M ' + fmt(w / 2) + ' 0 L ' + fmt(w) + ' ' + fmt(h / 2) +
-        ' L ' + fmt(w / 2) + ' ' + fmt(h) + ' L 0 ' + fmt(h / 2) + ' Z" fill="none"' + strk + '/>';
+      // AssociativeEntity (mxRectangleShape subclass, Shapes.js:3245-3257):
+      // rectangle background (rounds via mxRectangleShape when rounded=1) +
+      // diamond stroke overlay drawn with addPoints(...,isRounded,arcSize,true)
+      // (so the diamond rounds too) + glass via mxRectangleShape.paintForeground
+      // when glass=1. Previously square corners + no glass with no notice.
+      var aeRounded = boolish(style.rounded);
+      var aeBg = aeRounded
+        ? '<path d="' + roundedRectPath(0, 0, w, h, roundedRectRadius(style, w, h)) + '"' + fill + strk + '/>'
+        : '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
+      var aeDiamond = '<path d="' + roundedPoly([
+        { x: w / 2, y: 0 }, { x: w, y: h / 2 }, { x: w / 2, y: h }, { x: 0, y: h / 2 }
+      ], polyArcSize(style), true) + '" fill="none"' + strk + '/>';
+      return aeBg + aeDiamond + glassEl;
     }
     if (shape === 'endState') {
       // Inner ellipse (fillAndStroke) + outer ellipse (stroke only) — StateShape, Shapes.js
@@ -3745,7 +4112,7 @@
       // divider honors swimlaneLine (default on); head/body stroke gates per
       // mxSwimlane. startSize=0 falls back to PartialRectangleShape (full
       // rect in fillColor, TableShape.paintVertexShape:260-263).
-      var tStart = Math.min(h, Math.max(0, number(style.startSize, 30)));
+      var tStart = Math.min(h, Math.max(0, number(style.startSize, 40)));
       if (tStart <= 0) {
         return '<rect x="0" y="0" width="' + fmt(w) + '" height="' + fmt(h) + '"' + fill + strk + '/>';
       }
@@ -5253,7 +5620,7 @@
     };
   }
 
-  function imageNode(style, box, parsed, notices, cellId) {
+  function imageNode(style, box, parsed, notices, cellId, aspectOverride) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5265,13 +5632,18 @@
     }
     var fh = boolish(style.imageFlipH) || boolish(style.flipH);
     var fv = boolish(style.imageFlipV) || boolish(style.flipV);
-    var op = opacity(style, 'opacity');
+    // mxSvgCanvas2D.image opacity = s.alpha * s.fillAlpha (mxSvgCanvas2D.js:
+    // 1480-1483): the cell opacity TIMES fillOpacity. opacity(style,'fillOpacity')
+    // composes both (was 'opacity', dropping fillOpacity on images).
+    var op = opacity(style, 'fillOpacity');
     var clipDecor = imageClipDecor(style, box, notices, cellId);
+    // aspectOverride forces preserveAspectRatio (e.g. mxLabel.paintImage passes
+    // aspect=false → 'none'/stretch, regardless of imageAspect).
+    var fit = aspectOverride || (String(style.imageAspect) === '0' ? 'none' : 'xMidYMid meet');
     if (op < 1 || clipDecor) {
       // kind:image has no opacity field in the frozen contract; route through an
       // svg <image opacity> so a translucent image (style opacity<100) prints
       // faithfully instead of fully opaque.
-      var fit = String(style.imageAspect) === '0' ? 'none' : 'xMidYMid meet';
       var sx = fh ? -1 : 1, sy = fv ? -1 : 1;
       var tf = (fh || fv) ? ' transform="translate(' + fmt(fh ? box.w : 0) + ' ' +
         fmt(fv ? box.h : 0) + ') scale(' + sx + ',' + sy + ')"' : '';
@@ -5290,7 +5662,7 @@
       box: box,
       format: 'png',
       data: parsed.data,
-      aspect: String(style.imageAspect) === '0' ? 'fill' : 'preserve',
+      aspect: fit === 'none' ? 'fill' : 'preserve',
       flipH: fh,
       flipV: fv
     };
@@ -5301,7 +5673,7 @@
   // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
-  function dataUriImageSvgNode(mime, data, box, style, notices, cellId) {
+  function dataUriImageSvgNode(mime, data, box, style, notices, cellId, aspectOverride) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5311,11 +5683,17 @@
         h: Math.max(1, box.h - pad * 2)
       };
     }
-    var fit = String(style && style.imageAspect) === '0'
-      ? 'none' : 'xMidYMid meet';
+    var fit = aspectOverride || (String(style && style.imageAspect) === '0'
+      ? 'none' : 'xMidYMid meet');
     var clipDecor2 = imageClipDecor(style || {}, box, notices, cellId);
+    // Image opacity = alpha * fillAlpha (mxSvgCanvas2D.image). The PNG path
+    // carries it on the kind:image node / svg wrapper; this SVG-wrapped path
+    // (JPEG/GIF/SVG payloads) dropped opacity entirely → translucent non-PNG
+    // images printed fully opaque.
+    var duOp = style ? opacity(style, 'fillOpacity') : 1;
     var img = '<image x="0" y="0" width="' + fmt(box.w) + '" height="' + fmt(box.h) +
       '" preserveAspectRatio="' + fit + '"' +
+      (duOp < 1 ? ' opacity="' + fmt(duOp) + '"' : '') +
       (clipDecor2 ? clipDecor2.attr : '') + ' xlink:href="data:' + mime +
       ';base64,' + data + '"/>';
     // mxShape.updateTransform applies flips to every image regardless of
@@ -5878,8 +6256,11 @@
       var lImgSrc = (resolved && resolved[style.image]) || style.image;
       var lImg = parseImage(lImgSrc);
       var lMime = embeddableImageMime(lImg);
-      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg, notices, cell.id));
-      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style, notices, cell.id));
+      // mxLabel.paintImage calls c.image(...aspect=false...) — the icon is
+      // STRETCHED to the icon box (preserveAspectRatio="none"), NOT letterboxed,
+      // regardless of imageAspect (mxLabel.js:131-139).
+      if (lImg && lImg.format === 'png') paint.push(imageNode(style, liBox, lImg, notices, cell.id, 'none'));
+      else if (lMime) paint.push(dataUriImageSvgNode(lMime, lImg.data, liBox, style, notices, cell.id, 'none'));
       else {
         notices.push(degradation('ExporterUnsupportedImage',
           'label image could not be embedded — placeholder box printed.', cell.id));
@@ -6005,7 +6386,10 @@
         // label (verticalLabelPosition=bottom) — and especially its resolved
         // labelBackgroundColor box — is painted OVER the image, hiding it (the
         // "gear icon not present" bug). Falls back to the cell box if unknown.
-        var lb = box;
+        // Internal label box, inset per the shape's getLabelMargins/Bounds
+        // (cube depth band, datastore disk stack, callout tail recess, process
+        // bars, cylinder/note2/document/manualInput/folder header bands).
+        var lb = applyLabelMargins(box, style);
         var tb = state.text && state.text.bounds;
         if (tb && tb.width > 0 && tb.height > 0 &&
             isFinite(tb.x) && isFinite(tb.y)) {
@@ -6258,8 +6642,11 @@
             // External label bands + labelWidth: one shared exact port
             // (externalLabelBox) so builtins match the generic path.
             var lblBoxBI = externalLabelBox(style, box);
+            // Internal label: inset per getLabelMargins/getLabelBounds (process
+            // bars, etc.). table/umlFrame/umlLifeline override explicitly below.
+            if (lblBoxBI === box) lblBoxBI = applyLabelMargins(box, style);
             if (style.shape === 'table') {
-              var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
+              var tableHeadBI = Math.min(Math.max(0, number(style.startSize, 40)), box.h);
               if (tableHeadBI > 0) lblBoxBI = { x: box.x, y: box.y, w: box.w, h: tableHeadBI };
             }
             if (style.shape === 'umlFrame') {
@@ -6297,7 +6684,32 @@
         }
         paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, null, null), box, style));
         if (label !== '') {
-          paint.push(labelTextNode(graph, cell, state, style, box, label, notices, resolved));
+          // note2 with boundedLbl insets the label below the fold (getLabelMargins);
+          // external labels (labelPosition/verticalLabelPosition) are not inset.
+          var noteExt = externalLabelBox(style, box);
+          var noteLb = (noteExt === box) ? applyLabelMargins(box, style) : noteExt;
+          paint.push(labelTextNode(graph, cell, state, style, noteLb, label, notices, resolved));
+        }
+        return;
+      }
+
+      // Cube with shaded faces: only when darkOpacity/darkOpacity2 is set (the
+      // plain cube keeps its single-path shapePath render). Mirrors noteInner.
+      if (style.shape === 'cube' &&
+          (number(style.darkOpacity, 0) !== 0 || number(style.darkOpacity2, 0) !== 0)) {
+        if (boolish(style.shadow)) {
+          var csp = shadowParams(style);
+          paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, csp.color, csp.alpha),
+            { x: box.x + csp.dx, y: box.y + csp.dy, w: box.w, h: box.h }, { strokeColor: 'none' }));
+        }
+        paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, null, null), box, style));
+        if (label !== '') {
+          // The default General-sidebar cube carries boundedLbl=1 → inset the
+          // label by `size` (left+top) per CubeShape.getLabelMargins. External
+          // labels (labelPosition/verticalLabelPosition) are not inset.
+          var cubeExt = externalLabelBox(style, box);
+          var cubeLb = (cubeExt === box) ? applyLabelMargins(box, style) : cubeExt;
+          paint.push(labelTextNode(graph, cell, state, style, cubeLb, label, notices, resolved));
         }
         return;
       }
@@ -6321,7 +6733,7 @@
             'default east orientation; use horizontal=0 for vertical lanes).', cell.id));
         }
         var swH = String(style.horizontal) !== '0';
-        var swSz = Math.min(Math.max(0, number(style.startSize, 30)), swH ? box.h : box.w);
+        var swSz = Math.min(Math.max(0, number(style.startSize, 40)), swH ? box.h : box.w);
         var swStroke = strokeOf(style);
         var swFill = fillOf(style);                 // header fill (null if none)
         var swLane = isPaintable(style.swimlaneFillColor)
@@ -6559,19 +6971,23 @@
     var swimLabelBx = box;
     if (style.shape === 'swimlane') {
       var swimIsH = String(style.horizontal) !== '0';
-      var swimSz = Math.min(Math.max(0, number(style.startSize, 30)), swimIsH ? box.h : box.w);
+      var swimSz = Math.min(Math.max(0, number(style.startSize, 40)), swimIsH ? box.h : box.w);
       swimLabelBx = swimIsH
         ? { x: box.x, y: box.y, w: box.w, h: swimSz }
         : { x: box.x, y: box.y, w: swimSz, h: box.h };
     } else if (style.shape === 'table') {
-      var tableHeader = Math.min(Math.max(0, number(style.startSize, 30)), box.h);
+      var tableHeader = Math.min(Math.max(0, number(style.startSize, 40)), box.h);
       if (tableHeader > 0) swimLabelBx = { x: box.x, y: box.y, w: box.w, h: tableHeader };
     } else {
       // labelPosition / verticalLabelPosition place the label OUTSIDE the shape
       // (drawio). The plain-shape path previously ignored them, painting the
       // label over the shape — a silent positional divergence. (Stencils/icons
       // handle this on their own paths.)
-      swimLabelBx = externalLabelBox(style, box);
+      var extLB = externalLabelBox(style, box);
+      // Internal label: inset per the shape's getLabelMargins/getLabelBounds
+      // (datastore disk stack, callout tail recess, process bars, cylinder/
+      // note2/document/manualInput/folder bands). External labels are unaffected.
+      swimLabelBx = (extLB === box) ? applyLabelMargins(box, style) : extLB;
     }
     if (label !== '') {
       labelNodes(graph, cell, state, style, swimLabelBx, label, notices, resolved)
@@ -6734,6 +7150,22 @@
     if (style.shape === 'mxgraph.arrows2.wedgeArrowDashed2') {
       var wd2 = wedgeArrowDashed2Path(style, points);
       if (wd2) {
+        // mxShape.paint honors shadow=1 for the whole connector band; the band
+        // is a filled/stroked path, so its shadow is an offset COPY of the same
+        // path painted in the shadow colour (Graph.js #000000@0.25, offset 2,3),
+        // drawn first. Was silently dropped (early return, no shadow, no notice).
+        if (boolish(style.shadow)) {
+          var wd2sp = shadowParams(style);
+          var wd2Shadow = wedgeArrowDashed2Path(style, points.map(function (pt) {
+            return { x: pt.x + wd2sp.dx, y: pt.y + wd2sp.dy };
+          }));
+          if (wd2Shadow) {
+            paint.push({ kind: 'path', d: wd2Shadow,
+              fill: solid(wd2sp.color, wd2sp.alpha),
+              stroke: { paint: solid(wd2sp.color, wd2sp.alpha), width: stroke.width,
+                cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit } });
+          }
+        }
         paint.push({ kind: 'path', d: wd2, fill: null, stroke: stroke });
         var wd2Label = plainLabel(graph, cell);
         if (wd2Label !== '') {
@@ -6747,6 +7179,20 @@
     if (style.shape === 'flexArrow') {
       var fap = flexArrowPath(style, points);
       if (fap) {
+        // shadow=1: offset filled copy of the arrow band, painted first
+        // (mxShape.paint isShadow). Was silently dropped on early return.
+        if (boolish(style.shadow)) {
+          var fasp = shadowParams(style);
+          var faShadow = flexArrowPath(style, points.map(function (pt) {
+            return { x: pt.x + fasp.dx, y: pt.y + fasp.dy };
+          }));
+          if (faShadow) {
+            paint.push({ kind: 'path', d: faShadow,
+              fill: solid(fasp.color, fasp.alpha),
+              stroke: { paint: solid(fasp.color, fasp.alpha), width: stroke.width,
+                cap: stroke.cap, join: stroke.join, miterLimit: stroke.miterLimit } });
+          }
+        }
         paint.push({ kind: 'path', d: fap, fill: fillOf(style), stroke: stroke });
         var faLabel = plainLabel(graph, cell);
         if (faLabel !== '') {

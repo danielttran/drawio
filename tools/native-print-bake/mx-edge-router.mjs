@@ -332,6 +332,15 @@ function rotatePointAbout(pt, deg, cx, cy) {
 // getFixedTerminalPoint passes round=false).
 export function fixedConnectionPoint(box, style, fx, fy, dx, dy, projectPerimeter) {
   const st = style || {};
+  // mxGraph.getConnectionPoint computes the fixed anchor against
+  // view.getPerimeterBounds(vertex) (mxGraphView.js:1824-1834), which GROWS the
+  // box by the terminal's perimeterSpacing on every side before placing
+  // fx*width / fy*height and projecting through the perimeter. A fixed anchor on
+  // a shape with perimeterSpacing previously attached at the raw box edge.
+  const ps = parseFloat(st.perimeterSpacing) || 0;
+  if (ps !== 0) {
+    box = { x: box.x - ps, y: box.y - ps, width: box.width + 2 * ps, height: box.height + 2 * ps };
+  }
   const ccx = box.x + box.width / 2;
   const ccy = box.y + box.height / 2;
   const ns = st.direction === 'north' || st.direction === 'south';
