@@ -1007,7 +1007,14 @@ function npGlobalVar(name, pageCtx) {
   if (name === 'timestamp') return new Date().toLocaleString();
   if (name.substring(0, 5) === 'date{') return npFormatDate(new Date(), name.substring(5, name.length - 1));
   if (pageCtx) {
-    if ((name === 'page' || name === 'pagenumber') && pageCtx.pageNumber != null) return String(pageCtx.pageNumber);
+    // drawio (Pages.js getGlobalVariable): %page% -> the page NAME (getName()),
+    // %pagenumber% -> the 1-based index. They are NOT the same; conflating them
+    // printed a number where the editor shows the page name (silent wrong value).
+    if (name === 'page') {
+      return pageCtx.pageName ? pageCtx.pageName
+        : (pageCtx.pageNumber != null ? 'Page-' + pageCtx.pageNumber : null);
+    }
+    if (name === 'pagenumber' && pageCtx.pageNumber != null) return String(pageCtx.pageNumber);
     if (name === 'pagecount' && pageCtx.pageCount != null) return String(pageCtx.pageCount);
   }
   return null;

@@ -2857,6 +2857,48 @@ test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not pr
   assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
 });
 
+test('audit24: %page% resolves to the page NAME, %pagenumber% to the index (drawio Pages.js)', async () => {
+  const xml = `<mxfile>
+    <diagram name="ICU-BATCH-A"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="N=%page% #=%pagenumber% C=%pagecount%" placeholders="1" id="o"><mxCell vertex="1" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="260" height="30" as="geometry"/></mxCell></object>
+    </root></mxGraphModel></diagram>
+    <diagram name="WARD-2"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="z" vertex="1" parent="1"><mxGeometry x="0" y="0" width="10" height="10" as="geometry"/></mxCell></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const text = [...Buffer.from(sv.source, 'base64').toString('utf8')
+    .matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join('');
+  assert.match(text, /N=ICU-BATCH-A/, '%page% must be the page NAME, not the number');
+  assert.match(text, /#=1/, '%pagenumber% is the 1-based index');
+  assert.match(text, /C=2/, '%pagecount% is the page count');
+});
+
+test('audit24: a wrapped edge label wraps to labelWidth (was one over-wide line)', async () => {
+  const xml = `<mxGraphModel pageWidth="300" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="e" edge="1" value="alpha beta gamma delta" style="whiteSpace=wrap;labelWidth=40;" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="10" y="60" as="sourcePoint"/><mxPoint x="280" y="60" as="targetPoint"/></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  const lines = (Buffer.from(sv.source, 'base64').toString('utf8').match(/<text/g) || []).length;
+  assert.ok(lines >= 2, `whiteSpace=wrap + labelWidth must wrap the edge label (got ${lines} lines)`);
+});
+
+test('audit24: stroke width is clamped to drawio minStrokeWidth=1 (rendered border)', async () => {
+  async function sw(w) {
+    const xml = `<mxGraphModel pageWidth="100" pageHeight="80"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="rounded=0;strokeColor=#000000;strokeWidth=${w};" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    return contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.stroke).stroke.width;
+  }
+  assert.equal(await sw('0.5'), 1, '0.5px stroke clamps to 1 (drawio renders min 1px)');
+  assert.equal(await sw('0'), 1, '0 stroke with a color clamps to 1');
+  assert.equal(await sw('2'), 2, 'thick strokes are unchanged');
+});
+
 test('audit23: page background image is printed behind content (was silently dropped)', async () => {
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
   const bgi = JSON.stringify({ src: 'data:image/png;base64,' + png, x: 0, y: 0, width: 200, height: 120 })
