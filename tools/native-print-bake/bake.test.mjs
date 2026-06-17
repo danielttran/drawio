@@ -4282,6 +4282,44 @@ test('audit9: %placeholder% labels resolve to attribute values (medical variable
   assert.match(texts((await bake(missXml, { keepPx: true })).contract), /%PATIENT_ID%/, 'unresolved => literal');
 });
 
+test('audit9: built-in placeholders (id/width/height/date{}/arithmetic/precedence) match drawio', async () => {
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) for (const n of p.paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) out.push(t.replace(/<[^>]*>/g, ''));
+    }
+    return out.join(' ');
+  }
+  async function one(label, extra) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="${label}" placeholders="1" ${extra || ''} id="cellX"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="20" y="20" width="200" height="80" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    return texts((await bake(xml, { keepPx: true })).contract);
+  }
+  assert.match(await one('ID=%id%'), /ID=cellX/, '%id% -> cell id');
+  assert.match(await one('W=%width% H=%height%'), /W=200 H=80/, 'geometry width/height');
+  assert.match(await one('Wmm=%width_mm%'), /Wmm=52\.92/, 'width unit conversion (px->mm)');
+  // Cell attribute named `page` must WIN over the page-number global (drawio order).
+  assert.match(await one('P=%page%', 'page="CUSTOM-A"'), /P=CUSTOM-A/, 'attribute precedence over global');
+  // %date{fmt}% resolves to today's date in the requested format (deterministic shape).
+  assert.match(await one('D=%date{yyyy-mm-dd}%'), /D=\d{4}-\d{2}-\d{2}/, '%date{fmt}% formatted');
+  // Unknown custom token stays literal (faithful to the editor).
+  assert.match(await one('X %NOPE% Y'), /X %NOPE% Y/, 'unknown token literal');
+});
+
+test('audit9: %pagenumber+N% arithmetic resolves per page', async () => {
+  const mp = `<mxfile>
+    <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="next=%pagenumber+1%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="180" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+    <diagram name="B"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="next=%pagenumber+1%" placeholders="1" id="3"><mxCell vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="180" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  const pt = (p) => (p.paint.filter((n) => n.kind === 'svg').map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join(' ').match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || []).map((t) => t.replace(/<[^>]*>/g, '')).join(' ');
+  assert.match(pt(contract.document.pages[0]), /next=2/, 'page 1 + 1 = 2');
+  assert.match(pt(contract.document.pages[1]), /next=3/, 'page 2 + 1 = 3');
+});
+
 test('audit9: %pagenumber%/%pagecount% globals resolve per page', async () => {
   const mp = `<mxfile>
     <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="pg %pagenumber%/%pagecount%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="150" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>

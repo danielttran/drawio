@@ -873,28 +873,101 @@ export function parseDrawio(xml) {
 // placeholders="1", substitute each %name% with the cell's (or an ancestor's)
 // custom attribute value; unresolved tokens stay literal (matching the editor).
 // Global page placeholders resolve from the optional pageCtx the bake supplies.
+// Editor.toUnit: a pixel value (96 px/inch) -> the requested unit.
+function npToUnit(px, unit) {
+  if (unit === 'mm') return Math.round(px / 96 * 25.4 * 100) / 100;
+  if (unit === 'in') return Math.round(px / 96 * 100) / 100;
+  if (unit === 'm') return Math.round(px / 96 * 0.0254 * 1000) / 1000;
+  return px;
+}
+
+// Subset of Graph.formatDate (Steven Levithan's date format) covering the
+// common tokens drawio's %date{...}% uses. m/mm = month, M/MM = minutes.
+function npFormatDate(d, mask) {
+  const pad = (n, len) => String(n).padStart(len || 2, '0');
+  const months = ['January','February','March','April','May','June','July',
+    'August','September','October','November','December'];
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  let h12 = d.getHours() % 12; if (h12 === 0) h12 = 12;
+  const tok = {
+    yyyy: d.getFullYear(), yy: pad(d.getFullYear() % 100),
+    mmmm: months[d.getMonth()], mmm: months[d.getMonth()].slice(0, 3),
+    mm: pad(d.getMonth() + 1), m: d.getMonth() + 1,
+    dddd: days[d.getDay()], ddd: days[d.getDay()].slice(0, 3),
+    dd: pad(d.getDate()), d: d.getDate(),
+    HH: pad(d.getHours()), H: d.getHours(),
+    hh: pad(h12), h: h12,
+    MM: pad(d.getMinutes()), M: d.getMinutes(),
+    ss: pad(d.getSeconds()), s: d.getSeconds(),
+    TT: d.getHours() < 12 ? 'AM' : 'PM', tt: d.getHours() < 12 ? 'am' : 'pm'
+  };
+  return mask.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|HH|H|hh|h|MM|M|ss|s|TT|tt/g,
+    (t) => String(tok[t]));
+}
+
+// Faithful port of Graph.replacePlaceholders / getGlobalVariable: resolve %name%
+// labels when placeholders="1". Resolution ORDER mirrors drawio exactly:
+// id -> width[_unit] -> height[_unit] -> cell/ancestor attribute -> page
+// (with +/-N arithmetic) / date|time|timestamp|date{fmt} globals -> else
+// literal. %label%/%tooltip% are left literal (drawio skips them). %length%
+// needs the routed edge length (unavailable at label-resolution time) and is a
+// documented residual: faithful for vertex labels / unrouted edges (literal),
+// may diverge only for a routed edge label that prints its own length (rare,
+// never on medical labels).
+function npGlobalVar(name, pageCtx) {
+  if (name === 'date') return new Date().toLocaleDateString();
+  if (name === 'time') return new Date().toLocaleTimeString();
+  if (name === 'timestamp') return new Date().toLocaleString();
+  if (name.substring(0, 5) === 'date{') return npFormatDate(new Date(), name.substring(5, name.length - 1));
+  if (pageCtx) {
+    if ((name === 'page' || name === 'pagenumber') && pageCtx.pageNumber != null) return String(pageCtx.pageNumber);
+    if (name === 'pagecount' && pageCtx.pageCount != null) return String(pageCtx.pageCount);
+  }
+  return null;
+}
 function resolvePlaceholders(value, cell, cells, pageCtx) {
   if (typeof value !== 'string' || value.indexOf('%') < 0) return value;
   const enabled = (cell.meta && String(cell.meta.placeholders) === '1') ||
     (cell.resolvedStyle && String(cell.resolvedStyle.placeholders) === '1') ||
     (cell.style && String(cell.style.placeholders) === '1');
   if (!enabled) return value;
-  const globals = {};
-  if (pageCtx) {
-    if (pageCtx.pageNumber != null) { globals.page = String(pageCtx.pageNumber); globals.pagenumber = String(pageCtx.pageNumber); }
-    if (pageCtx.pageCount != null) globals.pagecount = String(pageCtx.pageCount);
-  }
-  return value.replace(/%([^%]+)%/g, function (full, name) {
-    if (Object.prototype.hasOwnProperty.call(globals, name.toLowerCase())) {
-      return globals[name.toLowerCase()];
+  const units = { mm: 'mm', in: 'in', m: 'm', cm: 'mm' };
+  return value.replace(/%([^%]*)%/g, function (full, name) {
+    if (name === '' || full === '%label%' || full === '%tooltip%') return full;
+    let tmp = null;
+    if (name === 'id') {
+      tmp = cell.id;
+    } else if (name.substring(0, 5) === 'width' && cell.vertex && cell.geometry) {
+      tmp = cell.geometry.width;
+      if (name.length > 5 && units[name.substring(6)]) tmp = npToUnit(tmp, units[name.substring(6)]);
+    } else if (name.substring(0, 6) === 'height' && cell.vertex && cell.geometry) {
+      tmp = cell.geometry.height;
+      if (name.length > 6 && units[name.substring(7)]) tmp = npToUnit(tmp, units[name.substring(7)]);
+    } else if (name.substring(0, 6) === 'length') {
+      return full; // routed edge length unavailable at resolution time (residual)
+    } else if (name.indexOf('{') < 0) {
+      let c = cell, hops = 0;
+      while (tmp == null && c && hops++ < 1000) {
+        if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) {
+          tmp = (c.meta[name] != null) ? c.meta[name] : '';
+        }
+        const pid = c.parent;
+        c = (pid != null) ? cells[pid] : null;
+      }
     }
-    let c = cell, hops = 0;
-    while (c && hops++ < 1000) {
-      if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) return c.meta[name];
-      const pid = c.parent;
-      c = (pid != null) ? cells[pid] : null;
+    if (tmp == null) {
+      const am = name.match(/^(pagecount|pagenumber)\s*([+-])\s*(\d+)$/);
+      if (am) {
+        const base = npGlobalVar(am[1], pageCtx);
+        if (base != null) {
+          const n = parseInt(am[3], 10);
+          tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
+        }
+      } else {
+        tmp = npGlobalVar(name, pageCtx);
+      }
     }
-    return full; // unresolved: keep the literal token, exactly like drawio
+    return (tmp != null) ? String(tmp) : full; // unresolved => literal, like drawio
   });
 }
 
