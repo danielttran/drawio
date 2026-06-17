@@ -1446,7 +1446,7 @@ within-line baseline, font-metric-approximation class), E3 dashPattern explicit-
 (no shipped preset uses 0), C-loader PNG signature (deferred to native-surface
 gate by design; validator front-runs it).
 
-+2 regression tests (bake 335). Matrix green: exporter 205, validate 64, service
-19, bake 335, ctest 216/216 (real resvg), render-gate 1/1, production-audit 86 +
++1 regression test (bake 334). Matrix green: exporter 205, validate 64, service
+19, bake 334, ctest 216/216 (real resvg), render-gate 1/1, production-audit 86 +
 8910 zero notices / all inked / 0 blank. No golden churn (fixtures use 2-point
 flexArrows). No C++ change.
