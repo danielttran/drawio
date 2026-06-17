@@ -2790,6 +2790,29 @@ test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise F
   }
 });
 
+test('audit17: pagenumber/pagecount arithmetic matches drawio (unanchored, prefix-guarded)', async () => {
+  // Graph.replacePlaceholders guards on name starting with pagecount/pagenumber
+  // (+suffix) then UNANCHORED-matches the +/-N, so trailing junk resolves to the
+  // arithmetic (never a literal); a guarded name with no arithmetic stays
+  // literal (no global fall-through). The port mirrors this exactly.
+  async function lbl(label) {
+    const pg = (id, body) => `<diagram name="${id}"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${body}</root></mxGraphModel></diagram>`;
+    const xml = `<mxfile>${pg('P0', `<object label="${label}" placeholders="1" id="o1"><mxCell vertex="1" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="220" height="30" as="geometry"/></mxCell></object>`)}${pg('P1', '<mxCell id="z" vertex="1" parent="1"><mxGeometry x="0" y="0" width="10" height="10" as="geometry"/></mxCell>')}${pg('P2', '<mxCell id="z2" vertex="1" parent="1"><mxGeometry x="0" y="0" width="10" height="10" as="geometry"/></mxCell>')}</mxfile>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const p of contract.document.pages) {
+      const n = p.paint.find((q) => q.kind === 'svg' && /<text/.test(Buffer.from(q.source, 'base64').toString('utf8')));
+      if (n) { const s = Buffer.from(n.source, 'base64').toString('utf8'); return [...s.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join(''); }
+    }
+    return '';
+  }
+  assert.equal(await lbl('%pagenumber%'), '1', 'bare pagenumber');
+  assert.equal(await lbl('%pagecount%'), '3', 'bare pagecount');
+  assert.equal(await lbl('%pagenumber+2%'), '3', 'pagenumber+2');
+  assert.equal(await lbl('%pagecount-1%'), '2', 'pagecount-1');
+  assert.equal(await lbl('%pagenumber+2x%'), '3', 'trailing junk drops to pagenumber+2 (drawio substring semantics)');
+  assert.equal(await lbl('%pagenumberZ%'), '%pagenumberZ%', 'guarded name with no arithmetic stays literal');
+});
+
 test('audit16: serif BOLD measures wider than serif regular (AFM_SERIF_BOLD, not reused-regular)', async () => {
   // Times Bold is ~3-13%/glyph wider than Times Roman. Measuring a serif bold
   // run with the regular table under-counts width, so a line that should wrap

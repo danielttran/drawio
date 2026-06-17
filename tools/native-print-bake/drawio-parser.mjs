@@ -1021,12 +1021,21 @@ function npResolveName(name, cell, cells, pageCtx, units) {
     }
   }
   if (tmp == null) {
-    const am = name.match(/^(pagecount|pagenumber)\s*([+-])\s*(\d+)$/);
-    if (am) {
-      const base = npGlobalVar(am[1], pageCtx);
-      if (base != null) {
-        const n = parseInt(am[3], 10);
-        tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
+    // Page-number arithmetic, mirroring Graph.replacePlaceholders exactly: only
+    // when the NAME starts with pagecount/pagenumber AND carries a suffix, an
+    // UNANCHORED match extracts the +/-N (so trailing junk like "pagenumber+2x"
+    // resolves to pagenumber+2 just as drawio does, never a literal). When the
+    // guard holds but no arithmetic matches, the token stays literal (drawio
+    // does NOT fall through to a global here).
+    if ((name.substring(0, 9) === 'pagecount' && name.length > 9) ||
+        (name.substring(0, 10) === 'pagenumber' && name.length > 10)) {
+      const am = name.match(/(pagecount|pagenumber)\s*([+-])\s*(\d+)/);
+      if (am) {
+        const base = npGlobalVar(am[1], pageCtx);
+        if (base != null) {
+          const n = parseInt(am[3], 10);
+          tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
+        }
       }
     } else {
       tmp = npGlobalVar(name, pageCtx);
