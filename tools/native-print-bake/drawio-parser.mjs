@@ -233,9 +233,23 @@ function flattenObjectWrappers(xml) {
       const lblM = /\blabel\s*=\s*"([^"]*)"/i.exec(rawAttrs);
       const idRaw = idM ? idM[1] : '';
       const lblRaw = lblM ? lblM[1] : '';
+      // Preserve the wrapper's OTHER attributes (custom data fields like
+      // PATIENT_ID/lot/expiry, plus `placeholders`) under a data-np- prefix so
+      // %placeholder% labels resolve to their values like drawio's
+      // convertValueToString. Dropping them printed the literal %PATIENT_ID%
+      // token -- a silent, patient-safety-grade divergence for variable-data
+      // (e.g. medical) labels. Prefixed so they cannot collide with mxCell's
+      // own structural attributes.
+      let meta = '';
+      const attrRe = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
+      let am;
+      while ((am = attrRe.exec(rawAttrs)) !== null) {
+        if (/^(id|label)$/i.test(am[1])) continue;
+        meta += ' data-np-' + am[1] + '="' + am[2] + '"';
+      }
       return inner.replace(/<mxCell\b([^>]*?)(\/?)>/i, function (cm, cattrs, sc) {
         const clean = cattrs.replace(/\s+id\s*=\s*"[^"]*"/i, '').replace(/\s+value\s*=\s*"[^"]*"/i, '');
-        return '<mxCell id="' + idRaw + '" value="' + lblRaw + '"' + clean + (sc ? '/' : '') + '>';
+        return '<mxCell id="' + idRaw + '" value="' + lblRaw + '"' + clean + meta + (sc ? '/' : '') + '>';
       });
     });
 }
@@ -259,7 +273,18 @@ function parseCells(xml) {
     const id = attrs.id;
     if (id == null) continue;
 
+    // Custom object-wrapper attributes (data-np-* from flattenObjectWrappers):
+    // the variable-data fields + `placeholders` flag used to resolve %token%
+    // labels. Collected into cell.meta (prefix stripped).
+    let meta = null;
+    for (const k in attrs) {
+      if (k.indexOf('data-np-') === 0) {
+        (meta || (meta = {}))[k.slice(8)] = attrs[k];
+      }
+    }
+
     const cell = {
+      meta,
       id,
       vertex:   attrs.vertex === '1',
       edge:     attrs.edge   === '1',
@@ -843,7 +868,37 @@ export function parseDrawio(xml) {
 
 // Build the fake graph object expected by exporter.buildResult().
 // scale = 1 (model unit == view pixel in headless mode).
-export function buildGraph(cells, paper) {
+// Resolve %placeholder% tokens in a label the way drawio's
+// Graph.replacePlaceholders / getAttributeForCell do: only when the cell has
+// placeholders="1", substitute each %name% with the cell's (or an ancestor's)
+// custom attribute value; unresolved tokens stay literal (matching the editor).
+// Global page placeholders resolve from the optional pageCtx the bake supplies.
+function resolvePlaceholders(value, cell, cells, pageCtx) {
+  if (typeof value !== 'string' || value.indexOf('%') < 0) return value;
+  const enabled = (cell.meta && String(cell.meta.placeholders) === '1') ||
+    (cell.resolvedStyle && String(cell.resolvedStyle.placeholders) === '1') ||
+    (cell.style && String(cell.style.placeholders) === '1');
+  if (!enabled) return value;
+  const globals = {};
+  if (pageCtx) {
+    if (pageCtx.pageNumber != null) { globals.page = String(pageCtx.pageNumber); globals.pagenumber = String(pageCtx.pageNumber); }
+    if (pageCtx.pageCount != null) globals.pagecount = String(pageCtx.pageCount);
+  }
+  return value.replace(/%([^%]+)%/g, function (full, name) {
+    if (Object.prototype.hasOwnProperty.call(globals, name.toLowerCase())) {
+      return globals[name.toLowerCase()];
+    }
+    let c = cell, hops = 0;
+    while (c && hops++ < 1000) {
+      if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) return c.meta[name];
+      const pid = c.parent;
+      c = (pid != null) ? cells[pid] : null;
+    }
+    return full; // unresolved: keep the literal token, exactly like drawio
+  });
+}
+
+export function buildGraph(cells, paper, pageCtx) {
   const states = {};
   for (const cell of Object.values(cells)) {
     const s = cellToState(cell, cells);
@@ -888,7 +943,7 @@ export function buildGraph(cells, paper) {
       if (!cell || cell.value == null) return '';
       const st = cell.resolvedStyle || cell.style;
       if (st && st.noLabel != null && String(st.noLabel) === '1') return '';
-      return String(cell.value);
+      return resolvePlaceholders(String(cell.value), cell, cells, pageCtx);
     },
     isHtmlLabel:  (cell) => !!(cell && cell.style && String(cell.style.html) === '1'),
     nativePrintOptions: null

@@ -4240,6 +4240,64 @@ test('audit9: rotation applies to note/note2/shaded-cube builder branches (was d
     'non-rotated note is not rotate-wrapped');
 });
 
+test('audit9: %placeholder% labels resolve to attribute values (medical variable data)', async () => {
+  // drawio resolves %name% labels to the cell/ancestor custom attribute when
+  // placeholders="1" (Graph.convertValueToString). The bake dropped the object
+  // wrapper attributes and printed the literal %PATIENT_ID% token -- a silent,
+  // patient-safety-grade divergence for variable-data labels.
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) {
+      for (const n of p.paint) {
+        if (n.kind !== 'svg') continue;
+        const s = Buffer.from(n.source, 'base64').toString('utf8');
+        for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) {
+          out.push(t.replace(/<[^>]*>/g, ''));
+        }
+      }
+    }
+    return out.join(' ');
+  }
+  const dataXml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <object label="Patient: %PATIENT_ID%" PATIENT_ID="00123456" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="20" y="20" width="220" height="40" as="geometry"/></mxCell></object>
+  </root></mxGraphModel>`;
+  const data = await bake(dataXml, { keepPx: true });
+  assert.equal(data.notices.length, 0);
+  assert.match(texts(data.contract), /Patient: 00123456/, 'data-field placeholder resolved');
+  assert.ok(!/%PATIENT_ID%/.test(texts(data.contract)), 'literal token not printed');
+
+  // Gate: without placeholders="1" the token stays literal (matches the editor).
+  const noPh = await bake(dataXml.replace(' placeholders="1"', ''), { keepPx: true });
+  assert.match(texts(noPh.contract), /%PATIENT_ID%/, 'no placeholders => literal (faithful)');
+
+  // Ancestor attribute (walk up the parent chain).
+  const parentXml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <object LOT="L-77" id="p"><mxCell vertex="1" parent="1" style="group;"><mxGeometry x="0" y="0" width="300" height="120" as="geometry"/></mxCell></object>
+    <object label="Lot: %LOT%" placeholders="1" id="c"><mxCell vertex="1" parent="p" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell></object>
+  </root></mxGraphModel>`;
+  assert.match(texts((await bake(parentXml, { keepPx: true })).contract), /Lot: L-77/, 'ancestor attribute resolved');
+
+  // Unresolved attribute stays literal (drawio behavior), no crash.
+  const missXml = dataXml.replace('PATIENT_ID="00123456" ', '');
+  assert.match(texts((await bake(missXml, { keepPx: true })).contract), /%PATIENT_ID%/, 'unresolved => literal');
+});
+
+test('audit9: %pagenumber%/%pagecount% globals resolve per page', async () => {
+  const mp = `<mxfile>
+    <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="pg %pagenumber%/%pagecount%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="150" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+    <diagram name="B"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="pg %pagenumber%/%pagecount%" placeholders="1" id="3"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="150" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  function pageText(p) {
+    return (p.paint.filter((n) => n.kind === 'svg')
+      .map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join(' ')
+      .match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])
+      .map((t) => t.replace(/<[^>]*>/g, '')).join(' ');
+  }
+  assert.match(pageText(contract.document.pages[0]), /pg 1\/2/, 'page 1 footer');
+  assert.match(pageText(contract.document.pages[1]), /pg 2\/2/, 'page 2 footer');
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
