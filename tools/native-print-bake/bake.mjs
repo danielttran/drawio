@@ -230,7 +230,8 @@ export async function bake(drawioXml, options) {
     const pageData = pagesToBake[idx].page;
     const result = await bakePage(
       pageData, { ...(opts.exporterOpts || {}), headless: true }, opts.fetchFn,
-      { pageNumber: pagesToBake[idx].ordinal + 1, pageCount: parsed.pages.length });
+      { pageNumber: pagesToBake[idx].ordinal + 1, pageCount: parsed.pages.length,
+        pageName: pageData.name || '' });
     allNotices.push(...result.notices);
     // Tag with the DOCUMENT ordinal (not the selection index): renumbering
     // a selected subset made engine notices' pageId point at the wrong

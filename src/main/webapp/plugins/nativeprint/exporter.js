@@ -249,7 +249,7 @@
     function stateStrokeAttrs() {
       if (!isPaintable(state.strokeColor)) return ' stroke="none"';
       var s = ' stroke="' + hex(state.strokeColor) + '"';
-      var sw2 = Math.max(0.1, state.strokeWidth);
+      var sw2 = Math.max(1, state.strokeWidth);  // drawio minStrokeWidth=1
       s += ' stroke-width="' + fmt(sw2) + '"';
       var sc = state.lineCap === 'round' ? 'round' : state.lineCap === 'square' ? 'square' : 'butt';
       var sj = state.lineJoin === 'round' ? 'round' : state.lineJoin === 'bevel' ? 'bevel' : 'miter';
@@ -1272,7 +1272,7 @@
     if (!isPaintable(style.strokeColor)) return null;
     return {
       paint: solid(style.strokeColor, opacity(style, 'strokeOpacity')),
-      width: Math.max(0.1, number(style.strokeWidth, 1)),
+      width: Math.max(1, number(style.strokeWidth, 1)),
       cap: style.lineCap === 'round' ? 'round' : style.lineCap === 'square' ? 'square' : 'butt',
       join: style.lineJoin === 'round' || boolish(style.rounded) ? 'round' :
         style.lineJoin === 'bevel' ? 'bevel' : 'miter',
@@ -1327,7 +1327,7 @@
     if (!isPaintable(style.strokeColor)) return ' stroke="none"';
     var s = ' stroke="' + hex(style.strokeColor) + '"';
     var sw = Math.max(0.1, number(style.strokeWidth, 1));
-    s += ' stroke-width="' + fmt(sw) + '"';
+    s += ' stroke-width="' + fmt(Math.max(1, sw)) + '"';
     var sc = style.lineCap === 'round' ? 'round' : style.lineCap === 'square' ? 'square' : 'butt';
     var sj = style.lineJoin === 'round' || boolish(style.rounded) ? 'round' :
       style.lineJoin === 'bevel' ? 'bevel' : 'miter';
@@ -5023,7 +5023,7 @@
         gtOut += '<ellipse cx="' + fmt(gtTab / 2) + '" cy="' + fmt(h / 2) +
           '" rx="' + fmt(gtHole) + '" ry="' + fmt(gtHole) +
           '" fill="' + gtHc + '" stroke="' + gtHc +
-          '" stroke-width="' + fmt(Math.max(0.1, number(style.strokeWidth, 1))) + '"/>';
+          '" stroke-width="' + fmt(Math.max(1, number(style.strokeWidth, 1))) + '"/>';
       }
       return gtOut;
     }
@@ -5038,7 +5038,7 @@
         '<ellipse cx="' + fmt(w / 2) + '" cy="' + fmt(h / 2) +
         '" rx="' + fmt(gmR) + '" ry="' + fmt(gmR) +
         '" fill="' + gmC + '" stroke="' + gmC +
-        '" stroke-width="' + fmt(Math.max(0.1, number(style.strokeWidth, 1))) + '"/>';
+        '" stroke-width="' + fmt(Math.max(1, number(style.strokeWidth, 1))) + '"/>';
     }
     if (shape === 'gitCherryPick') {
       // GitCherryPickShape (Shapes.js:6519-6552): circle fillAndStroke +
@@ -5658,8 +5658,23 @@
 
   function edgeLabelBox(state, style, origin, scale, label) {
     var fs = number(style.fontSize, 12);
-    var width = Math.max(24, String(label).length * fs * 0.65);
-    var height = Math.max(fs * 1.4, String(label).split('\n').length * fs * 1.25);
+    // drawio (mxCellRenderer.getLabelBounds + isWrapping): a wrapped edge label
+    // wraps to STYLE_LABEL_WIDTH; without a width constraint an edge label does
+    // not wrap, so the content-width estimate matches. Previously the wrap width
+    // was always a char-count estimate, so a whiteSpace=wrap edge label with a
+    // labelWidth printed on one over-wide line instead of wrapping.
+    var lw = (style.labelWidth != null && style.labelWidth !== '')
+      ? number(style.labelWidth, 0) : 0;
+    var wrap = style.whiteSpace === 'wrap' && lw > 0;
+    var bold = (number(style.fontStyle, 0) & 1) !== 0;
+    var width = wrap ? lw : Math.max(24, String(label).length * fs * 0.65);
+    var lineCount = 0;
+    String(label).split('\n').forEach(function (para) {
+      lineCount += wrap
+        ? Math.max(1, Math.ceil(textWidthPx(para, fs, 0, style.fontFamily, bold) / Math.max(1, lw)))
+        : 1;
+    });
+    var height = Math.max(fs * 1.4, lineCount * fs * 1.25);
     var x = state.absoluteOffset && Number.isFinite(state.absoluteOffset.x)
       ? state.absoluteOffset.x : state.x + state.width / 2;
     var y = state.absoluteOffset && Number.isFinite(state.absoluteOffset.y)
@@ -7081,7 +7096,7 @@
           fill: solid(style.imageBackground, opacity(style, 'fillOpacity')),
           stroke: isPaintable(style.imageBorder)
             ? { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
-                width: Math.max(0.1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
+                width: Math.max(1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
                 miterLimit: 10, dash: null }
             : null });
       }
@@ -7191,7 +7206,7 @@
                        : rectPath(box.x, box.y, box.w, box.h),
           fill: null,
           stroke: { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
-            width: Math.max(0.1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
+            width: Math.max(1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
             miterLimit: 10, dash: null } });
       }
       if (label !== '') {
@@ -7675,7 +7690,7 @@
         if (isPaintable(style.separatorColor)) {
           var sepStroke = {
             paint: solid(style.separatorColor, opacity(style, 'strokeOpacity')),
-            width: Math.max(0.1, number(style.strokeWidth, 1)),
+            width: Math.max(1, number(style.strokeWidth, 1)),
             cap: 'butt', join: 'miter', miterLimit: 10,
             dash: dashPattern({ dashPattern: '3 3', strokeWidth: style.strokeWidth, fixDash: style.fixDash })
           };
