@@ -39,6 +39,18 @@ struct CustomStock {
 [[nodiscard]] std::optional<CustomStock> parse_custom_stock_id(
     const std::string& stock_id);
 
+// Convert a positive micron dimension to tenths of a millimetre (the
+// DEVMODE.dmPaperWidth/Length unit), ROUNDED to nearest — never truncated.
+// Integer `microns / 100` discards up to 99 um (~2.3 device px @600 dpi,
+// ~4.7 px @1200 dpi), silently selecting paper slightly smaller than the
+// operator requested; rounding keeps the selected sheet within half a
+// tenth-mm of the request. parse_custom_stock_id caps microns at
+// 3,276,700, so the rounded result is at most 32,767 (SHRT_MAX) — it can
+// never overflow the signed-SHORT DEVMODE field.
+[[nodiscard]] inline long microns_to_tenth_mm_rounded(long microns) {
+  return (microns + 50) / 100;
+}
+
 }  // namespace print_engine::host
 
 #endif  // PRINT_ENGINE_HOST_CUSTOM_STOCK_HPP

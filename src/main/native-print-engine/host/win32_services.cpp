@@ -111,6 +111,76 @@ bool contains_foreign_object_element(const std::string& svg) {
   return false;
 }
 
+// Mirror of the Rust shim's contains_external_image_href: detect an SVG
+// `<image>` whose href/xlink:href is not a `data:` URI. resvg resolves only
+// data: image hrefs, so an external href renders as a silent blank with
+// status=Ok. The host refuses upfront (loud crosshatch + StubbedSvgArtwork
+// notice) so it is never a silent blank, exactly like the foreignObject guard.
+// Scoped to <image> elements so internal fragment refs on <use>/gradients are
+// never mistaken for external image artwork.
+bool image_tag_has_external_href(const std::string& tag) {
+  const std::string needle = "href";
+  for (std::size_t k = 0; k + needle.size() <= tag.size(); ++k) {
+    if (tag.compare(k, needle.size(), needle) != 0) continue;
+    const bool prev_ok =
+        k == 0 || tag[k - 1] == ':' || !is_xml_name_char(tag[k - 1]);
+    std::size_t m = k + needle.size();
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    if (!prev_ok || m >= tag.size() || tag[m] != '=') continue;
+    ++m;
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    if (m >= tag.size() || (tag[m] != '"' && tag[m] != '\'')) continue;
+    const char quote = tag[m++];
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    const std::size_t vstart = m;
+    while (m < tag.size() && tag[m] != quote) ++m;
+    std::string value = tag.substr(vstart, m - vstart);
+    std::string lower;
+    lower.reserve(5);
+    for (std::size_t c = 0; c < value.size() && c < 5; ++c) {
+      lower.push_back(static_cast<char>(
+          std::tolower(static_cast<unsigned char>(value[c]))));
+    }
+    return lower.rfind("data:", 0) != 0;
+  }
+  return false;
+}
+
+bool contains_external_image_href(const std::string& svg) {
+  std::size_t i = 0;
+  while (i < svg.size()) {
+    if (svg[i] != '<') {
+      ++i;
+      continue;
+    }
+    ++i;
+    if (i >= svg.size() || svg[i] == '/' || svg[i] == '!' || svg[i] == '?') {
+      continue;
+    }
+    const std::size_t start = i;
+    while (i < svg.size() && is_xml_name_char(svg[i])) {
+      ++i;
+    }
+    if (i == start) continue;
+    const std::string name = svg.substr(start, i - start);
+    const std::size_t colon = name.rfind(':');
+    const std::string local =
+        colon == std::string::npos ? name : name.substr(colon + 1);
+    if (local != "image") continue;
+    const std::size_t tag_start = i;
+    std::size_t j = i;
+    while (j < svg.size() && svg[j] != '>') ++j;
+    if (image_tag_has_external_href(svg.substr(tag_start, j - tag_start))) {
+      return true;
+    }
+    i = j;
+  }
+  return false;
+}
+
 struct PrinterHandle {
   HANDLE handle = nullptr;
   explicit PrinterHandle(HANDLE h = nullptr) : handle(h) {}
@@ -200,11 +270,16 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
     if (const auto custom = parse_custom_stock_id(stock_id); custom) {
       devmode->dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
       devmode->dmPaperSize = DMPAPER_USER;
-      // Microns / 100 == tenths of millimetre (the dmPaperWidth/Length unit).
+      // Microns -> tenths of millimetre (the dmPaperWidth/Length unit), ROUNDED
+      // not truncated: integer `/100` discards up to 99 um (~2.3 px @600 dpi,
+      // ~4.7 px @1200 dpi) per axis, silently selecting paper slightly smaller
+      // than requested -- and the coercion re-check below could not see it
+      // because it compared against the same truncated value. Round to nearest
+      // (the parser caps microns so the rounded tenth-mm still fits SHORT).
       devmode->dmPaperWidth =
-          static_cast<short>(custom->width_microns / 100);
+          static_cast<short>(microns_to_tenth_mm_rounded(custom->width_microns));
       devmode->dmPaperLength =
-          static_cast<short>(custom->height_microns / 100);
+          static_cast<short>(microns_to_tenth_mm_rounded(custom->height_microns));
       // Orientation stays PORTRAIT: dmPaperWidth/Length already describe
       // the physical sheet exactly as the contract page maps onto it
       // (identity, no rotation). Adding DMORIENT_LANDSCAPE because
@@ -233,8 +308,8 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
       // loud typed refusal naming requested vs got (never silently-wrong
       // paper).
       {
-        const short want_w = static_cast<short>(custom->width_microns / 100);
-        const short want_h = static_cast<short>(custom->height_microns / 100);
+        const short want_w = static_cast<short>((custom->width_microns + 50) / 100);
+        const short want_h = static_cast<short>((custom->height_microns + 50) / 100);
         constexpr int kTenthMmTolerance = 10;  // 1 mm
         if (devmode->dmPaperSize != DMPAPER_USER ||
             std::abs(static_cast<int>(devmode->dmPaperWidth) - want_w) >
@@ -249,6 +324,18 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
                   std::to_string(devmode->dmPaperSize) + " dims " +
                   std::to_string(devmode->dmPaperWidth) + "x" +
                   std::to_string(devmode->dmPaperLength)});
+        }
+        // Orientation coercion re-check (mirrors the paperSize guard): we forced
+        // DMORIENT_PORTRAIT before the merge, but the merge may revert it to the
+        // tray default (landscape) and still report IDOK -- which lays the
+        // portrait-baked page onto a rotated sheet, silently wrong. Refuse loud.
+        if ((devmode->dmFields & DM_ORIENTATION) &&
+            devmode->dmOrientation != DMORIENT_PORTRAIT) {
+          return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+              ContractErrorCode::PrintDeviceError, stock_id,
+              "driver coerced page orientation away from portrait (custom "
+              "stock): merged DEVMODE dmOrientation=" +
+                  std::to_string(devmode->dmOrientation)});
         }
       }
       return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
@@ -338,6 +425,19 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
             std::to_string(*requested_named_paper) +
             ", merged DEVMODE has dmPaperSize=" +
             std::to_string(devmode->dmPaperSize)});
+  }
+  // Orientation coercion re-check, only for a named stock we forced to PORTRAIT
+  // (the empty-stock default path keeps the driver's own orientation, sized by
+  // HORZRES/VERTRES + the loud HardwareMarginClip check). A driver that reverts
+  // a forced portrait to its landscape tray default would lay the portrait-baked
+  // page onto a rotated sheet -- silently wrong paper, same class as paperSize.
+  if (requested_named_paper && (devmode->dmFields & DM_ORIENTATION) &&
+      devmode->dmOrientation != DMORIENT_PORTRAIT) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, stock_id,
+        "driver coerced page orientation away from portrait (named stock): "
+        "merged DEVMODE dmOrientation=" +
+            std::to_string(devmode->dmOrientation)});
   }
   return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
 }
@@ -1234,6 +1334,14 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
             raster_fail_detail =
                 "svg_source contains <foreignObject>; refusing loudly "
                 "(host transcribes HTML labels before bake)";
+          } else if (contains_external_image_href(decoded)) {
+            // resvg resolves only data: image hrefs; an external href renders
+            // as a silent blank. Refuse loudly (the bake embeds every image as
+            // a data: URI, so this is the engine-side backstop).
+            raster_fail_detail =
+                "svg_source contains <image> with a non-data: href; the "
+                "external resource cannot be resolved offline and would "
+                "render blank, refusing loudly";
           } else {
             // Aspect policy lives HERE (the shim stretches to exactly the
             // requested pixel size): "preserve" aspect-fits the SVG's
@@ -1300,22 +1408,34 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                 const Gdiplus::InterpolationMode prev_im = g.GetInterpolationMode();
                 g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
                 g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-                g.DrawImage(&bitmap,
-                            Gdiplus::Rect(blit.x, blit.y, blit.w, blit.h),
-                            0, 0, static_cast<INT>(out_w_sz),
-                            static_cast<INT>(out_h_sz), Gdiplus::UnitPixel);
+                // Check the blit status: under driver/GDI+ memory pressure
+                // DrawImage can fail, leaving the artwork missing. Marking
+                // rasterized=true + emitting the SvgArtworkRasterized SUCCESS
+                // notice on a failed blit would be an error->success mapping
+                // (a positive "rendered" notice over a blank box). On failure
+                // fall through to the loud crosshatch + StubbedSvgArtwork
+                // instead, never a silent/falsely-noticed blank.
+                const Gdiplus::Status svg_blit =
+                    g.DrawImage(&bitmap,
+                                Gdiplus::Rect(blit.x, blit.y, blit.w, blit.h),
+                                0, 0, static_cast<INT>(out_w_sz),
+                                static_cast<INT>(out_h_sz), Gdiplus::UnitPixel);
                 g.SetPixelOffsetMode(prev_pom);
                 g.SetInterpolationMode(prev_im);
-                rasterized = true;
-                push_notice_unique(
-                    result.notices,
-                    DegradationNotice{
-                        DegradationNoticeType::SvgArtworkRasterized,
-                        current_page_id,
-                        "svg rendered via external rasterizer: " +
-                            svg_rasterizer->backend_id(),
-                        {},
-                        {}});
+                if (svg_blit == Gdiplus::Ok) {
+                  rasterized = true;
+                  push_notice_unique(
+                      result.notices,
+                      DegradationNotice{
+                          DegradationNoticeType::SvgArtworkRasterized,
+                          current_page_id,
+                          "svg rendered via external rasterizer: " +
+                              svg_rasterizer->backend_id(),
+                          {},
+                          {}});
+                } else {
+                  raster_fail_detail = "GDI+ DrawImage failed for the svg raster";
+                }
               } else {
                 raster_fail_detail = "GDI+ bitmap construction failed";
               }
@@ -1463,12 +1583,19 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       // because image content IS rescaled to the destination box.
       g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
       g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-      g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
+      const Gdiplus::Status img_blit = g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
                   static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
                   static_cast<Gdiplus::REAL>(bitmap.GetHeight()),
                   Gdiplus::UnitPixel);
       g.Restore(state);
       stream->Release();
+      // A failed content blit (driver/GDI+ OOM) would leave the image silently
+      // missing from the page; fail loudly instead (the caller AbortDocs).
+      if (img_blit != Gdiplus::Ok) {
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, current_page_id,
+            "GDI+ DrawImage failed for the image content (blit rejected)"});
+      }
     }
   }
   return Result<DrawResult, ContractError>::ok(std::move(result));
@@ -1853,6 +1980,21 @@ class Win32Services final : public EngineServices {
             const int band_y = band * kPrintBandHeightPx;
             const int band_h = std::min(kPrintBandHeightPx, ph - band_y);
             Gdiplus::Bitmap band_bmp(pw, band_h, PixelFormat24bppRGB);
+            // Check the band bitmap allocated: under driver/GDI+ memory
+            // pressure (large media + high DPI) the backing store can fail,
+            // after which Graphics/Clear/draw all silently no-op and the band's
+            // ink is lost. Every other rasterization Bitmap in this file checks
+            // its status; match that here and abort loudly rather than print a
+            // blank stripe. (Defense-in-depth: a fully-failed bitmap is also
+            // caught by the DrawImage status check below.)
+            if (band_bmp.GetLastStatus() != Gdiplus::Ok) {
+              aborted = true;
+              fail_detail = "band bitmap allocation failed at copy=" +
+                            std::to_string(copy + 1) + " page=" + tile.page_id +
+                            " tile=" + std::to_string(tile.tile_index) +
+                            " band=" + std::to_string(band);
+              break;
+            }
             Gdiplus::Graphics gb(&band_bmp);
             gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white
             gb.SetPageUnit(Gdiplus::UnitPixel);

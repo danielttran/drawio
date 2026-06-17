@@ -202,7 +202,16 @@ function extractAllModels(xml) {
   while ((m = diagRe.exec(xml)) !== null) {
     const diagAttrs = parseAttrs(m[1]);
     const decoded = decodeDiagramBlock(m[2]);
-    if (!decoded && m[2].trim() !== '') {
+    if (decoded) {
+      results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
+    } else if (m[2].trim() === '') {
+      // Empty/blank page (the common "added a new page" serialization):
+      // drawio keeps it as a BLANK SHEET that counts toward %pagecount% and
+      // renumbers nothing. Dropping it silently miscounted pages and shifted
+      // %pagenumber% on the surviving pages. Emit a minimal empty model.
+      results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '',
+        xml: '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>' });
+    } else {
       // A page that exists but cannot be decoded must REFUSE the whole
       // bake: silently printing the other pages is a partial document --
       // the worst C1 outcome for an unattended print.
@@ -210,7 +219,6 @@ function extractAllModels(xml) {
         (diagAttrs.name ? ' ("' + diagAttrs.name + '")' : '') +
         ' could not be decoded (corrupt base64/deflate content)');
     }
-    if (decoded) results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
     diagramIndex++;
   }
   if (results.length > 0) return results;
@@ -233,9 +241,23 @@ function flattenObjectWrappers(xml) {
       const lblM = /\blabel\s*=\s*"([^"]*)"/i.exec(rawAttrs);
       const idRaw = idM ? idM[1] : '';
       const lblRaw = lblM ? lblM[1] : '';
+      // Preserve the wrapper's OTHER attributes (custom data fields like
+      // PATIENT_ID/lot/expiry, plus `placeholders`) under a data-np- prefix so
+      // %placeholder% labels resolve to their values like drawio's
+      // convertValueToString. Dropping them printed the literal %PATIENT_ID%
+      // token -- a silent, patient-safety-grade divergence for variable-data
+      // (e.g. medical) labels. Prefixed so they cannot collide with mxCell's
+      // own structural attributes.
+      let meta = '';
+      const attrRe = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
+      let am;
+      while ((am = attrRe.exec(rawAttrs)) !== null) {
+        if (/^(id|label)$/i.test(am[1])) continue;
+        meta += ' data-np-' + am[1] + '="' + am[2] + '"';
+      }
       return inner.replace(/<mxCell\b([^>]*?)(\/?)>/i, function (cm, cattrs, sc) {
         const clean = cattrs.replace(/\s+id\s*=\s*"[^"]*"/i, '').replace(/\s+value\s*=\s*"[^"]*"/i, '');
-        return '<mxCell id="' + idRaw + '" value="' + lblRaw + '"' + clean + (sc ? '/' : '') + '>';
+        return '<mxCell id="' + idRaw + '" value="' + lblRaw + '"' + clean + meta + (sc ? '/' : '') + '>';
       });
     });
 }
@@ -259,7 +281,18 @@ function parseCells(xml) {
     const id = attrs.id;
     if (id == null) continue;
 
+    // Custom object-wrapper attributes (data-np-* from flattenObjectWrappers):
+    // the variable-data fields + `placeholders` flag used to resolve %token%
+    // labels. Collected into cell.meta (prefix stripped).
+    let meta = null;
+    for (const k in attrs) {
+      if (k.indexOf('data-np-') === 0) {
+        (meta || (meta = {}))[k.slice(8)] = attrs[k];
+      }
+    }
+
     const cell = {
+      meta,
       id,
       vertex:   attrs.vertex === '1',
       edge:     attrs.edge   === '1',
@@ -335,10 +368,16 @@ function parseCells(xml) {
 // Vertices with geometry.relative=true use x,y as fractions (0–1) of parent
 // width/height plus an optional pixel offset (geometry.offset). This is how
 // draw.io positions decorators like UML component notches.
-function absolutePos(cell, cells) {
+function absolutePos(cell, cells, depth) {
   if (!cell.geometry) return { ax: 0, ay: 0 };
   const g = cell.geometry;
   const parentId = cell.parent;
+  // Cycle guard: a malformed/imported file can contain a parent cycle (A->B,
+  // B->A), which drawio's model cannot hold but the parser does not reject.
+  // Without this the recursion / parent-walk below loops forever and the
+  // unattended bake hangs with no output and no notice -- the worst outcome.
+  depth = depth || 0;
+  if (depth > 1000) return { ax: g.x || 0, ay: g.y || 0 };
 
   if (g.relative && cell.vertex && parentId && parentId !== '0' && parentId !== '1') {
     const parent = cells[parentId];
@@ -347,7 +386,7 @@ function absolutePos(cell, cells) {
       const oy = g.offset ? g.offset.y : 0;
       const relX = (parent.geometry.width  || 0) * (g.x || 0) + ox;
       const relY = (parent.geometry.height || 0) * (g.y || 0) + oy;
-      const { ax: pax, ay: pay } = absolutePos(parent, cells);
+      const { ax: pax, ay: pay } = absolutePos(parent, cells, depth + 1);
       // mxGraphView.updateVertexState: a RELATIVE child of a rotated parent
       // rotates its CENTER around the parent center (absolute-geometry
       // children stay put — the editor bakes rotation into their geometry).
@@ -374,7 +413,8 @@ function absolutePos(cell, cells) {
   let ax = g.x || 0;
   let ay = g.y || 0;
   let pid = parentId;
-  while (pid && pid !== '0' && pid !== '1') {
+  let hops = 0;
+  while (pid && pid !== '0' && pid !== '1' && hops++ < 1000) {
     const parent = cells[pid];
     if (!parent || !parent.geometry) break;
     ax += parent.geometry.x || 0;
@@ -603,6 +643,23 @@ function edgePoints(cell, cells) {
   return out;
 }
 
+// A cell is painted only if its parent chain reaches the root ('0') or a layer
+// ('1'). An orphan (parent id that doesn't exist) or a cell in a parent cycle is
+// NOT in the paint tree, so it must not inflate the auto-fit page bounds either
+// (doing so silently enlarged the sheet / shifted content vs drawio).
+function isReachableFromRoot(cell, cells) {
+  let pid = cell.parent;
+  let hops = 0;
+  while (hops++ < 1000) {
+    if (pid === '0' || pid === '1') return true;
+    if (pid == null) return false;
+    const parent = cells[pid];
+    if (!parent) return false; // orphan: parent does not exist
+    pid = parent.parent;
+  }
+  return false; // cycle / pathological depth
+}
+
 // Compute bounding box of all vertex/edge geometry using absolute positions.
 function computeBounds(cells) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -612,6 +669,7 @@ function computeBounds(cells) {
   };
   for (const cell of Object.values(cells)) {
     if (!cell.geometry) continue;
+    if (!isReachableFromRoot(cell, cells)) continue; // not painted => not in bounds
     const g = cell.geometry;
     if (cell.vertex && g.width > 0 && g.height > 0) {
       const { ax, ay } = absolutePos(cell, cells);
@@ -816,6 +874,22 @@ function parseModel(modelXml) {
   if (modelAttrs.background && modelAttrs.background !== 'none') {
     paper.background = modelAttrs.background;
   }
+  // Page background IMAGE (File > Background): drawio serializes it as a JSON
+  // object on <mxGraphModel backgroundImage="{src,x,y,width,height}"> and paints
+  // it behind all content. It was silently dropped; carry it so the bake can
+  // print it (a watermark / pre-printed label template / logo backdrop).
+  if (typeof modelAttrs.backgroundImage === 'string' && modelAttrs.backgroundImage) {
+    try {
+      const bgi = JSON.parse(modelAttrs.backgroundImage);
+      if (bgi && typeof bgi.src === 'string' && bgi.src) {
+        paper.backgroundImage = {
+          src: bgi.src,
+          x: Number(bgi.x) || 0, y: Number(bgi.y) || 0,
+          width: Number(bgi.width) || 0, height: Number(bgi.height) || 0
+        };
+      }
+    } catch (e) { /* malformed backgroundImage JSON: drawio ignores it too */ }
+  }
 
   return { cells, modelAttrs, paper };
 }
@@ -843,7 +917,185 @@ export function parseDrawio(xml) {
 
 // Build the fake graph object expected by exporter.buildResult().
 // scale = 1 (model unit == view pixel in headless mode).
-export function buildGraph(cells, paper) {
+// Resolve %placeholder% tokens in a label the way drawio's
+// Graph.replacePlaceholders / getAttributeForCell do: only when the cell has
+// placeholders="1", substitute each %name% with the cell's (or an ancestor's)
+// custom attribute value; unresolved tokens stay literal (matching the editor).
+// Global page placeholders resolve from the optional pageCtx the bake supplies.
+// Editor.toUnit (Editor.js): convert a pixel value to the requested unit. It
+// uses drawio's CANONICAL on-canvas constants PIXELS_PER_INCH = 100 and
+// PIXELS_PER_MM = 3.937 -- deliberately NOT the physical 96 px/in / 25.4 mm/in.
+// A %width_mm% / %width_in% placeholder is variable data the operator reads on
+// a (medical) label, so the printed value MUST equal what the editor shows: a
+// 200px cell reads 50.8 mm / 2 in in drawio. This mirrors Editor.toUnit
+// byte-for-byte; using the physical constants printed ~4% wrong (52.92 mm).
+const NP_PIXELS_PER_INCH = 100;
+const NP_PIXELS_PER_MM = 3.937;
+function npToUnit(px, unit) {
+  if (unit === 'in') return Math.round(px * 100 / NP_PIXELS_PER_INCH) / 100;
+  if (unit === 'mm') return Math.round(px * 100 / NP_PIXELS_PER_MM) / 100;
+  if (unit === 'm') return Math.round(px * 1000 / (NP_PIXELS_PER_MM * 1000)) / 1000;
+  return Math.round(px); // Editor.toUnit else-branch (points/px)
+}
+
+// Faithful port of Graph.formatDate (Steven Levithan's dateFormat), including
+// the NAMED mask table and 'quoted'/"quoted" literals. drawio's %date{mask}%
+// passes `mask` here: a named mask (shortDate, isoDate, isoDateTime, ...)
+// resolves via NP_DATE_MASKS, an explicit mask (yyyy-mm-dd) is used verbatim,
+// and quoted runs ('T') are emitted literally. m/mm = month, M/MM = minutes
+// (Levithan convention). A partial port previously left named masks unresolved
+// ("shortDate" -> garbage "461ortDate") and kept the 'T' quotes -- silent
+// divergence on a medical date label; this mirrors Graph.js exactly.
+const NP_DATE_MASKS = {
+  'default':      'ddd mmm dd yyyy HH:MM:ss',
+  shortDate:      'm/d/yy',
+  mediumDate:     'mmm d, yyyy',
+  longDate:       'mmmm d, yyyy',
+  fullDate:       'dddd, mmmm d, yyyy',
+  shortTime:      'h:MM TT',
+  mediumTime:     'h:MM:ss TT',
+  longTime:       'h:MM:ss TT Z',
+  isoDate:        'yyyy-mm-dd',
+  isoTime:        'HH:MM:ss',
+  isoDateTime:    "yyyy-mm-dd'T'HH:MM:ss",
+  isoUtcDateTime: "UTC:yyyy-mm-dd'T'HH:MM:ss'Z'"
+};
+const NP_DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat',
+  'Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const NP_MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
+  'January','February','March','April','May','June','July','August','September','October','November','December'];
+function npFormatDate(date, mask, utc) {
+  const pad = (val, len) => { val = String(val); len = len || 2; while (val.length < len) val = '0' + val; return val; };
+  const timezone = /\b(?:[PMCEA][SDP]T|(?:Pacific|Mountain|Central|Eastern|Atlantic) (?:Standard|Daylight|Prevailing) Time|(?:GMT|UTC)(?:[-+]\d{4})?)\b/g;
+  const timezoneClip = /[^-+\dA-Z]/g;
+  mask = String(NP_DATE_MASKS[mask] || mask || NP_DATE_MASKS['default']);
+  if (mask.slice(0, 4) === 'UTC:') { mask = mask.slice(4); utc = true; }
+  const g = utc ? 'getUTC' : 'get';
+  const d = date[g + 'Date'](), D = date[g + 'Day'](), m = date[g + 'Month'](),
+        y = date[g + 'FullYear'](), H = date[g + 'Hours'](), M = date[g + 'Minutes'](),
+        s = date[g + 'Seconds'](), L = date[g + 'Milliseconds']();
+  const o = utc ? 0 : date.getTimezoneOffset();
+  const flags = {
+    d: d, dd: pad(d), ddd: NP_DAY_NAMES[D], dddd: NP_DAY_NAMES[D + 7],
+    m: m + 1, mm: pad(m + 1), mmm: NP_MONTH_NAMES[m], mmmm: NP_MONTH_NAMES[m + 12],
+    yy: String(y).slice(2), yyyy: y,
+    h: H % 12 || 12, hh: pad(H % 12 || 12), H: H, HH: pad(H),
+    M: M, MM: pad(M), s: s, ss: pad(s),
+    l: pad(L, 3), L: pad(L > 99 ? Math.round(L / 10) : L),
+    t: H < 12 ? 'a' : 'p', tt: H < 12 ? 'am' : 'pm',
+    T: H < 12 ? 'A' : 'P', TT: H < 12 ? 'AM' : 'PM',
+    Z: utc ? 'UTC' : (String(date).match(timezone) || ['']).pop().replace(timezoneClip, ''),
+    o: (o > 0 ? '-' : '+') + pad(Math.floor(Math.abs(o) / 60) * 100 + Math.abs(o) % 60, 4),
+    S: ['th', 'st', 'nd', 'rd'][d % 10 > 3 ? 0 : (d % 100 - d % 10 !== 10) * d % 10]
+  };
+  const token = /d{1,4}|m{1,4}|yy(?:yy)?|([HhMsTt])\1?|[LloSZ]|"[^"]*"|'[^']*'/g;
+  return mask.replace(token, ($0) => ($0 in flags ? flags[$0] : $0.slice(1, $0.length - 1)));
+}
+
+// Faithful port of Graph.replacePlaceholders / getGlobalVariable: resolve %name%
+// labels when placeholders="1". Resolution ORDER mirrors drawio exactly:
+// id -> width[_unit] -> height[_unit] -> cell/ancestor attribute -> page
+// (with +/-N arithmetic) / date|time|timestamp|date{fmt} globals -> else
+// literal. %label%/%tooltip% are left literal (drawio skips them). %length%
+// needs the routed edge length (unavailable at label-resolution time) and is a
+// documented residual: faithful for vertex labels / unrouted edges (literal),
+// may diverge only for a routed edge label that prints its own length (rare,
+// never on medical labels).
+function npGlobalVar(name, pageCtx) {
+  if (name === 'date') return new Date().toLocaleDateString();
+  if (name === 'time') return new Date().toLocaleTimeString();
+  if (name === 'timestamp') return new Date().toLocaleString();
+  if (name.substring(0, 5) === 'date{') return npFormatDate(new Date(), name.substring(5, name.length - 1));
+  if (pageCtx) {
+    if ((name === 'page' || name === 'pagenumber') && pageCtx.pageNumber != null) return String(pageCtx.pageNumber);
+    if (name === 'pagecount' && pageCtx.pageCount != null) return String(pageCtx.pageCount);
+  }
+  return null;
+}
+// Resolve a single placeholder NAME (without the % delimiters) to its value, or
+// null if unresolved. Mirrors Graph.replacePlaceholders' resolution order.
+function npResolveName(name, cell, cells, pageCtx, units) {
+  let tmp = null;
+  if (name === 'id') {
+    tmp = cell.id;
+  } else if (name.substring(0, 5) === 'width' && cell.vertex && cell.geometry) {
+    tmp = cell.geometry.width;
+    if (name.length > 5 && units[name.substring(6)]) tmp = npToUnit(tmp, units[name.substring(6)]);
+  } else if (name.substring(0, 6) === 'height' && cell.vertex && cell.geometry) {
+    tmp = cell.geometry.height;
+    if (name.length > 6 && units[name.substring(7)]) tmp = npToUnit(tmp, units[name.substring(7)]);
+  } else if (name.substring(0, 6) === 'length') {
+    return null; // routed edge length unavailable at resolution time (residual)
+  } else if (name.indexOf('{') < 0) {
+    let c = cell, hops = 0;
+    while (tmp == null && c && hops++ < 1000) {
+      if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) {
+        tmp = (c.meta[name] != null) ? c.meta[name] : '';
+      }
+      const pid = c.parent;
+      c = (pid != null) ? cells[pid] : null;
+    }
+  }
+  if (tmp == null) {
+    // Page-number arithmetic, mirroring Graph.replacePlaceholders exactly: only
+    // when the NAME starts with pagecount/pagenumber AND carries a suffix, an
+    // UNANCHORED match extracts the +/-N (so trailing junk like "pagenumber+2x"
+    // resolves to pagenumber+2 just as drawio does, never a literal). When the
+    // guard holds but no arithmetic matches, the token stays literal (drawio
+    // does NOT fall through to a global here).
+    if ((name.substring(0, 9) === 'pagecount' && name.length > 9) ||
+        (name.substring(0, 10) === 'pagenumber' && name.length > 10)) {
+      const am = name.match(/(pagecount|pagenumber)\s*([+-])\s*(\d+)/);
+      if (am) {
+        const base = npGlobalVar(am[1], pageCtx);
+        if (base != null) {
+          const n = parseInt(am[3], 10);
+          tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
+        }
+      }
+    } else {
+      tmp = npGlobalVar(name, pageCtx);
+    }
+  }
+  return tmp != null ? String(tmp) : null;
+}
+
+function resolvePlaceholders(value, cell, cells, pageCtx) {
+  if (typeof value !== 'string' || value.indexOf('%') < 0) return value;
+  const enabled = (cell.meta && String(cell.meta.placeholders) === '1') ||
+    (cell.resolvedStyle && String(cell.resolvedStyle.placeholders) === '1') ||
+    (cell.style && String(cell.style.placeholders) === '1');
+  if (!enabled) return value;
+  const units = { mm: 'mm', in: 'in', m: 'm' }; // drawio's set; unknown unit => raw px
+  // EXACT mirror of Graph.placeholderPattern: the placeholder name excludes
+  // % { } " ' = ; (so a CSS percentage like font-size:80% in an HTML label does
+  // NOT swallow the real %TOKEN%), with date{...} as a special alternative. A
+  // too-permissive [^%]* regex bound the wrong span and left variable-data
+  // tokens unresolved -- a silent, patient-safety-grade divergence. The exec
+  // loop also replicates drawio's %%-escape (a placeholder immediately preceded
+  // by % is emitted literally with one % stripped).
+  const pattern = /%(date\{.*\}|[^%{}"'=;]+)%/g;
+  let result = '';
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(value)) !== null) {
+    const val = match[0];
+    if (val.length > 2 && val !== '%label%' && val !== '%tooltip%') {
+      let tmp;
+      if (match.index > last && value.charAt(match.index - 1) === '%') {
+        tmp = val.substring(1); // escaped %%name% -> literal %name%
+      } else {
+        tmp = npResolveName(val.substring(1, val.length - 1), cell, cells, pageCtx, units);
+      }
+      result += value.substring(last, match.index) + (tmp != null ? tmp : val);
+      last = match.index + val.length;
+    }
+  }
+  result += value.substring(last);
+  return result;
+}
+
+export function buildGraph(cells, paper, pageCtx) {
   const states = {};
   for (const cell of Object.values(cells)) {
     const s = cellToState(cell, cells);
@@ -888,7 +1140,7 @@ export function buildGraph(cells, paper) {
       if (!cell || cell.value == null) return '';
       const st = cell.resolvedStyle || cell.style;
       if (st && st.noLabel != null && String(st.noLabel) === '1') return '';
-      return String(cell.value);
+      return resolvePlaceholders(String(cell.value), cell, cells, pageCtx);
     },
     isHtmlLabel:  (cell) => !!(cell && cell.style && String(cell.style.html) === '1'),
     nativePrintOptions: null

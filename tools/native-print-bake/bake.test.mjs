@@ -1012,12 +1012,18 @@ test('WYSIWYG: master-test — dashed rotated shape embeds stroke-dasharray in S
   assert.ok(dashedSvg, 'expected a kind:svg node with stroke-dasharray for the dashed rotated shape');
 });
 
-test('WYSIWYG: master-test — only GradientDirectionApprox notice expected', async () => {
+test('WYSIWYG: master-test — only GradientDirectionApprox + GlyphMetricApprox notices expected', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
   const { notices } = await bake(xml);
-  const unexpected = notices.filter((n) => n.kind !== 'GradientDirectionApprox');
+  // GradientDirectionApprox = path-gradient fallback; GlyphMetricApprox = the
+  // "Tri ▲/▼/▶/◀" labels' geometric symbols (outside the AFM tables) — both are
+  // loud, expected residuals.
+  const expected = { GradientDirectionApprox: 1, GlyphMetricApprox: 1 };
+  const unexpected = notices.filter((n) => !expected[n.kind]);
   assert.equal(unexpected.length, 0,
     `unexpected notices: ${unexpected.map((n) => n.kind).join(', ')}`);
+  assert.ok(notices.some((n) => n.kind === 'GlyphMetricApprox'),
+    'the geometric-symbol labels must raise a loud GlyphMetricApprox');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2361,7 +2367,10 @@ test('audit3: shim decodes "&amp;lt;" to the literal "&lt;" once (decode &amp; L
 
 test('audit3: astral numeric reference (emoji) survives the rich path', async () => {
   const { svg, notices } = await bakeRichLabel('<b>&#128512;</b>');
-  assert.equal(notices.length, 0);
+  // The emoji renders from a fallback face with an unknown advance, so it
+  // correctly raises a loud GlyphMetricApprox (and nothing else); the point of
+  // this test is that the astral code point itself survives (fromCodePoint).
+  assert.deepEqual(notices.map((n) => n.kind), ['GlyphMetricApprox']);
   assert.ok(svg.includes('\u{1F600}'), 'U+1F600 preserved (fromCodePoint, not fromCharCode)');
 });
 
@@ -2692,18 +2701,431 @@ test('audit: wrapped CJK label breaks between ideographs (no silent clipping)', 
   assert.ok(lines >= 2, `CJK label must wrap into multiple lines (got ${lines})`);
 });
 
-test('audit: ink-extent anchoring keeps outside-positioned labels on the page', async () => {
+test('audit: a slightly-negative coordinate does not shift the whole explicit page off-paper', async () => {
+  // Round-13 HIGH bug: the explicit-page origin floored the content MIN
+  // corner, so a single 1px-negative coordinate (or a rotated-shape corner /
+  // label ascent poking above the top edge) snapped the page-grid origin to
+  // the previous (-1) cell and translated the ENTIRE sheet a full page
+  // off-paper -- a silently blank medical label. The origin is now anchored
+  // on the content CENTRE (the bulk's page-grid cell), so a marginal overhang
+  // keeps every on-page shape on its real sheet.
   const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
-    <mxCell id="2" vertex="1" value="Above" style="rounded=0;verticalLabelPosition=top;verticalAlign=bottom;" parent="1"><mxGeometry x="0" y="0" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="2" vertex="1" value="A" style="rounded=0;" parent="1"><mxGeometry x="20" y="-1" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="3" vertex="1" value="B" style="rounded=0;" parent="1"><mxGeometry x="20" y="200" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
   const { contract } = await bake(xml, { keepPx: true });
   const page = contract.document.pages[0];
-  for (const n of page.paint) {
-    if (n.box) {
-      assert.ok(n.box.y > -3, `no ink may anchor off the page top (box.y=${n.box.y})`);
-    }
+  // Both cells must stay near their authored y (0..260), NOT shoved a full
+  // page (300px) down/up. The 1px overhang of cell "A" must not relocate the
+  // sheet.
+  const boxes = page.paint.filter((n) => n.box).map((n) => n.box);
+  assert.ok(boxes.length >= 2, 'both cells should paint');
+  for (const b of boxes) {
+    assert.ok(b.y > -5 && b.y + b.h < 305,
+      `explicit-page content must stay on its authored sheet, got box.y=${b.y} h=${b.h}`);
   }
+});
+
+test('audit14: far-page content anchors to its own sheet (mxPrintPreview tiling preserved)', async () => {
+  // The centre-anchoring origin must still place content authored on a far
+  // page-grid cell on THAT sheet with its in-page margins (the audit7
+  // contract), not collapse it onto sheet (0,0).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="850" y="640" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // grid cell (2,2): origin (800,600) -> in-page (50,40)
+  assert.match(d, /^M 50 40 /, `far cell must keep its in-page margins, got: ${d.slice(0, 30)}`);
+});
+
+test('audit14: page-spanning content keeps the bulk on the sheet (single-page heuristic)', async () => {
+  // For content WIDER than one page, the single-page bake centre-anchors so the
+  // bulk lands on the sheet (vs draw.io's multi-page tiling which splits it).
+  // The shape spans x=200..1100 on an 850px page: its centre (650) is on cell 0,
+  // so the bake keeps the left portion on the sheet rather than shoving it off.
+  const xml = `<mxGraphModel pageWidth="850" pageHeight="1100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="100" width="900" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // centre x = 650 -> cell 0 -> origin 0 -> shape paints at its model x=200.
+  assert.match(d, /^M 200 100 /, `page-spanning bulk must stay on the sheet, got: ${d.slice(0, 30)}`);
+});
+
+test('audit14: a non-metric-compatible font raises a loud FontMetricApprox notice', async () => {
+  // WYSIWYG safety: the bake wraps/positions text with the core Arial/Times/
+  // Courier AFM tables. A label rendered with a DIFFERENT installed face
+  // (Verdana, Roboto, ...) drifts at wrap/alignment — that silent divergence
+  // must surface as a loud notice on a medical label, never a quiet
+  // approximation.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Dose 5mg" style="rounded=0;fontFamily=Verdana;fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  const fm = notices.filter((n) => n.kind === 'FontMetricApprox');
+  assert.equal(fm.length, 1, `expected one FontMetricApprox notice, got ${notices.map((n) => n.kind).join(',')}`);
+  assert.match(fm[0].detail.detail, /verdana/i, 'notice must name the offending family');
+});
+
+test('audit14: metric-compatible fonts (Arial/Times/Courier + clones) raise NO FontMetricApprox', async () => {
+  for (const fam of ['Arial', 'Helvetica', 'Times New Roman', 'Courier New', 'Liberation Sans', 'sans-serif']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Patient" style="rounded=0;fontFamily=${fam};fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 0,
+      `metric-compatible "${fam}" must not raise FontMetricApprox`);
+  }
+});
+
+test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise FontMetricApprox', async () => {
+  // fontMetricClass maps Georgia/Garamond/Cambria/Palatino to the serif AFM
+  // table and Consolas to mono, but their true metrics are NOT Times/Courier;
+  // the notice must still fire for them (they are absent from FONT_METRIC_EXACT).
+  for (const fam of ['Georgia', 'Garamond', 'Cambria', 'Palatino', 'Consolas']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Patient" style="rounded=0;fontFamily=${fam};fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 1,
+      `deceptive class font "${fam}" must raise FontMetricApprox`);
+  }
+});
+
+test('audit20: non-hex cell colors (named/rgb/rgba/hsl/8-digit) resolve like drawio, no silent blank', async () => {
+  async function fillOf(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    const p = contract.document.pages[0].paint.find((n) => n.kind === 'path');
+    return { fill: p && p.fill, stroke: p && p.stroke, notices: notices.map((n) => n.kind) };
+  }
+  // CRITICAL fix: these all RENDER in drawio; the bake must not drop them to
+  // null (blank) or black. red == rgb == hsl == #ff0000; rgba/8-digit carry alpha.
+  const red = (await fillOf('fillColor=red;strokeColor=none;')).fill;
+  assert.deepEqual(red, { type: 'solid', color: '#ff0000', alpha: 1 }, 'named "red" fill');
+  assert.equal((await fillOf('fillColor=rgb(255,0,0);')).fill.color, '#ff0000', 'rgb() fill');
+  assert.equal((await fillOf('fillColor=Red;')).fill.color, '#ff0000', 'named color is case-insensitive');
+  assert.equal((await fillOf('fillColor=hsl(120,100%,50%);')).fill.color, '#00ff00', 'hsl() fill');
+  const rgba = (await fillOf('fillColor=rgba(255,0,0,0.5);')).fill;
+  assert.equal(rgba.color, '#ff0000'); assert.ok(Math.abs(rgba.alpha - 0.5) < 1e-9, 'rgba alpha folded');
+  const a8 = (await fillOf('fillColor=#ff000080;')).fill;
+  assert.equal(a8.color, '#ff0000'); assert.ok(Math.abs(a8.alpha - 128 / 255) < 1e-9, '8-digit hex alpha');
+  assert.equal((await fillOf('fillColor=#ff0000;strokeColor=green;')).stroke.paint.color, '#008000', 'named stroke');
+  // The worst case must NOT silently vanish: a named fill with strokeColor=none
+  // still produces a visible fill (not both-null blank).
+  const worst = await fillOf('fillColor=red;strokeColor=none;');
+  assert.ok(worst.fill && !worst.stroke, 'named fill survives even with strokeColor=none');
+  assert.equal(worst.notices.length, 0, 'a standard CSS color raises no notice');
+});
+
+test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not printed opaque', async () => {
+  // drawio renders a gradient stop's own alpha; the bake must carry it (svg
+  // stop-opacity OR structural stop.alpha), else a translucent gradient band
+  // prints solid. Was dropped when Round-20 enabled rgba/8-digit gradient colors.
+  async function stops(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const n of contract.document.pages[0].paint) {
+      if (n.fill && n.fill.type === 'linear') return { kind: 'struct', a0: n.fill.stops[0].alpha };
+      if (n.kind === 'svg') {
+        const d = Buffer.from(n.source, 'base64').toString('utf8');
+        const m = d.match(/<stop offset="0"[^>]*stop-opacity="([\d.]+)"/);
+        if (/Gradient/.test(d)) return { kind: 'svg', a0: m ? Number(m[1]) : 1 };
+      }
+    }
+    return null;
+  }
+  const r = await stops('fillColor=#ff000080;gradientColor=#0000ff;');
+  assert.ok(r && Math.abs(r.a0 - 0.502) < 0.01, `first stop must carry ~0.5 alpha, got ${JSON.stringify(r)}`);
+  const r2 = await stops('fillColor=rgba(255,0,0,0.5);gradientColor=#0000ff;');
+  assert.ok(r2 && Math.abs(r2.a0 - 0.5) < 0.01, `rgba stop alpha preserved, got ${JSON.stringify(r2)}`);
+  // Opaque stops stay opaque (no spurious stop-opacity / alpha<1).
+  const r3 = await stops('fillColor=#ff0000;gradientColor=#0000ff;');
+  assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
+});
+
+test('audit23: page background image is printed behind content (was silently dropped)', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const bgi = JSON.stringify({ src: 'data:image/png;base64,' + png, x: 0, y: 0, width: 200, height: 120 })
+    .replace(/"/g, '&quot;');
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120" backgroundImage="${bgi}"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ffffff;" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  const paint = contract.document.pages[0].paint;
+  // Background image must be the FIRST paint node (behind content) and carry the data.
+  assert.equal(paint[0].kind, 'image', 'bg image must paint first (behind content)');
+  assert.equal(paint[0].data, png, 'bg image carries the PNG bytes');
+  assert.equal(notices.length, 0, 'embeddable bg image raises no notice');
+});
+
+test('audit23: an unembeddable background image raises a loud ExporterUnsupportedImage', async () => {
+  const bgi = JSON.stringify({ src: 'https://example.com/x.png', x: 0, y: 0, width: 200, height: 120 })
+    .replace(/"/g, '&quot;');
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120" backgroundImage="${bgi}"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'ExporterUnsupportedImage').length, 1,
+    'unembeddable bg image must be loud, not silent');
+});
+
+test('audit23: zero-length dash segments are preserved (drawio keeps them)', async () => {
+  async function dash(dp) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="80"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="e" edge="1" style="dashed=1;dashPattern=${dp};fixDash=1;" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="10" y="40" as="sourcePoint"/><mxPoint x="180" y="40" as="targetPoint"/></mxGeometry></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const e = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.stroke && n.stroke.dash);
+    return e && e.stroke.dash;
+  }
+  // "6 0" -> [6,0] (renders solid like drawio); "8 4 0 4" keeps the 0-length dot.
+  assert.deepEqual(await dash('6 0'), [6, 0], 'N 0 pattern preserved (solid)');
+  assert.deepEqual(await dash('8 4 0 4'), [8, 4, 0, 4], 'internal zero preserved (dash-dot)');
+});
+
+test('audit23: comic=1 hand-drawn style raises a loud notice (parity with sketch=1)', async () => {
+  const { notices } = await bake(`<mxGraphModel pageWidth="100" pageHeight="80"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;comic=1;" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true });
+  assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'comic=1 must not be a silent clean render');
+});
+
+test('audit23: HTML named entities in html=1 labels decode (5&micro;g -> 5µg)', async () => {
+  const xml = `<mxGraphModel pageWidth="220" pageHeight="80"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="5&amp;micro;g 25&amp;deg;C &amp;plusmn;1 &amp;amp; x" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const text = [...Buffer.from(sv.source, 'base64').toString('utf8')
+    .matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join('');
+  assert.match(text, /5µg/, 'named entity micro decodes');
+  assert.match(text, /25°C/, 'named entity deg decodes');
+  assert.match(text, /±1/, 'named entity plusmn decodes');
+  // The literal & shows XML-escaped as &amp; in the SVG (decoded once, not the
+  // double-escaped &amp;amp; that an un-decoded &amp; would produce).
+  assert.match(text, /&amp; x/, '&amp; decodes to a single & (last)');
+  assert.doesNotMatch(text, /&amp;amp;/, '& not double-escaped');
+});
+
+test('audit22: text color alpha (fontColor + rich runs) is honored, not silently opaque', async () => {
+  async function textNode(style, val) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${val || 'Hi'}" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    const d = Buffer.from(sv.source, 'base64').toString('utf8');
+    return (d.match(/<text[^>]*>/g) || []).find((t) => /fill=/.test(t)) || '';
+  }
+  // Plain fontColor alpha (rgba + 8-digit) -> fill-opacity, not opaque.
+  let t = await textNode('text;html=1;fontColor=#ff000080;');
+  assert.match(t, /fill="#ff0000"/); assert.match(t, /fill-opacity="0\.50?2?"/, `plain 8-digit fontColor alpha: ${t}`);
+  t = await textNode('text;html=1;fontColor=rgba(255,0,0,0.5);');
+  assert.match(t, /fill-opacity="0\.5"/, `plain rgba fontColor alpha: ${t}`);
+  // Rich run: 8-digit hex color was the WORST bug — dropped to BLACK. Must be the
+  // right hue AND carry alpha.
+  t = await textNode('text;html=1;', '&lt;span style=&quot;color:#ff000080&quot;&gt;Hi&lt;/span&gt;');
+  assert.match(t, /fill="#ff0000"/, `rich 8-digit hue must not be black: ${t}`);
+  assert.match(t, /fill-opacity="0\.50?2?"/, `rich 8-digit alpha: ${t}`);
+  t = await textNode('text;html=1;', '&lt;font color=&quot;#ff000080&quot;&gt;Hi&lt;/font&gt;');
+  assert.match(t, /fill="#ff0000"/, `<font> 8-digit hue: ${t}`);
+  // Opaque color stays opaque (no spurious fill-opacity).
+  t = await textNode('text;html=1;fontColor=red;');
+  assert.match(t, /fill="#ff0000"/); assert.doesNotMatch(t, /fill-opacity/, `opaque red must not get fill-opacity: ${t}`);
+});
+
+test('audit22: rotated label border color alpha is honored (labelBoxSvgStr)', async () => {
+  // A rotated cell uses the SVG-string label box; a translucent labelBorderColor
+  // must emit stroke-opacity, not print a solid border.
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Hi" style="rounded=0;rotation=30;labelBackgroundColor=#ffffff;labelBorderColor=#00ff0080;" parent="1"><mxGeometry x="40" y="30" width="100" height="50" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  let found = false;
+  for (const n of contract.document.pages[0].paint) {
+    if (n.kind !== 'svg') continue;
+    const d = Buffer.from(n.source, 'base64').toString('utf8');
+    if (/stroke="#00ff00"[^>]*stroke-opacity="0\.50?2?"/.test(d)) found = true;
+  }
+  assert.ok(found, 'rotated label border must carry stroke-opacity for its alpha');
+});
+
+test('audit21: percentage alpha in rgba()/hsla() is honored (not forced opaque)', async () => {
+  async function fillAlpha(c) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="fillColor=${c};" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    return contract.document.pages[0].paint.find((n) => n.fill && n.fill.type === 'solid').fill.alpha;
+  }
+  assert.ok(Math.abs(await fillAlpha('rgba(255,0,0,50%)') - 0.5) < 1e-9, 'rgba percentage alpha');
+  assert.ok(Math.abs(await fillAlpha('hsla(0,100%,50%,25%)') - 0.25) < 1e-9, 'hsla percentage alpha');
+  assert.ok(Math.abs(await fillAlpha('rgba(0,0,255,0.3)') - 0.3) < 1e-9, 'numeric alpha still works');
+});
+
+test('audit20: an unresolvable color raises a loud ExporterUnsupportedColor (never silent)', async () => {
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="fillColor=lab(50% 40 59);" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'ExporterUnsupportedColor').length, 1,
+    `unresolvable color must raise ExporterUnsupportedColor, got ${notices.map((n) => n.kind).join(',')}`);
+});
+
+test('audit20: fontColor accepts named/rgb (text not forced black)', async () => {
+  async function textFill(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Hi" style="text;html=1;${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    return (Buffer.from(sv.source, 'base64').toString('utf8').match(/fill="(#[0-9a-f]+)"/) || [])[1];
+  }
+  assert.equal(await textFill('fontColor=red;'), '#ff0000', 'named fontColor');
+  assert.equal(await textFill('fontColor=rgb(0,128,0);'), '#008000', 'rgb fontColor');
+});
+
+test('audit18: covered WinAnsi symbols are measured (no GlyphMetricApprox)', async () => {
+  // Degree/micro/plus-minus/multiply/currency, ©®™, en/em dash, smart quotes,
+  // bullet, ellipsis, fractions and accented Latin must all be measured from the
+  // AFM tables — a medical label like "Store at 2-8 °C, 5 µg ± 1" must NOT raise
+  // a glyph-metric notice (was silently mis-measured by the 0.52 heuristic).
+  for (const v of ['Store at 2-8 °C', '5 µg ± 1 mL', 'A–B — “C” … ½ × ÷', 'José ©®™ €£¢', 'a•b']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'GlyphMetricApprox').length, 0,
+      `covered symbols in "${v}" must not raise GlyphMetricApprox`);
+  }
+});
+
+test('audit18: uncovered glyphs (non-Latin script / arrow / emoji) raise a loud GlyphMetricApprox', async () => {
+  // Glyphs with no AFM metric render from a fallback face with unknown advance,
+  // so the box/wrap math drifts — that must be loud, even under an allowlisted
+  // font family (FontMetricApprox keys on family, so it would NOT fire here).
+  for (const v of ['Доза', 'Δόση', 'الجرعة', 'go → here', '😀 dose']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    const gm = notices.filter((n) => n.kind === 'GlyphMetricApprox');
+    assert.equal(gm.length, 1, `uncovered glyphs in "${v}" must raise GlyphMetricApprox (got ${notices.map((n) => n.kind).join(',')})`);
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 0,
+      `Arial is metric-compatible — only the GLYPH notice should fire for "${v}"`);
+  }
+});
+
+test('audit18: CJK text is not flagged (fullwidth advance is the measured path)', async () => {
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="日本語の用量" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'GlyphMetricApprox').length, 0,
+    'CJK (fullwidth) text must not raise GlyphMetricApprox');
+});
+
+test('audit17: pagenumber/pagecount arithmetic matches drawio (unanchored, prefix-guarded)', async () => {
+  // Graph.replacePlaceholders guards on name starting with pagecount/pagenumber
+  // (+suffix) then UNANCHORED-matches the +/-N, so trailing junk resolves to the
+  // arithmetic (never a literal); a guarded name with no arithmetic stays
+  // literal (no global fall-through). The port mirrors this exactly.
+  async function lbl(label) {
+    const pg = (id, body) => `<diagram name="${id}"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>${body}</root></mxGraphModel></diagram>`;
+    const xml = `<mxfile>${pg('P0', `<object label="${label}" placeholders="1" id="o1"><mxCell vertex="1" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="220" height="30" as="geometry"/></mxCell></object>`)}${pg('P1', '<mxCell id="z" vertex="1" parent="1"><mxGeometry x="0" y="0" width="10" height="10" as="geometry"/></mxCell>')}${pg('P2', '<mxCell id="z2" vertex="1" parent="1"><mxGeometry x="0" y="0" width="10" height="10" as="geometry"/></mxCell>')}</mxfile>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const p of contract.document.pages) {
+      const n = p.paint.find((q) => q.kind === 'svg' && /<text/.test(Buffer.from(q.source, 'base64').toString('utf8')));
+      if (n) { const s = Buffer.from(n.source, 'base64').toString('utf8'); return [...s.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join(''); }
+    }
+    return '';
+  }
+  assert.equal(await lbl('%pagenumber%'), '1', 'bare pagenumber');
+  assert.equal(await lbl('%pagecount%'), '3', 'bare pagecount');
+  assert.equal(await lbl('%pagenumber+2%'), '3', 'pagenumber+2');
+  assert.equal(await lbl('%pagecount-1%'), '2', 'pagecount-1');
+  assert.equal(await lbl('%pagenumber+2x%'), '3', 'trailing junk drops to pagenumber+2 (drawio substring semantics)');
+  assert.equal(await lbl('%pagenumberZ%'), '%pagenumberZ%', 'guarded name with no arithmetic stays literal');
+});
+
+test('audit16: serif BOLD measures wider than serif regular (AFM_SERIF_BOLD, not reused-regular)', async () => {
+  // Times Bold is ~3-13%/glyph wider than Times Roman. Measuring a serif bold
+  // run with the regular table under-counts width, so a line that should wrap
+  // overflows the box silently (Times/serif is in FONT_METRIC_EXACT so no
+  // FontMetricApprox fires). A dedicated AFM_SERIF_BOLD table closes that gap.
+  async function lines(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Hazardous Drug Handle With" style="text;html=1;whiteSpace=wrap;fontFamily=Times New Roman;fontSize=14;align=left;${style}" parent="1"><mxGeometry x="0" y="0" width="180" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /<text/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    const svg = Buffer.from(n.source, 'base64').toString('utf8');
+    return { n: (svg.match(/<text/g) || []).length, notices };
+  }
+  const reg = await lines('');
+  const bold = await lines('fontStyle=1;');
+  // Bold wraps to >=2 lines; regular (narrower) fits on 1 — proves bold uses a
+  // wider metric table.
+  assert.ok(bold.n >= 2, `serif bold must wrap with bold metrics (got ${bold.n} lines)`);
+  assert.ok(bold.n > reg.n, `serif bold (${bold.n}) must be wider than serif regular (${reg.n})`);
+  // Times New Roman stays metric-compatible (no spurious notice in either case).
+  assert.equal(bold.notices.filter((x) => x.kind === 'FontMetricApprox').length, 0,
+    'serif bold must not raise FontMetricApprox (Times is metric-exact, now incl. bold)');
+});
+
+test('audit15: %date{}% named masks and quoted literals resolve like drawio (no garbage)', async () => {
+  // npFormatDate was a partial port: named masks ("shortDate") were emitted as
+  // garbage ("461ortDate") and 'T' quotes were kept. It now mirrors
+  // Graph.formatDate (named-mask table + quoted literals).
+  async function dateLabel(mask) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="%date{${mask}}%" placeholders="1" id="o1"><mxCell vertex="1" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="320" height="40" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg');
+    const svg = Buffer.from(n.source, 'base64').toString('utf8');
+    return [...svg.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join('');
+  }
+  // No leftover mask letters / quotes (the old bug emitted "ortDate", "'T'").
+  assert.match(await dateLabel('isoDate'), /^\d{4}-\d{2}-\d{2}$/, 'isoDate must be ISO');
+  assert.match(await dateLabel('shortDate'), /^\d{1,2}\/\d{1,2}\/\d{2}$/, 'shortDate must be m/d/yy');
+  assert.match(await dateLabel('mediumDate'), /^[A-Z][a-z]{2} \d{1,2}, \d{4}$/, 'mediumDate must be "Mmm d, yyyy"');
+  const iso = await dateLabel("yyyy-mm-dd'T'HH:MM:ss");
+  assert.match(iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, `quoted 'T' must be literal T, got ${iso}`);
+  assert.ok(!/'/.test(iso), 'quotes must be stripped');
+  // Plain numeric mask still works.
+  assert.match(await dateLabel('yyyy-mm-dd'), /^\d{4}-\d{2}-\d{2}$/, 'numeric mask preserved');
 });
 
 // ---------------------------------------------------------------------------
@@ -4002,6 +4424,457 @@ test('audit7: flipH on a GIF image cell reaches the printed SVG (non-PNG flip)',
   assert.ok(node, 'gif image baked as svg-wrapped node');
   assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /scale\(-1 1\)/,
     'flipH transform present');
+});
+
+test('audit9: rotation on a non-PNG image cell reaches the printed SVG (was unrotated)', async () => {
+  // mxShape.updateTransform rotates EVERY image by the cell rotation regardless
+  // of format. The PNG path wrapped the image in rotate(); the non-PNG
+  // (JPEG/GIF/SVG) path silently dropped it, printing the image axis-aligned
+  // with the wrong AABB. Both the rotate() transform AND the expanded
+  // axis-aligned bounding box must now be present.
+  const gif = 'R0lGODlhAQABAIAAAP8AAP///yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;rotation=30;image=data:image/gif,${gif};" parent="1"><mxGeometry x="60" y="60" width="80" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful rotated render, no notice');
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /image\/gif/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'gif image baked as svg-wrapped node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /rotate\(30 /,
+    'rotate(30 ...) transform present in the wrapped SVG');
+  // Expanded AABB of an 80x120 box rotated 30deg: w = 80cos30+120sin30 = 129.3,
+  // h = 80sin30+120cos30 = 143.9 (> the unrotated 80x120).
+  assert.ok(node.box.w > 120 && node.box.w < 140,
+    `rotated AABB width ~129, got ${node.box.w}`);
+  assert.ok(node.box.h > 135 && node.box.h < 150,
+    `rotated AABB height ~144, got ${node.box.h}`);
+});
+
+test('audit9: rotated PNG image cell keeps fillOpacity (was dropped -> fully opaque)', async () => {
+  // The rotated-PNG branch read bare 'opacity' instead of composing
+  // 'fillOpacity' (alpha * fillAlpha, per mxSvgCanvas2D.image), so a rotated
+  // translucent image printed fully opaque.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;rotation=20;fillOpacity=40;image=data:image/png;base64,${png};" parent="1"><mxGeometry x="60" y="60" width="80" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /rotate\(20 /.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'rotated PNG baked as rotate()-wrapped svg node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /opacity="0\.4"/,
+    'fillOpacity=40 -> opacity="0.4" on the rotated image');
+});
+
+test('audit9: rotated shape=label with image rotates as a unit (was unrotated)', async () => {
+  // A shape=label cell with an image returned early before the generic rotated
+  // path, so rotation was silently dropped (bg + icon + text printed
+  // axis-aligned). It must now compose into one rotated SVG (rotate() + the
+  // expanded AABB), like the generic rotated-shape path.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const xml = `<mxGraphModel pageWidth="500" pageHeight="500"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lbl" style="shape=label;rotation=30;image=data:image/png;base64,${png};fillColor=#ddeeff;strokeColor=#003366;" parent="1"><mxGeometry x="60" y="60" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful rotated render, no notice');
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /rotate\(30 /.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'rotated label+image composed into one rotate()-wrapped svg');
+  const svg = Buffer.from(node.source, 'base64').toString('utf8');
+  assert.match(svg, /<image /, 'icon image present in the rotated composite');
+  assert.match(svg, /<text /, 'label text present in the rotated composite');
+  // Expanded AABB of 120x80 @30deg: w≈143.9, h≈129.3 (> the unrotated box).
+  assert.ok(node.box.w > 135 && node.box.w < 150, `AABB w ~144, got ${node.box.w}`);
+  assert.ok(node.box.h > 122 && node.box.h < 135, `AABB h ~129, got ${node.box.h}`);
+});
+
+test('audit9: swimlane shadow=1 casts a shadow (was silently dropped)', async () => {
+  // mxShape.configureCanvas setShadow applies to swimlanes (the table subclass
+  // shadowed; the dedicated swimlane branch dropped it with no notice).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lane" style="swimlane;shadow=1;fillColor=#dae8fc;strokeColor=#6c8ebf;startSize=30;" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful shadow, no notice');
+  const shadow = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /opacity="0\.25"/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(shadow, 'swimlane shadow node present at the default 0.25 alpha');
+  // A plain swimlane (no shadow) must NOT gain a shadow node.
+  const plain = await bake(xml.replace('shadow=1;', ''), { keepPx: true });
+  assert.ok(!plain.contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /opacity="0\.25"/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'plain swimlane has no shadow node');
+});
+
+test('audit9: swimlane glass=1 paints the header glass highlight (was dropped)', async () => {
+  // mxSwimlane.paintVertexShape paints glass over the header (mxSwimlane.js:267-270).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lane" style="swimlane;glass=1;fillColor=#dae8fc;strokeColor=#6c8ebf;startSize=30;" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful glass, no notice');
+  const glass = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /glassg/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(glass, 'swimlane glass overlay node present');
+});
+
+test('audit9: rich-text token x uses accurate AFM glyph metrics (matches resvg)', async () => {
+  // Text positioning is driven by per-glyph Arial/Times AFM advance widths so
+  // wrap points, rich-token x, autosize and label-background boxes match resvg's
+  // own shaping (the old per-class estimate drifted up to ~17% per glyph — a
+  // WYSIWYG hazard for precise medical-label layouts). The second token "X" must
+  // start at exactly the AFM width of bold "WWWW " at 20px: (944*4 + 278)/1000*20.
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="&lt;b&gt;WWWW&lt;/b&gt; X" style="text;html=1;align=left;fontFamily=Arial;fontSize=20;" parent="1"><mxGeometry x="0" y="0" width="500" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  const svg = Buffer.from(node.source, 'base64').toString('utf8');
+  const xs = [...svg.matchAll(/<text x="([-0-9.]+)"/g)].map((mm) => Number(mm[1]));
+  assert.equal(xs[0], 0, 'first token at the left edge');
+  const expected = (944 * 4 + 278) / 1000 * 20;  // Arial W=944, space=278
+  assert.ok(Math.abs(xs[1] - expected) < 0.05,
+    `2nd token x should be the AFM width ${expected.toFixed(2)}, got ${xs[1]}`);
+});
+
+test('audit9: serif text measures narrower than sans (font-aware AFM tables)', async () => {
+  // Times lowercase 'a' (444) is narrower than Arial 'a' (556); a rich label
+  // "<span>aaaa</span> X" (a colour span forces two regular-weight tokens) must
+  // place the second token further left for Times than Arial — proving the
+  // metric tables are font-class aware, not sans-only. (Plain non-markup labels
+  // use text-anchor and let resvg centre/align with its own metrics, so the
+  // class-awareness is observable only on the explicit rich-token x.)
+  async function tokenX(fam) {
+    const v = '&lt;span style=&quot;color:#ff0000&quot;&gt;aaaa&lt;/span&gt; X';
+    const xml = `<mxGraphModel pageWidth="600" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;align=left;fontFamily=${fam};fontSize=20;" parent="1"><mxGeometry x="0" y="0" width="500" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+      /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+    const svg = Buffer.from(node.source, 'base64').toString('utf8');
+    return [...svg.matchAll(/<text x="([-0-9.]+)"/g)].map((mm) => Number(mm[1]))[1];
+  }
+  const sans = await tokenX('Arial');
+  const serif = await tokenX('Times New Roman');
+  assert.ok(serif < sans - 5,
+    `serif "aaaa " must be narrower than sans (serif x=${serif}, sans x=${sans})`);
+  // Exact AFM values: sans (556*4+278)/1000*20=50.04; serif (444*4+250)/1000*20=40.52
+  assert.ok(Math.abs(sans - 50.04) < 0.05, `sans x ${sans}`);
+  assert.ok(Math.abs(serif - 40.52) < 0.05, `serif x ${serif}`);
+});
+
+test('audit9: rotated generic shape keeps shadow + glass (early-return dropped them)', async () => {
+  // The generic rotated-shape path returned before the shadow/glass emission,
+  // silently dropping both on rotated shapes. They must now be composed into
+  // the rotated SVG (shadow under, offset in screen space; glass rotates with
+  // the shape).
+  async function svg(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="" style="${style}" parent="1"><mxGeometry x="60" y="60" width="120" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.length, 0);
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+    return Buffer.from(n.source, 'base64').toString('utf8');
+  }
+  const sh = await svg('triangle;rotation=30;fillColor=#ff0000;shadow=1;');
+  assert.match(sh, /rotate\(30 /, 'shape is rotated');
+  assert.match(sh, /opacity="0\.25"/, 'rotated shadow present');
+  const gl = await svg('rounded=0;rotation=30;fillColor=#ff0000;glass=1;');
+  assert.match(gl, /glassg/, 'rotated glass present');
+  // Non-glass-family rotated shape must NOT gain glass (no over-render).
+  const tri = await svg('triangle;rotation=30;fillColor=#ff0000;glass=1;');
+  assert.ok(!/glassg/.test(tri), 'triangle does not glass (rect/ellipse/rhombus only)');
+});
+
+test('audit9: rotated label keeps labelBackgroundColor/Border box (was dropped)', async () => {
+  // rotatedLabelEls emitted only the text, never the label background/border box
+  // (mxText rotates it with the label). Now emitted, sized to the text bbox.
+  async function hasBg(val) {
+    const xml = `<mxGraphModel pageWidth="500" pageHeight="400"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${val}" style="rounded=0;rotation=30;html=1;labelBackgroundColor=#ffff00;labelBorderColor=#ff0000;" parent="1"><mxGeometry x="80" y="80" width="160" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    return contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+      /<rect[^>]*fill="#ffff00"[^>]*stroke="#ff0000"/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  }
+  assert.ok(await hasBg('Hi'), 'plain rotated label background+border present');
+  assert.ok(await hasBg('&lt;b&gt;Bold&lt;/b&gt; txt'), 'rich rotated label background+border present');
+});
+
+test('audit9: swimlane shadow header follows flipV (was on the wrong side)', async () => {
+  // The shadow silhouette header-fill region + divider must flip with the
+  // shape; built in fixed top/left coords they stayed put under flipV.
+  async function headerY(extra) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="L" style="swimlane;shadow=1;fillColor=#dae8fc;startSize=40;${extra}" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg' &&
+      /opacity="0\.25"/.test(Buffer.from(x.source, 'base64').toString('utf8')));
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    return Number(s.match(/<rect x="[-0-9.]+" y="([-0-9.]+)"[^>]*fill="#000000" stroke="none"/)[1]);
+  }
+  assert.ok(Math.abs(await headerY('') - 0) < 0.5, 'no-flip: shadow header at top');
+  assert.ok(Math.abs(await headerY('flipV=1;') - 120) < 0.5, 'flipV: shadow header at bottom (h-startSize)');
+});
+
+test('audit9: rotation applies to note/note2/shaded-cube builder branches (was dropped)', async () => {
+  // These dedicated builders early-returned without a rotation wrapper, so a
+  // rotated note/cube printed upright (geometry + label) with no notice.
+  async function svg(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="N" style="${style}" parent="1"><mxGeometry x="60" y="60" width="120" height="90" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.length, 0);
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg' &&
+      /rotate\(/.test(Buffer.from(x.source, 'base64').toString('utf8')));
+    return n ? Buffer.from(n.source, 'base64').toString('utf8') : null;
+  }
+  assert.ok(await svg('shape=note;rotation=45;fillColor=#ffe;strokeColor=#cc0;'),
+    'rotated note emits a rotate()-wrapped svg');
+  assert.ok(await svg('shape=note2;rotation=60;shadow=1;fillColor=#ffe;'),
+    'rotated note2+shadow emits a rotate()-wrapped svg');
+  assert.ok(await svg('shape=cube;darkOpacity=0.05;darkOpacity2=0.1;rotation=30;fillColor=#dae8fc;'),
+    'rotated shaded cube emits a rotate()-wrapped svg');
+  // Non-rotated note must stay on the simple builder path (separate label node).
+  const plain = await bake(`<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="N" style="shape=note;fillColor=#ffe;" parent="1"><mxGeometry x="60" y="60" width="120" height="90" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true });
+  assert.ok(!plain.contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /rotate\(/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'non-rotated note is not rotate-wrapped');
+});
+
+test('audit9: %placeholder% labels resolve to attribute values (medical variable data)', async () => {
+  // drawio resolves %name% labels to the cell/ancestor custom attribute when
+  // placeholders="1" (Graph.convertValueToString). The bake dropped the object
+  // wrapper attributes and printed the literal %PATIENT_ID% token -- a silent,
+  // patient-safety-grade divergence for variable-data labels.
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) {
+      for (const n of p.paint) {
+        if (n.kind !== 'svg') continue;
+        const s = Buffer.from(n.source, 'base64').toString('utf8');
+        for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) {
+          out.push(t.replace(/<[^>]*>/g, ''));
+        }
+      }
+    }
+    return out.join(' ');
+  }
+  const dataXml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <object label="Patient: %PATIENT_ID%" PATIENT_ID="00123456" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="20" y="20" width="220" height="40" as="geometry"/></mxCell></object>
+  </root></mxGraphModel>`;
+  const data = await bake(dataXml, { keepPx: true });
+  assert.equal(data.notices.length, 0);
+  assert.match(texts(data.contract), /Patient: 00123456/, 'data-field placeholder resolved');
+  assert.ok(!/%PATIENT_ID%/.test(texts(data.contract)), 'literal token not printed');
+
+  // Gate: without placeholders="1" the token stays literal (matches the editor).
+  const noPh = await bake(dataXml.replace(' placeholders="1"', ''), { keepPx: true });
+  assert.match(texts(noPh.contract), /%PATIENT_ID%/, 'no placeholders => literal (faithful)');
+
+  // Ancestor attribute (walk up the parent chain).
+  const parentXml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <object LOT="L-77" id="p"><mxCell vertex="1" parent="1" style="group;"><mxGeometry x="0" y="0" width="300" height="120" as="geometry"/></mxCell></object>
+    <object label="Lot: %LOT%" placeholders="1" id="c"><mxCell vertex="1" parent="p" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell></object>
+  </root></mxGraphModel>`;
+  assert.match(texts((await bake(parentXml, { keepPx: true })).contract), /Lot: L-77/, 'ancestor attribute resolved');
+
+  // Unresolved attribute stays literal (drawio behavior), no crash.
+  const missXml = dataXml.replace('PATIENT_ID="00123456" ', '');
+  assert.match(texts((await bake(missXml, { keepPx: true })).contract), /%PATIENT_ID%/, 'unresolved => literal');
+});
+
+test('audit9: built-in placeholders (id/width/height/date{}/arithmetic/precedence) match drawio', async () => {
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) for (const n of p.paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) out.push(t.replace(/<[^>]*>/g, ''));
+    }
+    return out.join(' ');
+  }
+  async function one(label, extra) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="${label}" placeholders="1" ${extra || ''} id="cellX"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="20" y="20" width="200" height="80" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    return texts((await bake(xml, { keepPx: true })).contract);
+  }
+  assert.match(await one('ID=%id%'), /ID=cellX/, '%id% -> cell id');
+  assert.match(await one('W=%width% H=%height%'), /W=200 H=80/, 'geometry width/height');
+  // drawio Editor.toUnit uses PIXELS_PER_MM=3.937 (NOT physical 25.4/96), so a
+  // 200px cell reads 50.8 mm in the editor — the print must match that, not the
+  // physically-correct 52.92.
+  assert.match(await one('Wmm=%width_mm%'), /Wmm=50\.8\b/, 'width unit conversion matches drawio Editor.toUnit');
+  assert.match(await one('Win=%width_in%'), /Win=2\b/, 'width inch conversion matches drawio (PIXELS_PER_INCH=100)');
+  // Cell attribute named `page` must WIN over the page-number global (drawio order).
+  assert.match(await one('P=%page%', 'page="CUSTOM-A"'), /P=CUSTOM-A/, 'attribute precedence over global');
+  // %date{fmt}% resolves to today's date in the requested format (deterministic shape).
+  assert.match(await one('D=%date{yyyy-mm-dd}%'), /D=\d{4}-\d{2}-\d{2}/, '%date{fmt}% formatted');
+  // Unknown custom token stays literal (faithful to the editor).
+  assert.match(await one('X %NOPE% Y'), /X %NOPE% Y/, 'unknown token literal');
+});
+
+test('audit9: placeholder regex matches drawio (CSS %% in HTML labels does not swallow tokens)', async () => {
+  // The placeholder name class must exclude % { } " \' = ; (drawio
+  // Graph.placeholderPattern), or a CSS percentage in an HTML label (e.g.
+  // font-size:80%) binds the wrong %...% span and leaves the real token literal
+  // -- a silent, patient-safety-grade divergence.
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) for (const n of p.paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) out.push(t.replace(/<[^>]*>/g, ''));
+    }
+    return out.join(' ');
+  }
+  async function one(label, extra) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="${label}" placeholders="1" ${extra || ''} id="a"><mxCell vertex="1" parent="1" style="whiteSpace=wrap;html=1;"><mxGeometry x="40" y="40" width="240" height="60" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    return texts((await bake(xml, { keepPx: true })).contract);
+  }
+  const css = await one('&lt;span style=&quot;font-size:80%&quot;&gt;Dose: &lt;b&gt;%DOSE%&lt;/b&gt;&lt;/span&gt;', 'DOSE="10mg"');
+  assert.match(css, /10mg/, 'CSS percentage must not swallow %DOSE%');
+  assert.ok(!/%DOSE%/.test(css), 'token resolved, not left literal');
+  // %% escape -> literal %name%, real token still resolves.
+  const esc = await one('Lit %%PID% and %PID%', 'PID="00123"');
+  assert.match(esc, /%PID% and 00123/, '%% escapes to literal; real token resolves');
+});
+
+test('audit9: %pagenumber+N% arithmetic resolves per page', async () => {
+  const mp = `<mxfile>
+    <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="next=%pagenumber+1%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="180" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+    <diagram name="B"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="next=%pagenumber+1%" placeholders="1" id="3"><mxCell vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="180" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  const pt = (p) => (p.paint.filter((n) => n.kind === 'svg').map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join(' ').match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || []).map((t) => t.replace(/<[^>]*>/g, '')).join(' ');
+  assert.match(pt(contract.document.pages[0]), /next=2/, 'page 1 + 1 = 2');
+  assert.match(pt(contract.document.pages[1]), /next=3/, 'page 2 + 1 = 3');
+});
+
+test('audit9: %pagenumber%/%pagecount% globals resolve per page', async () => {
+  const mp = `<mxfile>
+    <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="pg %pagenumber%/%pagecount%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="150" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+    <diagram name="B"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="pg %pagenumber%/%pagecount%" placeholders="1" id="3"><mxCell vertex="1" parent="1" style="rounded=0;html=1;"><mxGeometry x="10" y="10" width="150" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  function pageText(p) {
+    return (p.paint.filter((n) => n.kind === 'svg')
+      .map((n) => Buffer.from(n.source, 'base64').toString('utf8')).join(' ')
+      .match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])
+      .map((t) => t.replace(/<[^>]*>/g, '')).join(' ');
+  }
+  assert.match(pageText(contract.document.pages[0]), /pg 1\/2/, 'page 1 footer');
+  assert.match(pageText(contract.document.pages[1]), /pg 2\/2/, 'page 2 footer');
+});
+
+test('audit9: clipPath inset() with <4 margins + round parses correctly (crop + radius)', async () => {
+  // The old fixed-slot regex let the margin groups swallow the `round` keyword
+  // when <4 margins preceded it, dropping the corner radius and mis-cropping.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  async function clipRect(style) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="shape=image;image=data:image/png;base64,${png};${style}" parent="1"><mxGeometry x="0" y="0" width="40" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /clipPath/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    if (!n) return null;
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    const m = s.match(/<rect x="([-0-9.]+)" y="([-0-9.]+)" width="([-0-9.]+)" height="([-0-9.]+)"(?: rx="([-0-9.]+)")?/);
+    return m ? { x: +m[1], y: +m[2], w: +m[3], h: +m[4], rx: m[5] != null ? +m[5] : 0 } : null;
+  }
+  // inset(0% round 50%): full image, 50% radius (NOT bottom-half cropped, NOT radius-less).
+  let r = await clipRect('clipPath=inset(0% round 50%);');
+  assert.deepEqual(r, { x: 0, y: 0, w: 40, h: 40, rx: 20 }, 'inset(0% round 50%)');
+  // rounded=1 + inset(10%) shorthand: 10% inset all sides + synthesized round.
+  r = await clipRect('rounded=1;clipPath=inset(10%);');
+  assert.equal(r.x, 4); assert.equal(r.w, 32); assert.ok(r.rx > 0, 'rounded synthesis kept');
+  // Two-margin form with round.
+  r = await clipRect('clipPath=inset(10% 20% round 5%);');
+  assert.deepEqual({ x: r.x, y: r.y, w: r.w, h: r.h, rx: r.rx }, { x: 8, y: 4, w: 24, h: 32, rx: 2 });
+  // Full 4-value form still correct.
+  r = await clipRect('clipPath=inset(5 10 15 20 round 4);');
+  assert.deepEqual({ x: r.x, y: r.y, w: r.w, h: r.h, rx: r.rx }, { x: 20, y: 5, w: 10, h: 20, rx: 4 });
+});
+
+test('audit9: rotated plain-text labels honor align/verticalAlign (was forced center)', async () => {
+  // rotatedLabelEls routed plain labels through textSvgStr which hard-anchored
+  // text-anchor=middle + central, so a rotated `text` shape (default left/top)
+  // printed centered -- a silent divergence on the common rotated side-rail
+  // label. textSvgStr must honor align/verticalAlign like the non-rotated path.
+  async function anchor(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Rx" style="${style}" parent="1"><mxGeometry x="40" y="40" width="120" height="30" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /<text/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    const m = s.match(/text-anchor="([a-z-]+)" dominant-baseline="([a-z-]+)"/);
+    return { a: m[1], b: m[2] };
+  }
+  // text shape default is align=left;verticalAlign=top.
+  assert.deepEqual(await anchor('text;html=1;rotation=90;'),
+    { a: 'start', b: 'text-before-edge' }, 'rotated text default = left/top');
+  assert.deepEqual(await anchor('text;html=1;rotation=90;align=center;verticalAlign=middle;'),
+    { a: 'middle', b: 'central' }, 'explicit center honored');
+  assert.deepEqual(await anchor('text;html=1;rotation=90;align=right;verticalAlign=bottom;'),
+    { a: 'end', b: 'text-after-edge' }, 'right/bottom honored');
+  // Non-text shape default stays center/middle (mxRectangleShape).
+  assert.deepEqual(await anchor('rounded=0;html=1;rotation=90;'),
+    { a: 'middle', b: 'central' }, 'rect default = center/middle');
+});
+
+test('audit9: empty <diagram> page is kept (multi-page count faithful)', async () => {
+  const mp = `<mxfile>
+    <diagram name="Empty" id="e"></diagram>
+    <diagram name="Real" id="r"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="X" vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="50" height="20" as="geometry"/></mxCell></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  assert.equal(contract.document.pages.length, 2, 'empty page kept as a blank sheet');
+});
+
+test('audit9: cyclic parent refs do not hang the bake; orphan cells do not inflate bounds', async () => {
+  // Cyclic parents (A->B,B->A) must not loop forever (unattended-print hang).
+  const cyc = `<mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="B" style="html=1;"><mxGeometry x="10" y="10" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="A" style="html=1;"><mxGeometry x="30" y="30" width="20" height="20" as="geometry"/></mxCell></root></mxGraphModel>`;
+  const t0 = Date.now();
+  await bake(cyc, { keepPx: true });
+  assert.ok(Date.now() - t0 < 5000, 'cyclic parents completed without hanging');
+  // Orphan cell (nonexistent parent) is not painted -> must not enlarge the
+  // auto-fit page (no explicit pageWidth/Height).
+  const orph = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="real" vertex="1" parent="1" style="html=1;"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="ghostchild" vertex="1" parent="ghost" style="html=1;"><mxGeometry x="1000" y="1000" width="20" height="20" as="geometry"/></mxCell></root></mxGraphModel>`;
+  const { contract } = await bake(orph, { keepPx: true });
+  const SCALE = 25400 / 96;
+  assert.ok(contract.document.pages[0].size.w < 200 * SCALE,
+    `orphan must not inflate auto-fit page (got w=${contract.document.pages[0].size.w})`);
 });
 
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {

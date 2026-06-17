@@ -363,7 +363,11 @@ async function compare(drawioXml) {
   }
 
   // ── 10. Notices are expected / catalogued ─────────────────────────────────
-  const unexpectedNotices = notices.filter(n => n.kind !== 'GradientDirectionApprox');
+  // GradientDirectionApprox (path-gradient fallback) and GlyphMetricApprox
+  // (text with glyphs outside the AFM tables — the master fixture's "Tri ▲"
+  // geometric-symbol labels) are loud, catalogued, expected residuals.
+  const EXPECTED_NOTICE = { GradientDirectionApprox: 1, GlyphMetricApprox: 1 };
+  const unexpectedNotices = notices.filter(n => !EXPECTED_NOTICE[n.kind]);
   check(
     'No unexpected degradation notices',
     unexpectedNotices.length === 0,

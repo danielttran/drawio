@@ -67,3 +67,22 @@ TEST_CASE("custom-stock parser refuses dimensions that would overflow DEVMODE",
   REQUIRE(label.has_value());
   CHECK(label->width_microns == 101600);
 }
+
+TEST_CASE("microns_to_tenth_mm_rounded rounds to nearest, never truncates",
+          "[host][custom_stock]") {
+  using print_engine::host::microns_to_tenth_mm_rounded;
+  // Exact multiples of 100 microns are unchanged.
+  CHECK(microns_to_tenth_mm_rounded(101600) == 1016);  // 4 in
+  CHECK(microns_to_tenth_mm_rounded(152400) == 1524);  // 6 in
+  // Sub-100-micron remainders ROUND to nearest tenth-mm rather than truncating
+  // down (the silent-paper-shrink bug): 49 um rounds down, 50/99 um round up.
+  CHECK(microns_to_tenth_mm_rounded(2159) == 22);    // 2159 -> 21.59 -> 22
+  CHECK(microns_to_tenth_mm_rounded(2149) == 21);    // 2149 -> 21.49 -> 21
+  CHECK(microns_to_tenth_mm_rounded(2150) == 22);    // exact .5 rounds up
+  CHECK(microns_to_tenth_mm_rounded(99) == 1);       // would truncate to 0
+  CHECK(microns_to_tenth_mm_rounded(50) == 1);
+  CHECK(microns_to_tenth_mm_rounded(49) == 0);
+  // The parser's max accepted dimension still fits a signed SHORT after
+  // rounding (no overflow introduced by the +50): 3,276,700 -> 32,767.
+  CHECK(microns_to_tenth_mm_rounded(3276700) == 32767);
+}

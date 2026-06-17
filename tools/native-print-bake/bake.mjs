@@ -142,8 +142,8 @@ function pageInkMin(page) {
 
 // Bake a single page (internal helper). Resolves external images first.
 // Returns { pxContract (one-page), notices }.
-async function bakePage(pageData, exporterOpts, fetchFn) {
-  const graph = buildGraph(pageData.cells, pageData.paper);
+async function bakePage(pageData, exporterOpts, fetchFn, pageCtx) {
+  const graph = buildGraph(pageData.cells, pageData.paper, pageCtx);
   // Pre-resolve external image URLs so they print WYSIWYG (no ExporterUnsupportedImage).
   // embedExternalImages is a no-op when no external URLs are present.
   let resolvedImages = {};
@@ -229,7 +229,8 @@ export async function bake(drawioXml, options) {
   for (let idx = 0; idx < pagesToBake.length; idx++) {
     const pageData = pagesToBake[idx].page;
     const result = await bakePage(
-      pageData, { ...(opts.exporterOpts || {}), headless: true }, opts.fetchFn);
+      pageData, { ...(opts.exporterOpts || {}), headless: true }, opts.fetchFn,
+      { pageNumber: pagesToBake[idx].ordinal + 1, pageCount: parsed.pages.length });
     allNotices.push(...result.notices);
     // Tag with the DOCUMENT ordinal (not the selection index): renumbering
     // a selected subset made engine notices' pageId point at the wrong

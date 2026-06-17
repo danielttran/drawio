@@ -48,19 +48,27 @@
   // gradientDirection=radial is a REAL radial gradient in drawio
   // (mxSvgCanvas2D creates <radialGradient>, default 50%/50%/50%) -- the
   // old fallthrough silently printed it as a top-to-bottom linear fade.
+  // A gradient stop. c1/c2 are RAW color strings (NOT pre-hex'd): drawio honors a
+  // stop color's intrinsic alpha (rgba()/#rrggbbaa/hsla()), so emit stop-opacity
+  // when it is < 1 — otherwise a translucent gradient prints opaque (silent C1).
+  function gradStopStr(offset, color) {
+    var r = resolveColor(color);
+    var h = (r && r.hex) ? r.hex : '#000000';
+    var a = (r && typeof r.alpha === 'number') ? r.alpha : 1;
+    return '<stop offset="' + offset + '" stop-color="' + h + '"' +
+      (a < 1 ? ' stop-opacity="' + fmt(a) + '"' : '') + '/>';
+  }
   function linearGradDef(id, c1, c2, dir) {
     if (String(dir || '').toLowerCase() === 'radial') {
       return '<radialGradient id="' + id + '" cx="0.5" cy="0.5" r="0.5"' +
         ' gradientUnits="objectBoundingBox">' +
-        '<stop offset="0" stop-color="' + c1 + '"/>' +
-        '<stop offset="1" stop-color="' + c2 + '"/>' +
+        gradStopStr('0', c1) + gradStopStr('1', c2) +
         '</radialGradient>';
     }
     var v = gradientVector(dir);
     return '<linearGradient id="' + id + '" x1="' + v.x1 + '" y1="' + v.y1 +
       '" x2="' + v.x2 + '" y2="' + v.y2 + '" gradientUnits="objectBoundingBox">' +
-      '<stop offset="0" stop-color="' + c1 + '"/>' +
-      '<stop offset="1" stop-color="' + c2 + '"/>' +
+      gradStopStr('0', c1) + gradStopStr('1', c2) +
       '</linearGradient>';
   }
 
@@ -212,7 +220,7 @@
     var gradDefs = [];     // every gradient def emitted for this stencil
     if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
       gradId = stableGradId(state.fillColor, style.gradientColor);
-      gradDefs.push(linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection));
+      gradDefs.push(linearGradDef(gradId, state.fillColor, style.gradientColor, style.gradientDirection));
     }
 
     // mxShape.configureCanvas seeds setFillAlpha(fillOpacity/100) +
@@ -257,9 +265,10 @@
       }
       if (state.dashed) {
         var dp = state.dashPattern
-          ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
+          ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v >= 0; })
           : [3, 3];
-        if (!dp.length) dp = [3, 3];
+        // drawio keeps 0-length segments (a dot under round caps; "N 0" => solid).
+        if (!dp.length || dp.every(function(v){ return v === 0; })) dp = [3, 3];
         // Match drawio: dash values scale with stroke width (createDashPattern),
         // unless fixDash=1 (then the pattern is in absolute px).
         var dsc = boolish(style.fixDash) ? 1 : (state.strokeWidth || 1);
@@ -690,6 +699,7 @@
               var tFs = state.fontSize || 11;
               var tFf = state.fontFamily || 'Arial';
               var tFc = hex(state.fontColor || '#000000');
+              var tFcA = colorAlpha(state.fontColor || '#000000');
               // Baseline math from mxSvgCanvas2D.plainText (w=h=0, no clip):
               //   first-line baseline cy = y + size - 1; middle subtracts
               //   textHeight/2; bottom subtracts textHeight + 1;
@@ -716,7 +726,7 @@
                 tBody += '<text x="' + fmt(ttx) + '" y="' + fmt(tCy + tli * tLh) + '"' +
                   ' text-anchor="' + tAnchor + '"' +
                   ' font-family="' + escXml(tFf) + '" font-size="' + fmt(tFs) + '"' +
-                  ' fill="' + tFc + '"' + tStyleAttrs + '>' + escXml(tLines[tli]) + '</text>';
+                  ' fill="' + tFc + '"' + (tFcA < 1 ? ' fill-opacity="' + fmt(tFcA) + '"' : '') + tStyleAttrs + '>' + escXml(tLines[tli]) + '</text>';
               }
               elems.push(tOpen + tBody + tClose);
             }
@@ -836,8 +846,8 @@
   }
 
   function isPaintable(c) {
-    return c && c !== 'none' && c !== 'transparent' &&
-      /^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c);
+    var r = resolveColor(c);
+    return !!(r && !r.none && r.hex);
   }
 
   // STRICT WYSIWYG (project rule, no exceptions): the bake must resolve every
@@ -939,7 +949,7 @@
       var autoLs = number(style.letterSpacing, 0);
       for (var bi = 0; bi < blocks.length; bi++) {
         var b = blocks[bi];
-        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs);
+        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0));
         for (var li = 0; li < wrappedLines.length; li++) {
           rows.push({
             text: wrappedLines[li],
@@ -967,7 +977,7 @@
             // CJK run can break between any two ideographs.
             var units = splitBreakable(words[wi]);
             for (var ui = 0; ui < units.length; ui++) {
-              if (textWidthPx(units[ui], bk.size) > availW) {
+              if (textWidthPx(units[ui], bk.size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) > availW) {
                 return false;
               }
             }
@@ -975,7 +985,7 @@
         }
       } else {
         for (var rj = 0; rj < rows.length; rj++) {
-          if (textWidthPx(rows[rj].text, rows[rj].size) > availW) {
+          if (textWidthPx(rows[rj].text, rows[rj].size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) > availW) {
             return false;
           }
         }
@@ -1005,7 +1015,7 @@
   // The live path: getCellStyle merges the mxStylesheet defaults so these keys
   // are always present. The headless path: getCellStyle returns only the raw cell
   // style → no defaults. Supply them here so headless and live are consistent.
-  function resolveThemeDefaults(style, graph, isVertex, cell) {
+  function resolveThemeDefaults(style, graph, isVertex, cell, notices) {
     if (!style) return style;
     var model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null;
     var bg = themeColor(graph && graph.shapeBackgroundColor,
@@ -1111,6 +1121,28 @@
     if (!isVertex && !('endArrow' in out) && !rawExplicitNone('endArrow')) {
       set('endArrow', 'classic');
     }
+    // A cell color that survived theme/default resolution but is still not a
+    // color the bake can resolve (an exotic CSS4 lab()/color()/oklch(), or a
+    // typo) would otherwise paint NULL/black silently. Flag it loudly so a
+    // medical label never prints a blank/wrong-colored region without warning.
+    if (Array.isArray(notices)) {
+      var seenBad = {};
+      ['fillColor', 'strokeColor', 'fontColor', 'gradientColor',
+       'labelBackgroundColor', 'labelBorderColor'].forEach(function (k) {
+        var v = out[k];
+        if (typeof v !== 'string' || v === '' || v === 'default') return;
+        var lc = v.toLowerCase();
+        if (lc === 'none' || lc === 'transparent') return;
+        if (resolveColor(v) == null && !seenBad[lc]) {
+          seenBad[lc] = true;
+          notices.push(degradation('ExporterUnsupportedColor',
+            'color "' + v + '" on ' + k + ' is not a hex/named/rgb()/rgba()/hsl() ' +
+            'value the bake can resolve; drawio renders it but the print would ' +
+            'drop it. Use a standard CSS color for exact WYSIWYG.',
+            (cell && cell.id) || ''));
+        }
+      });
+    }
     return out;
   }
 
@@ -1145,7 +1177,24 @@
     };
   }
 
-  function hex(c) {
+  // SVG-string form of labelBoxNode (labelBackgroundColor/labelBorderColor),
+  // for the rotated label builders where the box must live INSIDE the rotate
+  // group (it rotates with the text). Returns '' when neither is set.
+  function labelBoxSvgStr(style, bx, by, bw, bh) {
+    var bg = colorToSolid(style.labelBackgroundColor);
+    var bc = isPaintable(style.labelBorderColor) ? style.labelBorderColor : null;
+    if (!bg && !bc) return '';
+    return '<rect x="' + fmt(bx) + '" y="' + fmt(by) + '" width="' + fmt(Math.max(0, bw)) +
+      '" height="' + fmt(Math.max(0, bh)) + '" fill="' + (bg ? hex(bg.color) : 'none') + '"' +
+      (bg && bg.alpha < 1 ? ' fill-opacity="' + fmt(bg.alpha) + '"' : '') +
+      (bc ? ' stroke="' + hex(bc) + '"' + (colorAlpha(bc) < 1 ? ' stroke-opacity="' + fmt(colorAlpha(bc)) + '"' : '') + ' stroke-width="' +
+        fmt(Math.max(0.1, number(style.labelBorderWidth, 1))) + '"' : ' stroke="none"') + '/>';
+  }
+
+  // Low-level: normalize a 3/6-digit hex string to lowercase #rrggbb. Used by
+  // the colour PARSERS (colorParts/cssColor) so they never re-enter the
+  // full resolveColor() resolver (which would recurse back through them).
+  function normHex(c) {
     if (!c) return '#000000';
     c = String(c);
     if (c.charAt(0) !== '#') c = '#' + c;
@@ -1156,18 +1205,39 @@
     return c.toLowerCase();
   }
 
-  function solid(color, alpha) {
-    return { type: 'solid', color: hex(color), alpha: alpha == null ? 1 : alpha };
+  function hex(c) {
+    var r = resolveColor(c);
+    return (r && r.hex) ? r.hex : '#000000';
   }
 
+  // alpha = caller opacity (e.g. fillOpacity) MULTIPLIED by the colour's own
+  // intrinsic alpha (rgba()/#rrggbbaa), matching drawio's compositing.
+  function solid(color, alpha) {
+    var r = resolveColor(color);
+    var ca = (r && typeof r.alpha === 'number') ? r.alpha : 1;
+    return {
+      type: 'solid',
+      color: (r && r.hex) ? r.hex : '#000000',
+      alpha: clamp01((alpha == null ? 1 : alpha) * ca)
+    };
+  }
+
+  // A color's intrinsic alpha (rgba()/#rrggbbaa/hsla()); 1 if opaque/unknown.
+  function colorAlpha(c) {
+    var r = resolveColor(c);
+    return (r && typeof r.alpha === 'number') ? r.alpha : 1;
+  }
   function fillOf(style) {
     if (!isPaintable(style.fillColor)) return null;
     if (isPaintable(style.gradientColor)) {
+      var fo = opacity(style, 'fillOpacity');
+      // Structural gradient stops fold the stop color's intrinsic alpha with
+      // fillOpacity (drawio honors both); the contract carries per-stop alpha.
       return {
         type: 'linear',
         stops: [
-          { offset: 0, color: hex(style.fillColor), alpha: opacity(style, 'fillOpacity') },
-          { offset: 1, color: hex(style.gradientColor), alpha: opacity(style, 'fillOpacity') }
+          { offset: 0, color: hex(style.fillColor), alpha: clamp01(fo * colorAlpha(style.fillColor)) },
+          { offset: 1, color: hex(style.gradientColor), alpha: clamp01(fo * colorAlpha(style.gradientColor)) }
         ]
       };
     }
@@ -1184,8 +1254,8 @@
     if (isPaintable(style.gradientColor)) {
       var gid = 'r' + stableGradId(style.fillColor, style.gradientColor);
       var rfa = opacity(style, 'fillOpacity');
-      var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
-        hex(style.gradientColor), style.gradientDirection) + '</defs>' +
+      var inner = '<defs>' + linearGradDef(gid, style.fillColor,
+        style.gradientColor, style.gradientDirection) + '</defs>' +
         '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
         '" fill="url(#' + gid + ')"' +
         (rfa < 1 ? ' fill-opacity="' + fmt(rfa) + '"' : '') + '/>';
@@ -1215,8 +1285,9 @@
     var raw = style.dashPattern || '3 3';
     var out = String(raw).split(/[ ,]+/).map(function (v) {
       return number(v, 0);
-    }).filter(function (v) { return v > 0; });
-    if (!out.length) out = [3, 3];
+    }).filter(function (v) { return v >= 0; });
+    // drawio keeps 0-length segments (round-cap dots; "N 0" renders solid).
+    if (!out.length || out.every(function (v) { return v === 0; })) out = [3, 3];
     // drawio mxSvgCanvas2D.createDashPattern multiplies each dash value by the
     // stroke width (unless fixDash=1), so thick dashed strokes have
     // proportionally larger dashes/gaps. Match it — previously strokeWidth was
@@ -1320,11 +1391,18 @@
       '<path d="' + relD + '" fill="none"' + strokeSvgAttrs(style) + '/>';
   }
 
-  function textSvgStr(label, cx, cy, style) {
+  // Centered/aligned plain-text label inside the box [ox,oy,w,h]. Honors
+  // align/verticalAlign exactly like the non-rotated textSvgNode path -- the
+  // old version hard-anchored text-anchor=middle + central, so a ROTATED plain
+  // label (whose `text` shape default is align=left;verticalAlign=top) printed
+  // centered instead of at the left/top edge (a silent divergence on the very
+  // common rotated side-rail label).
+  function textSvgStr(label, ox, oy, w, h, style) {
     if (!label) return '';
     var fs = Math.max(1, number(style.fontSize, 11));
     var ff = style.fontFamily || 'Arial';
     var fc = style.fontColor || '#000000';
+    var fcA = colorAlpha(fc);
     var fsVal = number(style.fontStyle, 0);
     var isBold = !!(fsVal & 1);
     var isItalic = !!(fsVal & 2);
@@ -1332,10 +1410,20 @@
     if (fsVal & 4) deco.push('underline');
     if (fsVal & 8) deco.push('line-through');
     var topac = number(style.textOpacity, 100) / 100;
-    var attrs = ' text-anchor="middle" dominant-baseline="central"' +
+    var align = textDefaultAlign(style);   // left | center | right
+    var valign = textDefaultValign(style); // top | middle | bottom
+    var pads = labelPads(style);
+    var anchor = align === 'right' ? 'end' : align === 'center' ? 'middle' : 'start';
+    var cx = align === 'right' ? (ox + w - pads.r)
+      : align === 'center' ? (ox + w / 2) : (ox + pads.l);
+    var baseline = valign === 'bottom' ? 'text-after-edge'
+      : valign === 'middle' ? 'central' : 'text-before-edge';
+    var cy = valign === 'bottom' ? (oy + h - pads.b)
+      : valign === 'middle' ? (oy + h / 2) : (oy + pads.t);
+    var attrs = ' text-anchor="' + anchor + '" dominant-baseline="' + baseline + '"' +
       ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
-      ' fill="' + fc + '"' +
-      (topac < 1 ? ' fill-opacity="' + fmt(topac) + '"' : '') +
+      ' fill="' + hex(fc) + '"' +
+      (clamp01(fcA * topac) < 1 ? ' fill-opacity="' + fmt(clamp01(fcA * topac)) + '"' : '') +
       (isBold ? ' font-weight="bold"' : '') +
       (isItalic ? ' font-style="italic"' : '') +
       (deco.length ? ' text-decoration="' + deco.join(' ') + '"' : '');
@@ -1345,7 +1433,8 @@
         escXml(label) + '</text>';
     }
     var lineH = fs * 1.2;
-    var startDy = -(lines.length - 1) * lineH / 2;
+    var startDy = valign === 'bottom' ? -(lines.length - 1) * lineH
+      : valign === 'middle' ? -(lines.length - 1) * lineH / 2 : 0;
     var spans = lines.map(function (ln, i) {
       return '<tspan x="' + fmt(cx) + '" dy="' + fmt(i === 0 ? startDy : lineH) + '">' +
         escXml(ln) + '</tspan>';
@@ -1373,19 +1462,81 @@
       var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
       if (!rich || rich.body === '') return '';
       var v = textDefaultValign(style);
-      if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
+      var fillW = style.overflow === 'fill' || style.overflow === 'width';
+      if (fillW) v = 'top';
       var rlpads = labelPads(style);
       var off = v === 'middle' ? (h - rich.height) / 2 : v === 'bottom' ? h - rich.height - rlpads.b : rlpads.t;
       off = Math.max(0, off);
-      return '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
+      // labelBackgroundColor/labelBorderColor box (rotates with the label) —
+      // sized to the laid-out text bbox (or the full region for fill/width),
+      // matching drawio's mxText label background. Dropped silently before.
+      var rbg = fillW
+        ? labelBoxSvgStr(style, ox, oy, w, h)
+        : labelBoxSvgStr(style, ox + rlpads.l + (rich.minX || 0), oy + off,
+            Math.max(1, (rich.maxX || 0) - (rich.minX || 0)), rich.height);
+      return rbg + '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
         rich.body + '</g>';
     }
     // HTML-style label without markup: still entity-encoded (browser innerHTML
     // decodes &amp;/&nbsp;/… even with no tags) — decode before literal render.
     var lit = isHtmlLabelStyle(style) ? decodeHtmlEntities(src) : label;
-    return lit !== '' ? textSvgStr(lit, ox + w / 2, oy + h / 2, style) : '';
+    if (lit === '') return '';
+    // labelBackground/border box for the plain label: text bbox sized via the
+    // AFM metrics and positioned to the label's align/verticalAlign (matching
+    // textSvgStr), or the full region for fill/width overflow.
+    var pbg = '';
+    if (style.labelBackgroundColor || style.labelBorderColor) {
+      if (style.overflow === 'fill' || style.overflow === 'width') {
+        pbg = labelBoxSvgStr(style, ox, oy, w, h);
+      } else {
+        var pfs = Math.max(1, number(style.fontSize, 11));
+        var pbold = !!(number(style.fontStyle, 0) & 1);
+        var plines = String(lit).split('\n');
+        var pw = 0;
+        for (var pli = 0; pli < plines.length; pli++) {
+          pw = Math.max(pw, textWidthPx(plines[pli], pfs, 0, style.fontFamily, pbold));
+        }
+        var ph = plines.length * pfs * 1.2;
+        var palign = textDefaultAlign(style), pvalign = textDefaultValign(style);
+        var ppads = labelPads(style);
+        var pbx = palign === 'right' ? (ox + w - ppads.r - pw)
+          : palign === 'center' ? (ox + w / 2 - pw / 2) : (ox + ppads.l);
+        var pby = pvalign === 'bottom' ? (oy + h - ppads.b - ph)
+          : pvalign === 'middle' ? (oy + h / 2 - ph / 2) : (oy + ppads.t);
+        pbg = labelBoxSvgStr(style, pbx, pby, pw, ph);
+      }
+    }
+    return pbg + textSvgStr(lit, ox, oy, w, h, style);
   }
 
+  // HTML named entities a drawio html=1 label can carry (browser innerHTML
+  // decodes the full set). 'amp' is intentionally absent (must decode LAST).
+  var NAMED_HTML_ENTITIES = {
+    iexcl:'\u00a1',cent:'\u00a2',pound:'\u00a3',curren:'\u00a4',yen:'\u00a5',brvbar:'\u00a6',
+    sect:'\u00a7',uml:'\u00a8',copy:'\u00a9',ordf:'\u00aa',laquo:'\u00ab',not:'\u00ac',
+    shy:'\u00ad',reg:'\u00ae',macr:'\u00af',deg:'\u00b0',plusmn:'\u00b1',sup2:'\u00b2',
+    sup3:'\u00b3',acute:'\u00b4',micro:'\u00b5',para:'\u00b6',middot:'\u00b7',cedil:'\u00b8',
+    sup1:'\u00b9',ordm:'\u00ba',raquo:'\u00bb',frac14:'\u00bc',frac12:'\u00bd',frac34:'\u00be',
+    iquest:'\u00bf',times:'\u00d7',divide:'\u00f7',
+    Agrave:'\u00c0',Aacute:'\u00c1',Acirc:'\u00c2',Atilde:'\u00c3',Auml:'\u00c4',Aring:'\u00c5',
+    AElig:'\u00c6',Ccedil:'\u00c7',Egrave:'\u00c8',Eacute:'\u00c9',Ecirc:'\u00ca',Euml:'\u00cb',
+    Igrave:'\u00cc',Iacute:'\u00cd',Icirc:'\u00ce',Iuml:'\u00cf',ETH:'\u00d0',Ntilde:'\u00d1',
+    Ograve:'\u00d2',Oacute:'\u00d3',Ocirc:'\u00d4',Otilde:'\u00d5',Ouml:'\u00d6',Oslash:'\u00d8',
+    Ugrave:'\u00d9',Uacute:'\u00da',Ucirc:'\u00db',Uuml:'\u00dc',Yacute:'\u00dd',THORN:'\u00de',
+    szlig:'\u00df',agrave:'\u00e0',aacute:'\u00e1',acirc:'\u00e2',atilde:'\u00e3',auml:'\u00e4',
+    aring:'\u00e5',aelig:'\u00e6',ccedil:'\u00e7',egrave:'\u00e8',eacute:'\u00e9',ecirc:'\u00ea',
+    euml:'\u00eb',igrave:'\u00ec',iacute:'\u00ed',icirc:'\u00ee',iuml:'\u00ef',eth:'\u00f0',
+    ntilde:'\u00f1',ograve:'\u00f2',oacute:'\u00f3',ocirc:'\u00f4',otilde:'\u00f5',ouml:'\u00f6',
+    oslash:'\u00f8',ugrave:'\u00f9',uacute:'\u00fa',ucirc:'\u00fb',uuml:'\u00fc',yacute:'\u00fd',
+    thorn:'\u00fe',yuml:'\u00ff',ndash:'\u2013',mdash:'\u2014',lsquo:'\u2018',rsquo:'\u2019',
+    sbquo:'\u201a',ldquo:'\u201c',rdquo:'\u201d',bdquo:'\u201e',dagger:'\u2020',Dagger:'\u2021',
+    bull:'\u2022',hellip:'\u2026',permil:'\u2030',prime:'\u2032',Prime:'\u2033',lsaquo:'\u2039',
+    rsaquo:'\u203a',oline:'\u203e',frasl:'\u2044',euro:'\u20ac',trade:'\u2122',larr:'\u2190',
+    uarr:'\u2191',rarr:'\u2192',darr:'\u2193',harr:'\u2194',minus:'\u2212',infin:'\u221e',
+    ne:'\u2260',le:'\u2264',ge:'\u2265',radic:'\u221a',sum:'\u2211',part:'\u2202',
+    alpha:'\u03b1',beta:'\u03b2',gamma:'\u03b3',delta:'\u03b4',mu:'\u03bc',pi:'\u03c0',
+    sigma:'\u03c3',omega:'\u03c9',Delta:'\u0394',Sigma:'\u03a3',Omega:'\u03a9'
+  };
   function decodeHtmlEntities(s) {
     // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
     // "<" instead of the literal 4-char "&lt;"); numeric references need
@@ -1398,6 +1549,10 @@
       .replace(/&#(\d+);/g, function(_, n) { return String.fromCodePoint(+n); })
       .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) {
         return String.fromCodePoint(parseInt(h, 16));
+      })
+      .replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, function (m, name) {
+        return Object.prototype.hasOwnProperty.call(NAMED_HTML_ENTITIES, name)
+          ? NAMED_HTML_ENTITIES[name] : m;
       })
       .replace(/&amp;/g, '&');
   }
@@ -1754,27 +1909,182 @@
     if (cur !== '') units.push(cur);
     return units.length ? units : [word];
   }
-  function glyphEmWidth(ch) {
-    if (ch === ' ' || ch === '\u00A0') return 0.28; // NBSP advances like a space
-    if (isWideBreakChar(ch)) return 1.0; // fullwidth advance
+  // Per-glyph advance widths (units per 1000 em) for ASCII 32..126: the
+  // standard Arial/Helvetica (sans) and Times New Roman (serif) core AFM
+  // metrics; Courier (mono) is a fixed 600. resvg rasterizes text with the
+  // installed face -- real Arial on the Windows print server, the
+  // metric-compatible Liberation Sans on Linux (both Arial-metric), Times on
+  // both -- so these tables match resvg's own shaping to sub-pixel. They replace
+  // the old per-class estimate that drifted up to ~17% per glyph and shifted
+  // wrap points / centre-right alignment / label-background boxes silently -- a
+  // WYSIWYG hazard for precise (e.g. medical-label) layouts.
+  var AFM_SANS = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,
+    667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    278,278,278,469,556,333,
+    556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,
+    334,260,334,584];
+  var AFM_SERIF = [250,333,408,500,500,833,778,180,333,333,500,564,250,333,250,278,
+    500,500,500,500,500,500,500,500,500,500,278,278,564,564,564,444,921,
+    722,667,667,722,611,556,722,722,333,389,722,611,889,722,722,556,722,667,556,611,722,722,944,722,722,611,
+    333,278,333,469,500,333,
+    444,500,444,500,444,333,500,500,278,278,500,278,778,500,500,500,500,333,389,278,500,500,722,500,500,444,
+    480,200,480,541];
+  // Arial/Helvetica BOLD advance widths (units/1000). Arial Bold runs ~5-9%
+  // wider than Regular, so bold runs (drug names on labels) need their own
+  // table or wrapping/rich-token-x drifts. Arial ITALIC shares Regular's
+  // widths, and Arial BOLD-ITALIC shares Bold's, so this one table covers all
+  // sans weight/style combinations.
+  var AFM_SANS_BOLD = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,
+    722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    333,278,333,584,556,333,
+    556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,
+    389,280,389,584];
+  // Times-Bold advance widths (units/1000). Times Bold runs ~3-13% wider than
+  // Times Roman per glyph, so a serif BOLD run (a bold heading on a serif
+  // label) measured with the regular AFM_SERIF table wraps/positions short and
+  // overflows its box silently. Times BOLD-ITALIC shares Bold's widths closely;
+  // serif italic (non-bold) reuses AFM_SERIF (Times-Italic ≈ Roman width). This
+  // table closes the last silent serif metric gap (was reused-regular before).
+  var AFM_SERIF_BOLD = [250,333,555,500,500,1000,833,278,333,333,500,570,250,333,250,278,
+    500,500,500,500,500,500,500,500,500,500,333,333,570,570,570,500,930,
+    722,667,722,722,667,611,778,778,389,500,778,667,944,722,778,611,778,722,556,667,722,722,1000,722,722,667,
+    333,278,333,581,500,333,
+    500,556,444,556,444,333,500,556,278,333,556,278,833,556,500,556,556,444,389,333,556,500,722,500,500,444,
+    394,220,394,520];
+  // Accented Latin-1 letters advance like their unaccented base in Arial/Times;
+  // map them to the base ASCII char so the table covers common diacritics.
+  var AFM_DEACCENT = {
+    'À':'A','Á':'A','Â':'A','Ã':'A','Ä':'A','Å':'A','Ç':'C',
+    'È':'E','É':'E','Ê':'E','Ë':'E','Ì':'I','Í':'I','Î':'I','Ï':'I',
+    'Ñ':'N','Ò':'O','Ó':'O','Ô':'O','Õ':'O','Ö':'O','Ø':'O',
+    'Ù':'U','Ú':'U','Û':'U','Ü':'U','Ý':'Y',
+    'à':'a','á':'a','â':'a','ã':'a','ä':'a','å':'a','ç':'c',
+    'è':'e','é':'e','ê':'e','ë':'e','ì':'i','í':'i','î':'i','ï':'i',
+    'ñ':'n','ò':'o','ó':'o','ô':'o','õ':'o','ö':'o','ø':'o',
+    'ù':'u','ú':'u','û':'u','ü':'u','ý':'y','ÿ':'y'
+  };
+  // Canonical Adobe Core-14 WinAnsi advance widths (units/1000) for the printable
+  // Latin-1 Supplement symbols and the common General-Punctuation glyphs that the
+  // ASCII AFM tables above do not cover (degree, micro, plus-minus, multiply,
+  // currency, ©/®/™, en/em dash, smart quotes, bullet, ellipsis, fractions, …).
+  // These render IN the metric-compatible deployment face (Liberation/Arial,
+  // Times), so measuring them here keeps a "Store at 2-8 °C", "5 µg", "A–B" or a
+  // smart-quoted label faithful instead of using the rough heuristic fallback
+  // (which mis-sized the label-background box silently). Values: [sans, sansBold,
+  // serif, serifBold]. Glyphs OUTSIDE this set + ASCII + Latin-1 letters + CJK
+  // (non-Latin scripts, arrows, geometric shapes, emoji) are not in these faces
+  // and fall to the heuristic — those are flagged loudly by scanGlyphMetric().
+  var AFM_SYMBOL = {
+    '¡':[333,333,333,333], '¢':[556,556,500,500], '£':[556,556,500,500],
+    '¤':[556,556,500,500], '¥':[556,556,500,500], '¦':[260,280,200,220],
+    '§':[556,556,500,500], '¨':[333,333,333,333], '©':[737,737,760,747],
+    'ª':[370,370,276,300], '«':[556,556,500,500], '¬':[584,584,564,570],
+    '­':[333,333,333,333], '®':[737,737,760,747], '¯':[333,333,333,333],
+    '°':[400,400,400,400], '±':[584,584,564,570], '²':[333,333,300,300],
+    '³':[333,333,300,300], '´':[333,333,333,333], 'µ':[556,556,500,500],
+    '¶':[537,556,453,540], '·':[278,278,250,250], '¸':[333,333,333,333],
+    '¹':[333,333,300,300], 'º':[365,365,310,330], '»':[556,556,500,500],
+    '¼':[834,834,750,750], '½':[834,834,750,750], '¾':[834,834,750,750],
+    '¿':[611,611,444,500], '×':[584,584,564,570], '÷':[584,584,564,570],
+    '–':[556,556,500,500], '—':[1000,1000,1000,1000],
+    '‘':[222,333,333,333], '’':[222,333,333,333], '‚':[222,333,333,333],
+    '“':[333,500,444,500], '”':[333,500,444,500], '„':[333,500,444,500],
+    '†':[556,556,500,500], '‡':[556,556,500,500], '•':[350,350,350,350],
+    // List markers the bake itself emits for nested <ul> levels (disc→circle→
+    // square). Approximated at the disc-bullet advance: this is part of the
+    // accepted HTML-list re-derivation (char bullets + fixed indent), so they
+    // must NOT trip the glyph-metric notice on every bulleted list.
+    '◦':[350,350,350,350], '▪':[350,350,350,350],
+    '…':[1000,1000,1000,1000], '‰':[1000,1000,1000,1000],
+    '‹':[333,333,333,333], '›':[333,333,333,333], '⁄':[167,167,167,167],
+    '€':[556,556,500,500], '™':[1000,1000,980,1000]
+  };
+  function fontMetricClass(fam) {
+    var f = String(fam == null ? '' : fam).toLowerCase();
+    if (/courier|consol|mono/.test(f)) return 'mono';
+    if (/times|serif|georgia|garamond|cambria|book antiqua|palatino/.test(f)) return 'serif';
+    return 'sans';
+  }
+  // The AFM advance-width tables above are the metrics of three core faces:
+  // Arial/Helvetica (sans), Times New Roman (serif) and Courier (mono). resvg
+  // rasterizes with the installed face named in the SVG; when that face is one
+  // of these (or a metric-compatible clone the print server provisions —
+  // Liberation/Arimo/Tinos/Cousine, Nimbus, the CSS generics), the wrap points
+  // and token positions the bake computed match the rasterized glyphs to
+  // sub-pixel. A DIFFERENT installed face (Verdana, Roboto, Tahoma, Calibri,
+  // Georgia, Consolas, …) is measured with the wrong table yet rendered with
+  // its own metrics -> wrap/alignment/label-box drift. That is a SILENT
+  // WYSIWYG divergence, so scanFontMetricFallbacks() raises a loud
+  // FontMetricApprox notice for it (never a quiet approximation on a medical
+  // label). Set membership is the first family token, lower-cased.
+  var FONT_METRIC_EXACT = {
+    // Arial/Helvetica metric (AFM_SANS / AFM_SANS_BOLD)
+    'arial': 1, 'helvetica': 1, 'liberation sans': 1, 'arimo': 1,
+    'nimbus sans': 1, 'nimbus sans l': 1, 'sans-serif': 1, 'sans serif': 1,
+    // Times New Roman metric (AFM_SERIF)
+    'times': 1, 'times new roman': 1, 'liberation serif': 1, 'tinos': 1,
+    'nimbus roman': 1, 'nimbus roman no9 l': 1, 'serif': 1,
+    // Courier metric (fixed 600/1000)
+    'courier': 1, 'courier new': 1, 'liberation mono': 1, 'cousine': 1,
+    'nimbus mono': 1, 'nimbus mono l': 1, 'nimbus mono ps': 1, 'monospace': 1
+  };
+  function fontFamilyFirstToken(stack) {
+    return String(stack == null ? '' : stack)
+      .split(',')[0].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  }
+  function fontMetricExact(fam) {
+    var first = fontFamilyFirstToken(fam);
+    return first === '' || FONT_METRIC_EXACT[first] === 1;
+  }
+  // True when glyphEmWidth has a real metric for ch (so the bake's wrap/box math
+  // matches the rasterized glyph): CJK fullwidth, ASCII core, NBSP, a Latin-1
+  // accented letter, or a covered WinAnsi symbol. False => the heuristic fallback
+  // is used (non-Latin scripts, arrows, geometric shapes, emoji) — a silent
+  // metric divergence that scanGlyphMetric() must flag loudly.
+  function glyphHasMetric(ch) {
+    if (isWideBreakChar(ch)) return true;
+    var code = ch.charCodeAt(0);
+    if (code >= 32 && code <= 126) return true;
+    if (code === 0x00A0) return true;
+    return AFM_DEACCENT[ch] != null || AFM_SYMBOL[ch] != null;
+  }
+  function glyphEmWidth(ch, fam, bold) {
+    if (isWideBreakChar(ch)) return 1.0; // fullwidth advance (CJK etc.)
+    var cls = fontMetricClass(fam);
+    if (cls === 'mono') return 0.6;        // Courier: fixed advance
+    var serif = (cls === 'serif');
+    var tbl = serif
+      ? (bold ? AFM_SERIF_BOLD : AFM_SERIF)
+      : (bold ? AFM_SANS_BOLD : AFM_SANS);
+    var code = ch.charCodeAt(0);
+    if (code >= 32 && code <= 126) return tbl[code - 32] / 1000;
+    if (code === 0x00A0) return tbl[0] / 1000; // NBSP advances like a space
+    var base = AFM_DEACCENT[ch];
+    if (base) return tbl[base.charCodeAt(0) - 32] / 1000;
+    var sym = AFM_SYMBOL[ch]; // WinAnsi Latin-1 / punctuation symbols
+    if (sym) return sym[serif ? (bold ? 3 : 2) : (bold ? 1 : 0)] / 1000;
+    // Fallback for glyphs outside the AFM tables (unlisted scripts, arrows,
+    // geometric shapes, emoji): the per-class heuristic, so exotic text is never
+    // zero-width. scanGlyphMetric() raises a loud notice when this path is hit.
     if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
     if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
     if ('mMW'.indexOf(ch) >= 0) return 0.87;
-    if (ch === 'w') return 0.72;
     if (ch >= 'A' && ch <= 'Z') return 0.70;
     if (ch >= '0' && ch <= '9') return 0.56;
-    return 0.52; // typical lowercase / default
+    return 0.52;
   }
-  function textWidthPx(str, size, letterSpacing) {
+  function textWidthPx(str, size, letterSpacing, fam, bold) {
     var t = String(str == null ? '' : str), sum = 0;
-    for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i));
+    for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i), fam, bold);
     // CSS letter-spacing adds a gap AFTER each glyph (including the last); the
     // plain SVG emit + extent already add it, so the wrap must too or a spaced
-    // label breaks at the wrong column. Default 0 → identical to before.
+    // label breaks at the wrong column. Default 0 -> identical to before.
     return sum * size + (letterSpacing > 0 ? letterSpacing * t.length : 0);
   }
 
-  function wrapSvgText(text, size, width, wrap, letterSpacing) {
+  function wrapSvgText(text, size, width, wrap, letterSpacing, fam, bold) {
     var rawLines = String(text == null ? '' : text).split('\n');
     if (!wrap) return rawLines;
     var maxW = Math.max(1, width);
@@ -1795,8 +2105,8 @@
       var line = '', lineW = 0;
       tokens.forEach(function (tk, ti) {
         var sp = (tk.sp && ti > 0 && line !== '');
-        var tw = textWidthPx(tk.text, size, letterSpacing);
-        var spW = sp ? glyphEmWidth(' ') * size : 0;
+        var tw = textWidthPx(tk.text, size, letterSpacing, fam, bold);
+        var spW = sp ? glyphEmWidth(' ', fam, bold) * size : 0;
         if (line !== '' && lineW + spW + tw > maxW) {
           lines.push(line); line = tk.text; lineW = tw;
         } else {
@@ -1844,8 +2154,61 @@
     }
     var cp = colorParts(s);
     if (cp) return cp;
-    if (/^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return { hex: hex(s), alpha: 1 };
+    if (/^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return { hex: normHex(s), alpha: 1 };
     return null;
+  }
+
+  function hslToHex(h, s, l) {
+    h = ((h % 360) + 360) % 360;
+    s = clamp01(s / 100); l = clamp01(l / 100);
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    var mm = l - c / 2;
+    var r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return '#' + toHex2(Math.round((r + mm) * 255)) +
+      toHex2(Math.round((g + mm) * 255)) + toHex2(Math.round((b + mm) * 255));
+  }
+
+  // The single canonical drawio-color resolver -> { hex, alpha } | { none:true }
+  // | null (unresolvable). drawio (mxUtils.isValidColor/parseColor) accepts and
+  // RENDERS the full CSS set in fillColor/strokeColor/fontColor/gradientColor:
+  // 3/6/8-digit hex, named colors, rgb()/rgba(), hsl()/hsla(). The bake formerly
+  // recognised ONLY 3/6-digit hex at the cell level, so a "red"/"rgb()"/8-digit/
+  // "hsl()" fill baked to NULL (blank) or black text with no notice -- a C1
+  // silent divergence. isPaintable/hex/solid all route through this so every
+  // path (fill, stroke, gradient stops, label box, rich runs) resolves alike;
+  // an unresolvable value is flagged loudly by resolveThemeDefaults.
+  // Parse a CSS alpha token: a number (0..1) OR a <percentage> ("50%" -> 0.5).
+  // CSS Color-4 allows percentage alpha in rgba()/hsla(); treating it as a bare
+  // number printed it opaque (clamp01(50)=1).
+  function parseAlpha(tok) {
+    if (tok == null) return 1;
+    var t = String(tok).trim();
+    var n = parseFloat(t);
+    if (!Number.isFinite(n)) return 1;
+    return clamp01(t.charAt(t.length - 1) === '%' ? n / 100 : n);
+  }
+  function resolveColor(c) {
+    if (c == null) return null;
+    var s = String(c).trim();
+    if (s === '') return null;
+    var lc = s.toLowerCase();
+    if (lc === 'none' || lc === 'transparent') return { none: true };
+    var m8 = /^#?([0-9a-f]{6})([0-9a-f]{2})$/i.exec(s);
+    if (m8) return { hex: ('#' + m8[1]).toLowerCase(), alpha: parseInt(m8[2], 16) / 255 };
+    var mh = /^hsla?\(([^)]+)\)$/i.exec(lc);
+    if (mh) {
+      var pr = mh[1].split(/[ ,/]+/).filter(function (x) { return x !== ''; });
+      if (pr.length < 3) return null;
+      var H = parseFloat(pr[0]), S = parseFloat(pr[1]), L = parseFloat(pr[2]);
+      if (!Number.isFinite(H) || !Number.isFinite(S) || !Number.isFinite(L)) return null;
+      var al = pr.length > 3 ? parseAlpha(pr[3]) : 1;
+      return { hex: hslToHex(H, S, L), alpha: clamp01(Number.isFinite(al) ? al : 1) };
+    }
+    return cssColor(s); // named / rgb / rgba / hex3 / hex6 (or null)
   }
 
   function parseInlineStyle(el) {
@@ -1898,7 +2261,7 @@
       strike: !!(fst & 8),
       overline: false,
       color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000',
-      colorAlpha: 1,
+      colorAlpha: isPaintable(style.fontColor) ? colorAlpha(style.fontColor) : 1,
       bg: null,
       bgAlpha: 1,
       vshift: 0,
@@ -1936,7 +2299,7 @@
     }
     if (tag === 'font') {
       var fc = el.getAttribute && el.getAttribute('color');
-      if (fc) { var c0 = cssColor(fc); if (c0 && !c0.none) { st.color = c0.hex; st.colorAlpha = c0.alpha; } }
+      if (fc) { var c0 = resolveColor(fc); if (c0 && !c0.none) { st.color = c0.hex; st.colorAlpha = c0.alpha; } }
       var ff = el.getAttribute && el.getAttribute('face');
       if (ff) st.family = ff.split(',')[0].trim().replace(/^['"]|['"]$/g, '');
       var fz = el.getAttribute && el.getAttribute('size');
@@ -1957,9 +2320,9 @@
       if (dec.indexOf('line-through') >= 0) st.strike = true;
       if (dec.indexOf('overline') >= 0) st.overline = true;
     }
-    if (inl['color']) { var c1 = cssColor(inl['color']); if (c1 && !c1.none) { st.color = c1.hex; st.colorAlpha = c1.alpha; } }
+    if (inl['color']) { var c1 = resolveColor(inl['color']); if (c1 && !c1.none) { st.color = c1.hex; st.colorAlpha = c1.alpha; } }
     var bgv = inl['background-color'] || inl['background'];
-    if (bgv) { var b1 = cssColor(bgv); if (b1) { if (b1.none) st.bg = null; else { st.bg = b1.hex; st.bgAlpha = b1.alpha; } } }
+    if (bgv) { var b1 = resolveColor(bgv); if (b1) { if (b1.none) st.bg = null; else { st.bg = b1.hex; st.bgAlpha = b1.alpha; } } }
     if (inl['letter-spacing']) { var lsp = parseFloat(inl['letter-spacing']); if (Number.isFinite(lsp)) st.letterSpacing = lsp; }
     if (inl['vertical-align']) {
       var va = inl['vertical-align'].toLowerCase();
@@ -2282,10 +2645,10 @@
   // ── Layout: line/run model -> SVG body string ──────────────────────────────
   var RICH_LINE_FACTOR = 1.2;       // CSS default line-height
   var RICH_ASCENT = 0.92;           // baseline offset from line-box top (em)
-  function spaceWidthPx(size) { return glyphEmWidth(' ') * size; }
+  function spaceWidthPx(size, fam, bold) { return glyphEmWidth(' ', fam, bold) * size; }
   function tokenWidth(tk) {
     if (tk.img) return tk.img.w;
-    var w = textWidthPx(tk.text, tk.st.size);
+    var w = textWidthPx(tk.text, tk.st.size, 0, tk.st.family, tk.st.weight >= 600);
     if (tk.st.letterSpacing) w += tk.st.letterSpacing * tk.text.length;
     return w;
   }
@@ -2350,7 +2713,7 @@
         var curRow = [], curW = 0;
         tokens.forEach(function (tk) {
           var tw = tokenWidth(tk);
-          var sp = (tk.space && curRow.length) ? spaceWidthPx(tk.st.size) : 0;
+          var sp = (tk.space && curRow.length) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0;
           if (wrap && curRow.length && curW + sp + tw > avail) {
             rows.push(curRow); curRow = []; curW = 0;
             tk = Object.assign({}, tk, { space: false }); sp = 0;
@@ -2375,7 +2738,7 @@
         row.forEach(function (tk, i) {
           if (tk.img) { if (tk.img.h > imgMax) imgMax = tk.img.h; }
           else { if (tk.st.size > maxSize) maxSize = tk.st.size; }
-          rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
+          rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0);
         });
         var halfLeading = maxSize * (RICH_LINE_FACTOR - 1) / 2;
         row.forEach(function (tk) {
@@ -2407,7 +2770,7 @@
         var x = x0;
         var bgRects = [], texts = [];
         row.forEach(function (tk, i) {
-          var sp = (tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0;
+          var sp = (tk.space && i > 0) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0;
           x += sp;
           var tw = tokenWidth(tk);
           if (tk.img) {
@@ -2662,6 +3025,7 @@
     var fst = parseInt(style.fontStyle || 0, 10) || 0;
     var family = style.fontFamily || 'Arial';
     var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
+    var colorA = isPaintable(style.fontColor) ? colorAlpha(style.fontColor) : 1;
     var h = textDefaultAlign(style);
     var v = textDefaultValign(style);
     // overflow=fill/width sizes the label to the whole cell and flows content
@@ -2762,7 +3126,7 @@
         rows.push({ rule: true, size: 0, weight: 400, lineH: b.size, gap: b.gap });
         return;
       }
-      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap', letterSp).forEach(function (line) {
+      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap', letterSp, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)).forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
           // plain labels: drawio ROUNDS the line pitch
           // (mxSvgCanvas2D.plainText lh = Math.round(size * LINE_HEIGHT));
@@ -2802,7 +3166,7 @@
         var ry = ty + r.lineH / 2;
         return '<line x1="' + fmt(pl) + '" y1="' + fmt(ry) +
           '" x2="' + fmt(lw - pr) + '" y2="' + fmt(ry) +
-          '" stroke="' + color + '" stroke-width="1"/>';
+          '" stroke="' + color + '"' + (colorA < 1 ? ' stroke-opacity="' + fmt(colorA) + '"' : '') + ' stroke-width="1"/>';
       }
       var rowH = alignH(r.align || h);
       var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
@@ -2817,7 +3181,7 @@
         ((fst & 2) ? ' font-style="italic"' : '') +
         (rowDec.length ? ' text-decoration="' + rowDec.join(' ') + '"' : '') +
         (letterSp ? ' letter-spacing="' + fmt(letterSp) + '"' : '') +
-        ' fill="' + color + '" text-anchor="' + anchor +
+        ' fill="' + color + '"' + (colorA < 1 ? ' fill-opacity="' + fmt(colorA) + '"' : '') + ' text-anchor="' + anchor +
         '" dominant-baseline="text-before-edge" xml:space="preserve">' +
         escXml(r.text) + '</text>';
     }).join('');
@@ -2830,7 +3194,7 @@
     rows.forEach(function (r) {
       if (r.rule) { exMinX = Math.min(exMinX, pl); exMaxX = Math.max(exMaxX, lw - pr); return; }
       if (r.text == null) return;
-      var rw = textWidthPx(r.text, r.size) +
+      var rw = textWidthPx(r.text, r.size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) +
         (letterSp ? letterSp * r.text.length : 0);
       var rh2 = alignH(r.align || h);
       var rx0 = rh2 === 'right' ? lw - pr - rw :
@@ -3826,6 +4190,44 @@
       source: base64(svg), aspect: 'preserve' };
   }
 
+  // Rotated render for the dedicated builder branches (note/note2/shaded-cube)
+  // whose `innerFn(style, w, h, fillOverride, opacityOverride)` returns box-local
+  // SVG content. Mirrors the generic rotated-shape path: shadow (offset in
+  // SCREEN space, under), the body, and the rotated label composed into ONE
+  // rotated kind:'svg' node. Without this these branches early-returned and
+  // silently dropped style.rotation (geometry AND label printed upright).
+  function rotatedBuilderNode(innerFn, style, box, graph, cell, label, notices, resolved) {
+    var rotDeg = number(style.rotation, 0);
+    var theta = rotDeg * Math.PI / 180;
+    var cosT = Math.abs(Math.cos(theta)), sinT = Math.abs(Math.sin(theta));
+    var expW = box.w * cosT + box.h * sinT, expH = box.w * sinT + box.h * cosT;
+    var offX = (expW - box.w) / 2, offY = (expH - box.h) / 2;
+    var rcx = expW / 2, rcy = expH / 2;
+    var rotG = function (inner) {
+      return '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) +
+        ')"><g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ')">' + inner + '</g></g>';
+    };
+    var sh = '';
+    if (boolish(style.shadow)) {
+      var sp = shadowParams(style);
+      // innerFn already bakes the shadow alpha (opacityOverride), so no extra
+      // group opacity; offset in screen space via the outer translate.
+      sh = '<g transform="translate(' + fmt(sp.dx) + ' ' + fmt(sp.dy) + ')">' +
+        rotG(innerFn(style, box.w, box.h, sp.color, sp.alpha)) + '</g>';
+    }
+    var body = rotG(innerFn(style, box.w, box.h, null, null));
+    var lbl = label !== ''
+      ? '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
+        rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved) +
+        '</g>'
+      : '';
+    var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
+      'width="' + fmt(expW) + '" height="' + fmt(expH) + '">' + sh + body + lbl + '</svg>';
+    return { kind: 'svg', box: { x: box.x + box.w / 2 - expW / 2,
+      y: box.y + box.h / 2 - expH / 2, w: expW, h: expH },
+      source: base64(svgStr), aspect: 'preserve' };
+  }
+
   // Note shape: a rectangle with a folded-over corner (dog-ear). drawio's
   // NoteShape draws a pentagon (one corner cut at `size`) plus a small fold
   // triangle; `direction` rotates which corner folds (east=top-right default,
@@ -3856,7 +4258,7 @@
       var nfa = opacity(style, 'fillOpacity');
       var nfaAttr = nfa < 1 ? ' fill-opacity="' + fmt(nfa) + '"' : '';
       if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
-        defs = '<defs>' + linearGradDef('ngrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        defs = '<defs>' + linearGradDef('ngrad', style.fillColor, style.gradientColor, style.gradientDirection) + '</defs>';
         fillAttr = ' fill="url(#ngrad)"' + nfaAttr;
       } else if (isPaintable(style.fillColor)) {
         fillAttr = ' fill="' + hex(style.fillColor) + '"' + nfaAttr;
@@ -3917,7 +4319,7 @@
       var cfa = opacity(style, 'fillOpacity');
       var cfaAttr = cfa < 1 ? ' fill-opacity="' + fmt(cfa) + '"' : '';
       if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
-        defs = '<defs>' + linearGradDef('cgrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        defs = '<defs>' + linearGradDef('cgrad', style.fillColor, style.gradientColor, style.gradientDirection) + '</defs>';
         fillAttr = ' fill="url(#cgrad)"' + cfaAttr;
       } else if (isPaintable(style.fillColor)) {
         fillAttr = ' fill="' + hex(style.fillColor) + '"' + cfaAttr;
@@ -3997,8 +4399,8 @@
     var defs = '';
     if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
       gradId = 'b' + stableGradId(style.fillColor, style.gradientColor);
-      defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor),
-        hex(style.gradientColor), style.gradientDirection) + '</defs>';
+      defs = '<defs>' + linearGradDef(gradId, style.fillColor,
+        style.gradientColor, style.gradientDirection) + '</defs>';
     }
     var content = builtinShapeSvgImpl(style, w, h, gradId);
     return content == null ? null : defs + content;
@@ -5179,13 +5581,13 @@
     if (typeof c !== 'string') return null;
     var s = c.trim().toLowerCase();
     if (s === '' || s === 'none' || s === 'transparent') return { none: true };
-    if (/^#[0-9a-f]{3}$/.test(s)) return { hex: hex(s), alpha: 1 };
+    if (/^#[0-9a-f]{3}$/.test(s)) return { hex: normHex(s), alpha: 1 };
     if (/^#[0-9a-f]{6}$/.test(s)) return { hex: s, alpha: 1 };
     var m = /^rgba?\(([^)]+)\)$/.exec(s);
     if (m) {
       var pr = m[1].split(/[ ,/]+/).filter(function (x) { return x !== ''; });
       if (pr.length < 3) return null;
-      var al = pr.length > 3 ? parseFloat(pr[3]) : 1;
+      var al = pr.length > 3 ? parseAlpha(pr[3]) : 1;
       return {
         hex: '#' + toHex2(clampByte(pr[0])) + toHex2(clampByte(pr[1])) +
           toHex2(clampByte(pr[2])),
@@ -5460,9 +5862,11 @@
     // Additive forward-compatible version skew (peer/schema minor ahead).
     SchemaMinorAhead: true,
     ProtoMinorAhead: true,
-    // rgba text color alpha is dropped to hex in the contract (print is opaque
-    // by design). The text still appears; only the transparency is lost. This
-    // is cosmetic and does not warrant a blocking acknowledgment gate.
+    // Retained classification only. Text/run/border color alpha is now HONORED
+    // (emitted as fill-opacity/stroke-opacity, rendered faithfully by resvg) —
+    // it is no longer dropped, so this notice is not emitted on the current
+    // paths. Kept (info, non-blocking) so any future path that genuinely cannot
+    // carry alpha can classify its degradation without a code change.
     RichApproximateAlpha: true
   };
 
@@ -5685,11 +6089,24 @@
       }
     }
     if (clip == null) return null;
-    var m = /^inset\(\s*([^\s)]+)(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?\s*(?:round\s+([^\s)]+)\s*)?\)$/i
-      .exec(clip.trim());
-    if (!m) {
+    // Parse inset(<1-4 margins> [round <radius>]). Splitting on the `round`
+    // keyword (rather than a fixed 4-slot regex) is required: a fixed regex's
+    // margin groups greedily swallowed the literal `round` token whenever fewer
+    // than 4 margins preceded it, dropping the corner radius AND mis-cropping.
+    var im = /^inset\(\s*(.*?)\s*\)$/i.exec(clip.trim());
+    if (!im) {
       // circle()/ellipse()/polygon() crops have no headless port yet:
       // print the FULL image with a loud notice, never a silent wrong crop.
+      if (notices) {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
+      }
+      return null;
+    }
+    var insetParts = im[1].split(/\s+round\s+/i);
+    var marginToks = insetParts[0].trim().split(/\s+/).filter(function (s) { return s !== ''; });
+    var radTok = insetParts.length > 1 ? (insetParts[1].trim().split(/\s+/)[0] || null) : null;
+    if (marginToks.length < 1 || marginToks.length > 4) {
       if (notices) {
         notices.push(degradation('ExporterUnsupportedImage',
           'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
@@ -5702,12 +6119,13 @@
       if (!Number.isFinite(n)) return 0;
       return /%$/.test(v) ? n / 100 * ref : n;
     };
-    // CSS inset(): 1-4 values per margin shorthand order T R B L.
-    var t = len(m[1], box.h);
-    var rr = len(m[2] != null ? m[2] : m[1], box.w);
-    var b = len(m[3] != null ? m[3] : m[1], box.h);
-    var l = len(m[4] != null ? m[4] : (m[2] != null ? m[2] : m[1]), box.w);
-    var rad = m[5] != null ? len(m[5], Math.min(box.w, box.h)) : 0;
+    // CSS inset() margin shorthand order T R B L (1-4 values).
+    var mt = marginToks;
+    var t = len(mt[0], box.h);
+    var rr = len(mt[1] != null ? mt[1] : mt[0], box.w);
+    var b = len(mt[2] != null ? mt[2] : mt[0], box.h);
+    var l = len(mt[3] != null ? mt[3] : (mt[1] != null ? mt[1] : mt[0]), box.w);
+    var rad = radTok != null ? len(radTok, Math.min(box.w, box.h)) : 0;
     var cw = Math.max(0, box.w - l - rr);
     var ch = Math.max(0, box.h - t - b);
     var id = 'imgclip' + (imgClipCounter++);
@@ -5772,7 +6190,7 @@
   // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
-  function dataUriImageSvgNode(mime, data, box, style, notices, cellId, aspectOverride) {
+  function dataUriImageSvgNode(mime, data, box, style, notices, cellId, aspectOverride, rotationDeg) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5805,11 +6223,35 @@
         (boolish(style.flipH) ? -1 : 1) + ' ' +
         (boolish(style.flipV) ? -1 : 1) + ')">' + img + '</g>';
     }
+    // mxShape.updateTransform rotates EVERY image by the cell rotation,
+    // independent of format; the PNG path carries this via a rotate() wrapper,
+    // but this SVG-wrapped path (JPEG/GIF/SVG payloads) dropped rotation
+    // silently -- a rotated non-PNG image printed axis-aligned with the wrong
+    // AABB. Mirror the PNG rotated path: expand the viewport to the rotated
+    // axis-aligned bbox, rotate the content about its centre, and centre the
+    // expanded node box on the cell-box centre.
+    var duRot = number(rotationDeg, 0);
+    var vpW = box.w, vpH = box.h;
+    var nodeBox = box;
+    if (duRot) {
+      var duTheta = duRot * Math.PI / 180;
+      var duCosT = Math.abs(Math.cos(duTheta));
+      var duSinT = Math.abs(Math.sin(duTheta));
+      vpW = box.w * duCosT + box.h * duSinT;
+      vpH = box.w * duSinT + box.h * duCosT;
+      var duOffX = (vpW - box.w) / 2;
+      var duOffY = (vpH - box.h) / 2;
+      img = '<g transform="rotate(' + fmt(duRot) + ' ' + fmt(vpW / 2) + ' ' +
+        fmt(vpH / 2) + ') translate(' + fmt(duOffX) + ' ' + fmt(duOffY) + ')">' +
+        img + '</g>';
+      nodeBox = { x: box.x + box.w / 2 - vpW / 2,
+        y: box.y + box.h / 2 - vpH / 2, w: vpW, h: vpH };
+    }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
-      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
-      '" height="' + fmt(box.h) + '">' +
+      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(vpW) +
+      '" height="' + fmt(vpH) + '">' +
       (clipDecor2 ? '<defs>' + clipDecor2.defs + '</defs>' : '') + img + '</svg>';
-    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+    return { kind: 'svg', box: nodeBox, source: base64(svg), aspect: 'preserve' };
   }
 
   // Re-encode an ALREADY-LOADED <img> element's pixels to a PNG data URI via an
@@ -6106,16 +6548,34 @@
       origin = { x: view.translate.x * scale, y: view.translate.y * scale };
     } else if (paper && paper.explicit && bounds && bounds.width > 0) {
       // The AUTHOR fixed the page size (File > Page Setup), so cells keep
-      // their on-page position even headless (mxPrintPreview semantics):
-      // the origin is the PAGE-GRID cell containing the content, never the
-      // content corner. floor() generalises to content drawn on a far grid
-      // cell — the editor shows it on that page, and the print shows the
-      // same sheet with the same in-page margins.
+      // their on-page position even headless (mxPrintPreview floor() tiling
+      // semantics): origin = the page-grid cell the diagram occupies and
+      // content paints at (model - origin), so the author's in-page margins
+      // print exactly as drawn (the "shifted up-and-left one block" report).
+      //
+      // The page-grid cell is chosen from the content CENTRE, not its min
+      // corner. Flooring the min corner let a single slightly-negative
+      // coordinate (a 1px overhang, or an outside-positioned label poking
+      // above the top edge) snap the origin to the previous (-1) grid cell and
+      // shift the WHOLE sheet a full page off-paper -- silent, total content
+      // loss on a medical label. Anchoring on the centre keeps the bulk on its
+      // real sheet.
+      //
+      // This is a SINGLE-page heuristic. drawio's own multi-page print path
+      // (Graph.getPageLayout) floors the content MIN corner and tiles the
+      // diagram across as many sheets as it spans; the bake emits one sheet per
+      // page, so for the common fixed-size label (content within one page) the
+      // centre and min-corner cells coincide and the result is identical to
+      // drawio. For content larger than a page the two differ -- but any ink
+      // that then falls past a page edge is caught by the engine's loud
+      // HardwareMarginClip / TileCoverageGap at render time
+      // (renderer.cpp escape_tolerance ~4px), so it is faithful-or-loud-notice,
+      // never silently cropped.
       var pgw = page.w * scale;
       var pgh = page.h * scale;
       origin = {
-        x: pgw * Math.floor(bounds.x / pgw),
-        y: pgh * Math.floor(bounds.y / pgh)
+        x: pgw * Math.floor((bounds.x + bounds.width / 2) / pgw),
+        y: pgh * Math.floor((bounds.y + bounds.height / 2) / pgh)
       };
     } else {
       // Auto-fit page (no explicit dims): bounds-anchoring is faithful.
@@ -6131,6 +6591,38 @@
     if (isPaintable(pgBg) && hex(pgBg).toLowerCase() !== '#ffffff') {
       paint.push({ kind: 'path', d: rectPath(0, 0, page.w, page.h),
         fill: solid(pgBg, 1), stroke: null });
+    }
+
+    // Page background IMAGE (File > Background) prints behind all content. It was
+    // silently dropped (a watermark / pre-printed label template / logo backdrop
+    // vanished). Place it at its model box (transformed by origin/scale like a
+    // cell); a data-URI/embeddable src prints faithfully, an unembeddable one
+    // raises the same loud ExporterUnsupportedImage as cell images.
+    var bgImg = paper && paper.backgroundImage;
+    if (bgImg && bgImg.src) {
+      var bgW = bgImg.width > 0 ? bgImg.width : page.w;
+      var bgH = bgImg.height > 0 ? bgImg.height : page.h;
+      var bgBox = {
+        x: (bgImg.x * scale - origin.x) / scale,
+        y: (bgImg.y * scale - origin.y) / scale,
+        w: Math.max(1, bgW), h: Math.max(1, bgH)
+      };
+      var bgSrc = (resolved && resolved[bgImg.src]) || bgImg.src;
+      var bgParsed = parseImage(bgSrc);
+      var bgMime = embeddableImageMime(bgParsed);
+      if (bgParsed && bgParsed.format === 'png') {
+        paint.push(imageNode({}, bgBox, bgParsed, notices, '', 'none'));
+      } else if (bgMime) {
+        paint.push(dataUriImageSvgNode(bgMime, bgParsed.data, bgBox, {}, notices, '', 'none', 0));
+      } else {
+        var bgWhy = bgParsed && bgParsed.unsupportedFormat
+          ? 'background image format "' + bgParsed.unsupportedFormat + '" cannot be embedded'
+          : bgParsed && bgParsed.externalUrl
+            ? 'background image URL could not be fetched for embedding'
+            : 'background image source is missing or unreadable';
+        notices.push(degradation('ExporterUnsupportedImage',
+          bgWhy + ' — page background not printed.', ''));
+      }
     }
 
     // WYSIWYG paint order = mxGraph z-order. The model's `cells` dict is keyed
@@ -6163,7 +6655,7 @@
       if (state == null) return;
       var isEdgeCell = model.isEdge(cell);
       var style = resolveThemeDefaults(
-        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell, cell);
+        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell, cell, notices);
 
       if (isEdgeCell) {
         emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);
@@ -6184,6 +6676,8 @@
     // in a fallback path; the operator sees the gap, never a silent wrong
     // direction.
     scanGradientFallbacks(paint, notices);
+    scanFontMetricFallbacks(paint, notices);
+    scanGlyphMetric(paint, notices);
 
     return {
       contract: {
@@ -6226,6 +6720,126 @@
     }
   }
 
+  // Raise a loud FontMetricApprox notice for every distinct text font family
+  // whose metrics are NOT the ones the bake measured with (see
+  // FONT_METRIC_EXACT). The bake wraps/positions text with core AFM tables; a
+  // non-compatible installed face renders with its own widths, drifting wrap
+  // points and alignment. On a medical label that silent drift is a C1
+  // violation, so it is surfaced (degradation severity) rather than emitted
+  // quietly. Families are read from the emitted SVG text nodes (production
+  // path) and any kind:'text' node (harness fixtures); the first family token
+  // is what resvg resolves.
+  function scanFontMetricFallbacks(paint, notices) {
+    var flagged = {};
+    function consider(fam) {
+      var first = fontFamilyFirstToken(fam);
+      if (first === '' || fontMetricExact(first) || flagged[first]) return;
+      flagged[first] = true;
+    }
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n) continue;
+      if (n.kind === 'svg' && typeof n.source === 'string') {
+        var svg = '';
+        try {
+          svg = (typeof Buffer !== 'undefined')
+            ? Buffer.from(n.source, 'base64').toString('utf8')
+            : decodeUtf8B64(n.source);
+        } catch (e) { svg = ''; }
+        var re = /font-family="([^"]+)"/g, m;
+        while ((m = re.exec(svg)) !== null) consider(m[1]);
+      } else if (n.kind === 'text' && n.font && n.font.family) {
+        consider(n.font.family);
+      }
+    }
+    var fams = Object.keys(flagged);
+    if (fams.length > 0) {
+      notices.push(degradation('FontMetricApprox',
+        'text uses font famil' + (fams.length > 1 ? 'ies' : 'y') + ' "' +
+        fams.join('", "') + '" whose glyph metrics differ from the core ' +
+        'Arial/Times/Courier tables the bake measures with. The print server ' +
+        'renders the installed face directly, so wrap points, alignment and ' +
+        'label-background boxes may shift from the drawio canvas. Use a ' +
+        'metric-compatible face (Arial/Helvetica, Times, Courier — or the ' +
+        'Liberation/Arimo/Tinos/Cousine clones) for exact WYSIWYG.',
+        ''));
+    }
+  }
+
+  // Decode the XML/numeric entities in baked text PCDATA so the glyph scan sees
+  // the real code points (e.g. a Cyrillic letter written as &#1044;).
+  function decodeXmlText(s) {
+    return String(s == null ? '' : s)
+      .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) { return String.fromCodePoint(parseInt(h, 16)); })
+      .replace(/&#(\d+);/g, function (_, d) { return String.fromCodePoint(parseInt(d, 10)); })
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  }
+  // Raise a loud GlyphMetricApprox notice when rendered text contains glyph(s)
+  // the bake cannot measure (no entry in the ASCII/Latin-1/symbol AFM tables and
+  // not CJK-fullwidth): non-Latin scripts (Cyrillic/Greek/Arabic/Thai/…), arrows,
+  // geometric shapes, emoji. Those render from a fallback face with unknown
+  // advances, so the bake's wrap points and label-background boxes around them
+  // drift from the drawio canvas. Surfacing it (degradation) keeps the metric
+  // gap from being a SILENT divergence on a medical label, even when the font
+  // family itself is metric-compatible (so FontMetricApprox would not fire).
+  function scanGlyphMetric(paint, notices) {
+    var seen = {};
+    function scanText(txt) {
+      // Iterate by CODE POINT so astral glyphs (emoji) are one unit, not two
+      // surrogate halves — the notice then reports U+1F600, not U+D83D/U+DE00.
+      var s = String(txt);
+      for (var k = 0; k < s.length;) {
+        var cp = s.codePointAt(k);
+        var ch = String.fromCodePoint(cp);
+        k += ch.length;
+        if (cp < 0x20) continue;                    // newlines/tabs are not glyphs
+        if (!glyphHasMetric(ch)) seen[ch] = true;
+      }
+    }
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n) continue;
+      if (n.kind === 'svg' && typeof n.source === 'string') {
+        var svg = '';
+        try {
+          svg = (typeof Buffer !== 'undefined')
+            ? Buffer.from(n.source, 'base64').toString('utf8')
+            : decodeUtf8B64(n.source);
+        } catch (e) { svg = ''; }
+        // PCDATA only (between '>' and '<'), so element/attribute names and
+        // font-family values (which may legitimately be non-Latin) are skipped.
+        var re = />([^<]+)</g, m;
+        while ((m = re.exec(svg)) !== null) scanText(decodeXmlText(m[1]));
+      } else if (n.kind === 'text') {
+        if (typeof n.text === 'string') scanText(n.text);
+        var c = n.content;
+        if (c && c.type === 'rich' && Array.isArray(c.paragraphs)) {
+          for (var p = 0; p < c.paragraphs.length; p++) {
+            var runs = c.paragraphs[p].runs || [];
+            for (var r = 0; r < runs.length; r++) {
+              if (typeof runs[r].text === 'string') scanText(runs[r].text);
+            }
+          }
+        }
+      }
+    }
+    var chars = Object.keys(seen).sort();
+    if (chars.length > 0) {
+      var shown = chars.slice(0, 12).map(function (c) {
+        return 'U+' + c.codePointAt(0).toString(16).toUpperCase();
+      });
+      notices.push(degradation('GlyphMetricApprox',
+        'text contains glyph(s) outside the core Arial/Times/Courier metric ' +
+        'tables (' + shown.join(', ') + (chars.length > 12 ? ', …' : '') + '): ' +
+        'a non-Latin script, arrow, geometric symbol or emoji. Their advance ' +
+        'widths are estimated, so wrap points and the label-background box around ' +
+        'that text may shift from the drawio canvas. Keep variable data in ' +
+        'Latin/CJK plus the covered symbol set for exact WYSIWYG.',
+        ''));
+    }
+  }
+
   function emitVertex(graph, cell, state, style, origin, scale, paint, notices, resolved) {
     var box = scaledBox(state, origin, scale);
     var label = plainLabel(graph, cell);
@@ -6236,6 +6850,13 @@
     if (boolish(style.textShadow)) {
       notices.push(degradation('ExporterUnsupportedShape',
         'textShadow is not rendered (text drawn without its drop shadow).', cell.id));
+    }
+    // comic=1 applies a hand-drawn HandJiggle wobble to outlines (Shapes.js).
+    // The bake draws clean geometry; flag it loudly for parity with sketch=1
+    // (position/size/color/text stay faithful — only the decorative wobble is lost).
+    if (boolish(style.comic) && !boolish(style.sketch)) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'comic=1 hand-drawn (HandJiggle) outline is rendered as clean geometry.', cell.id));
     }
     if (isPaintable(style.indicatorShape) || style.indicatorShape ||
         (typeof style.indicatorImage === 'string' && style.indicatorImage !== '')) {
@@ -6352,9 +6973,6 @@
     if (style.shape === 'label' &&
         typeof style.image === 'string' && style.image !== '') {
       var lblR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
-      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
-        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
-                    : rectPath(box.x, box.y, box.w, box.h) });
       var liw = number(style.imageWidth, 24), lih = number(style.imageHeight, 24);
       var lsp = number(style.spacing, 2) + 5;            // mxLabel: spacing + 5
       var lia = style.imageAlign || 'left', liv = style.imageVerticalAlign || 'middle';
@@ -6366,6 +6984,74 @@
       var lImgSrc = (resolved && resolved[style.image]) || style.image;
       var lImg = parseImage(lImgSrc);
       var lMime = embeddableImageMime(lImg);
+      // Rotated mxLabel+image: the per-node path below cannot carry rotation,
+      // so a rotated label-with-icon printed axis-aligned with NO notice (the
+      // generic shape path rotates; this branch returned early). Compose the
+      // background + icon + label into ONE rotated SVG, exactly like the
+      // generic rotated-shape path, so the whole label rotates as a unit.
+      var lblRotDeg = number(style.rotation, 0);
+      if (lblRotDeg) {
+        var lblTheta = lblRotDeg * Math.PI / 180;
+        var lblCosT = Math.abs(Math.cos(lblTheta)), lblSinT = Math.abs(Math.sin(lblTheta));
+        var lblExpW = box.w * lblCosT + box.h * lblSinT;
+        var lblExpH = box.w * lblSinT + box.h * lblCosT;
+        var lblOffX = (lblExpW - box.w) / 2, lblOffY = (lblExpH - box.h) / 2;
+        var lblRcx = lblExpW / 2, lblRcy = lblExpH / 2;
+        var lblDefs = '', lblGradId = '';
+        if (isPaintable(style.gradientColor) && isPaintable(style.fillColor)) {
+          lblGradId = 'lg' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
+          lblDefs = '<defs>' + linearGradDef(lblGradId, style.fillColor,
+            style.gradientColor, style.gradientDirection) + '</defs>';
+        }
+        var lblBgD = lblR > 0 ? roundedRectPath(lblOffX, lblOffY, box.w, box.h, lblR)
+                              : rectPath(lblOffX, lblOffY, box.w, box.h);
+        var lblBgEl = '<path d="' + lblBgD + '"' + fillSvgAttr(style, lblGradId) +
+          strokeSvgAttrs(style) + '/>';
+        var lblIconX = lblOffX + (liBox.x - box.x), lblIconY = lblOffY + (liBox.y - box.y);
+        var lblIconEl;
+        if ((lImg && lImg.format === 'png') || lMime) {
+          var lblHref = (lImg && lImg.format === 'png')
+            ? 'data:image/png;base64,' + lImg.data
+            : 'data:' + lMime + ';base64,' + lImg.data;
+          var lblImgOp = opacity(style, 'fillOpacity');
+          // mxLabel stretches the icon (preserveAspectRatio="none") + honors flips.
+          var lblFh = boolish(style.imageFlipH) || boolish(style.flipH);
+          var lblFv = boolish(style.imageFlipV) || boolish(style.flipV);
+          var lblFlipTf = (lblFh || lblFv)
+            ? ' transform="translate(' + fmt(lblFh ? 2 * lblIconX + liw : 0) + ' ' +
+              fmt(lblFv ? 2 * lblIconY + lih : 0) + ') scale(' + (lblFh ? -1 : 1) + ',' +
+              (lblFv ? -1 : 1) + ')"'
+            : '';
+          lblIconEl = '<image x="' + fmt(lblIconX) + '" y="' + fmt(lblIconY) + '" width="' +
+            fmt(liw) + '" height="' + fmt(lih) + '" preserveAspectRatio="none"' +
+            (lblImgOp < 1 ? ' opacity="' + fmt(lblImgOp) + '"' : '') + lblFlipTf +
+            ' xlink:href="' + lblHref + '"/>';
+        } else {
+          notices.push(degradation('ExporterUnsupportedImage',
+            'label image could not be embedded — placeholder box printed.', cell.id));
+          lblIconEl = '<rect x="' + fmt(lblIconX) + '" y="' + fmt(lblIconY) + '" width="' +
+            fmt(liw) + '" height="' + fmt(lih) + '" fill="none"' + strokeSvgAttrs(style) + '/>';
+        }
+        var lblTextEl = label !== ''
+          ? rotatedLabelEls(graph, cell, style, lblOffX, lblOffY, box.w, box.h, label, notices, resolved)
+          : '';
+        var lblInner = '<g transform="rotate(' + fmt(lblRotDeg) + ' ' + fmt(lblRcx) + ' ' +
+          fmt(lblRcy) + ')">' + lblBgEl + lblIconEl + lblTextEl + '</g>';
+        var lblSvgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
+          'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(lblExpW) +
+          '" height="' + fmt(lblExpH) + '">' + lblDefs + lblInner + '</svg>';
+        paint.push({
+          kind: 'svg',
+          box: { x: box.x + box.w / 2 - lblExpW / 2, y: box.y + box.h / 2 - lblExpH / 2,
+                 w: lblExpW, h: lblExpH },
+          source: base64(lblSvgStr),
+          aspect: 'preserve'
+        });
+        return;
+      }
+      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
+        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
+                    : rectPath(box.x, box.y, box.w, box.h) });
       // mxLabel.paintImage calls c.image(...aspect=false...) — the icon is
       // STRETCHED to the icon box (preserveAspectRatio="none"), NOT letterboxed,
       // regardless of imageAspect (mxLabel.js:131-139).
@@ -6444,7 +7130,10 @@
             ? ' transform="translate(' + fmt(imgFlipTx) + ' ' + fmt(imgFlipTy) +
               ') scale(' + imgFlipSx + ',' + imgFlipSy + ')"'
             : '';
-          var imgRotOp = opacity(style, 'opacity');
+          // Image opacity = alpha * fillAlpha (mxSvgCanvas2D.image); the
+          // non-rotated path uses 'fillOpacity' too. Reading bare 'opacity'
+          // here silently dropped fillOpacity on rotated PNG images.
+          var imgRotOp = opacity(style, 'fillOpacity');
           var imgEl = '<image x="' + fmt(imgOffX) + '" y="' + fmt(imgOffY) + '"' +
             ' width="' + fmt(imageBox.w) + '" height="' + fmt(imageBox.h) + '"' +
             ' preserveAspectRatio="' + imgFit + '"' +
@@ -6471,7 +7160,8 @@
         // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
         // -> build the SVG <image> from the bytes (no live-DOM dependency, so
         // it's faithful headless AND in-browser). No notice.
-        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices, cell.id));
+        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices,
+          cell.id, undefined, number(style.rotation, 0)));
       } else {
         // Genuinely cannot embed faithfully (external URL that could not be
         // fetched — cross-origin without CORS, 404, offline; non-base64; or a
@@ -6803,6 +7493,10 @@
       // would flatten the dog-ear to a plain rectangle. note2 (NoteShape2,
       // Shapes.js) paints identically to note — only its label margins differ.
       if (style.shape === 'note' || style.shape === 'note2') {
+        if (number(style.rotation, 0)) {
+          paint.push(rotatedBuilderNode(noteInner, style, box, graph, cell, label, notices, resolved));
+          return;
+        }
         if (boolish(style.shadow)) {
           var nsp = shadowParams(style);
           paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, nsp.color, nsp.alpha),
@@ -6823,6 +7517,10 @@
       // plain cube keeps its single-path shapePath render). Mirrors noteInner.
       if (style.shape === 'cube' &&
           (number(style.darkOpacity, 0) !== 0 || number(style.darkOpacity2, 0) !== 0)) {
+        if (number(style.rotation, 0)) {
+          paint.push(rotatedBuilderNode(cubeInner, style, box, graph, cell, label, notices, resolved));
+          return;
+        }
         if (boolish(style.shadow)) {
           var csp = shadowParams(style);
           paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, csp.color, csp.alpha),
@@ -6880,6 +7578,45 @@
             x: swFH ? 2 * bx + bw - b.x - b.w : b.x,
             y: swFV ? 2 * by + bh - b.y - b.h : b.y, w: b.w, h: b.h } : b;
         };
+        // Shadow (mxShape.configureCanvas setShadow applies to swimlanes too,
+        // mxShape.js:1037-1039). drawio's createShadow duplicates every painted
+        // element offset + recolored at shadowAlpha; emit the lane silhouette
+        // (header-fill region + outer outline + divider) as ONE group-opacity
+        // SVG so overlapping strokes don't double-darken, rendered UNDER the
+        // shape. Previously dropped silently (the table subclass shadowed; this
+        // branch did not).
+        if (boolish(style.shadow)) {
+          var swSp = shadowParams(style);
+          var swSgw = Math.max(0.1, number(style.strokeWidth, 1));
+          var swShColor = hex(swSp.color);
+          var swShParts = '';
+          // The header-fill region and divider must follow flipH/flipV exactly
+          // like the real geometry (swFlipBox), or under flipV / a flipped
+          // vertical lane the shadow's dark header band shows on the wrong side.
+          // Local (box-relative) header offset + divider position, flip-aware:
+          var swShHx = swH ? 0 : (swFH ? bw - swSz : 0);
+          var swShHy = swH ? (swFV ? bh - swSz : 0) : 0;
+          var swShDiv = swH ? (swFV ? bh - swSz : swSz) : (swFH ? bw - swSz : swSz);
+          if (swFill) {
+            swShParts += '<rect x="' + fmt(swShHx) + '" y="' + fmt(swShHy) +
+              '" width="' + fmt(swH ? bw : swSz) + '" height="' + fmt(swH ? swSz : bh) +
+              '" fill="' + swShColor + '" stroke="none"/>';
+          }
+          swShParts += swR > 0
+            ? '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
+              '" rx="' + fmt(swR) + '" ry="' + fmt(swR) + '" fill="none" stroke="' +
+              swShColor + '" stroke-width="' + fmt(swSgw) + '"/>'
+            : '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
+              '" fill="none" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '"/>';
+          if (String(style.swimlaneLine) !== '0') {
+            swShParts += '<path d="' + (swH
+              ? 'M 0 ' + fmt(swShDiv) + ' L ' + fmt(bw) + ' ' + fmt(swShDiv)
+              : 'M ' + fmt(swShDiv) + ' 0 L ' + fmt(swShDiv) + ' ' + fmt(bh)) +
+              '" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '" fill="none"/>';
+          }
+          paint.push(paddedSvgShapeNode('<g opacity="' + fmt(swSp.alpha) + '">' +
+            swShParts + '</g>', { x: bx + swSp.dx, y: by + swSp.dy, w: bw, h: bh }, style));
+        }
         var swStart = paint.length;
         // header fill (faithful gradient when gradientColor is set)
         if (swFill) {
@@ -6954,6 +7691,16 @@
               paint[swI].d = flipPathD(paint[swI].d, bx + bw / 2, by + bh / 2, swFH, swFV);
             }
           }
+        }
+        // Glass highlight over the HEADER region only (mxSwimlane.paintVertexShape
+        // -> paintGlassEffect(c, 0, 0, w, start, r), mxSwimlane.js:267-270).
+        // Previously dropped silently (the table subclass painted it; this branch
+        // did not).
+        if (boolish(style.glass) && isPaintable(style.fillColor)) {
+          var swGB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
+                                    : { x: bx, y: by, w: swSz, h: bh });
+          paint.push(paddedSvgShapeNode(glassOverlaySvg(style, swGB.w, swGB.h),
+            swGB, style));
         }
         if (label !== '') {
           var swLB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
@@ -7035,13 +7782,44 @@
         var gradId = '';
         if (isPaintable(style.gradientColor)) {
           gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
+          defs = '<defs>' + linearGradDef(gradId, style.fillColor, style.gradientColor, rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
+        // Shadow under the shape: the rotated silhouette, offset by (dx,dy) in
+        // SCREEN space (translate OUTSIDE the rotate, applied last), at the
+        // shadow alpha. The non-rotated path emits this separately; the rotated
+        // early-return skipped it, dropping shadows on rotated shapes silently.
+        var rotShadowEl = '';
+        if (boolish(style.shadow)) {
+          var rsp = shadowParams(style);
+          var rShFill = isPaintable(style.fillColor) ? hex(rsp.color) : 'none';
+          var rShStroke = isPaintable(style.strokeColor) ? hex(rsp.color) : 'none';
+          var rShSw = Math.max(0.1, number(style.strokeWidth, 1));
+          rotShadowEl = '<g opacity="' + fmt(rsp.alpha) + '" transform="translate(' +
+            fmt(rsp.dx) + ' ' + fmt(rsp.dy) + ')"><g transform="rotate(' + fmt(rotDeg) +
+            ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')"><path d="' + relD + '" fill="' + rShFill +
+            '" stroke="' + rShStroke + '"' +
+            (rShStroke !== 'none' ? ' stroke-width="' + fmt(rShSw) + '"' : '') +
+            '/></g></g>';
+        }
+        // Glass highlight over the shape (rotates with it), for the same family
+        // the non-rotated path glasses (rect/label, ellipse, rhombus). Skipped
+        // by the rotated early-return before — silently dropped.
+        var rotGlassEl = '';
+        var rGlassShape = style.shape;
+        var rGlassRectFamily = !rGlassShape || rGlassShape === 'rectangle' || rGlassShape === 'label';
+        var rGlassOk = rGlassRectFamily || rGlassShape === 'ellipse' ||
+          rGlassShape === 'rhombus' || rGlassShape === 'diamond';
+        if (boolish(style.glass) && rGlassOk && isPaintable(style.fillColor)) {
+          rotGlassEl = '<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ')">' +
+            glassOverlaySvg(style, box.w, box.h, rGlassRectFamily ? undefined : rGlassShape) +
+            '</g>';
+        }
         var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
-        var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
-          pathEl + textEl + '</g>';
+        var inner = rotShadowEl +
+          '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
+          pathEl + rotGlassEl + textEl + '</g>';
         var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
           'width="' + fmt(expW) + '" height="' + fmt(expH) + '">' +
           defs + inner + '</svg>';
@@ -7084,8 +7862,8 @@
       // so the C++ engine renders the correct direction via resvg.
       } else if (isPaintable(style.gradientColor)) {
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-        var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
-          hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
+        var gdefs = '<defs>' + linearGradDef(ggid, style.fillColor,
+          style.gradientColor, rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         var relD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
