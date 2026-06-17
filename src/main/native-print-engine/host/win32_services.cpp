@@ -1961,6 +1961,21 @@ class Win32Services final : public EngineServices {
             const int band_y = band * kPrintBandHeightPx;
             const int band_h = std::min(kPrintBandHeightPx, ph - band_y);
             Gdiplus::Bitmap band_bmp(pw, band_h, PixelFormat24bppRGB);
+            // Check the band bitmap allocated: under driver/GDI+ memory
+            // pressure (large media + high DPI) the backing store can fail,
+            // after which Graphics/Clear/draw all silently no-op and the band's
+            // ink is lost. Every other rasterization Bitmap in this file checks
+            // its status; match that here and abort loudly rather than print a
+            // blank stripe. (Defense-in-depth: a fully-failed bitmap is also
+            // caught by the DrawImage status check below.)
+            if (band_bmp.GetLastStatus() != Gdiplus::Ok) {
+              aborted = true;
+              fail_detail = "band bitmap allocation failed at copy=" +
+                            std::to_string(copy + 1) + " page=" + tile.page_id +
+                            " tile=" + std::to_string(tile.tile_index) +
+                            " band=" + std::to_string(band);
+              break;
+            }
             Gdiplus::Graphics gb(&band_bmp);
             gb.Clear(Gdiplus::Color(255, 255, 255, 255));   // opaque white
             gb.SetPageUnit(Gdiplus::UnitPixel);

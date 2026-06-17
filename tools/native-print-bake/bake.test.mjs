@@ -4070,6 +4070,38 @@ test('audit9: rotated shape=label with image rotates as a unit (was unrotated)',
   assert.ok(node.box.h > 122 && node.box.h < 135, `AABB h ~129, got ${node.box.h}`);
 });
 
+test('audit9: swimlane shadow=1 casts a shadow (was silently dropped)', async () => {
+  // mxShape.configureCanvas setShadow applies to swimlanes (the table subclass
+  // shadowed; the dedicated swimlane branch dropped it with no notice).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lane" style="swimlane;shadow=1;fillColor=#dae8fc;strokeColor=#6c8ebf;startSize=30;" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful shadow, no notice');
+  const shadow = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /opacity="0\.25"/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(shadow, 'swimlane shadow node present at the default 0.25 alpha');
+  // A plain swimlane (no shadow) must NOT gain a shadow node.
+  const plain = await bake(xml.replace('shadow=1;', ''), { keepPx: true });
+  assert.ok(!plain.contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /opacity="0\.25"/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'plain swimlane has no shadow node');
+});
+
+test('audit9: swimlane glass=1 paints the header glass highlight (was dropped)', async () => {
+  // mxSwimlane.paintVertexShape paints glass over the header (mxSwimlane.js:267-270).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lane" style="swimlane;glass=1;fillColor=#dae8fc;strokeColor=#6c8ebf;startSize=30;" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful glass, no notice');
+  const glass = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /glassg/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(glass, 'swimlane glass overlay node present');
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

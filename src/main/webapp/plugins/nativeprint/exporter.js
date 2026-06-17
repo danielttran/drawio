@@ -6973,6 +6973,37 @@
             x: swFH ? 2 * bx + bw - b.x - b.w : b.x,
             y: swFV ? 2 * by + bh - b.y - b.h : b.y, w: b.w, h: b.h } : b;
         };
+        // Shadow (mxShape.configureCanvas setShadow applies to swimlanes too,
+        // mxShape.js:1037-1039). drawio's createShadow duplicates every painted
+        // element offset + recolored at shadowAlpha; emit the lane silhouette
+        // (header-fill region + outer outline + divider) as ONE group-opacity
+        // SVG so overlapping strokes don't double-darken, rendered UNDER the
+        // shape. Previously dropped silently (the table subclass shadowed; this
+        // branch did not).
+        if (boolish(style.shadow)) {
+          var swSp = shadowParams(style);
+          var swSgw = Math.max(0.1, number(style.strokeWidth, 1));
+          var swShColor = hex(swSp.color);
+          var swShParts = '';
+          if (swFill) {
+            swShParts += '<rect x="0" y="0" width="' + fmt(swH ? bw : swSz) +
+              '" height="' + fmt(swH ? swSz : bh) + '" fill="' + swShColor +
+              '" stroke="none"/>';
+          }
+          swShParts += swR > 0
+            ? '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
+              '" rx="' + fmt(swR) + '" ry="' + fmt(swR) + '" fill="none" stroke="' +
+              swShColor + '" stroke-width="' + fmt(swSgw) + '"/>'
+            : '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
+              '" fill="none" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '"/>';
+          if (String(style.swimlaneLine) !== '0') {
+            swShParts += '<path d="' + (swH ? 'M 0 ' + fmt(swSz) + ' L ' + fmt(bw) +
+              ' ' + fmt(swSz) : 'M ' + fmt(swSz) + ' 0 L ' + fmt(swSz) + ' ' + fmt(bh)) +
+              '" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '" fill="none"/>';
+          }
+          paint.push(paddedSvgShapeNode('<g opacity="' + fmt(swSp.alpha) + '">' +
+            swShParts + '</g>', { x: bx + swSp.dx, y: by + swSp.dy, w: bw, h: bh }, style));
+        }
         var swStart = paint.length;
         // header fill (faithful gradient when gradientColor is set)
         if (swFill) {
@@ -7047,6 +7078,16 @@
               paint[swI].d = flipPathD(paint[swI].d, bx + bw / 2, by + bh / 2, swFH, swFV);
             }
           }
+        }
+        // Glass highlight over the HEADER region only (mxSwimlane.paintVertexShape
+        // -> paintGlassEffect(c, 0, 0, w, start, r), mxSwimlane.js:267-270).
+        // Previously dropped silently (the table subclass painted it; this branch
+        // did not).
+        if (boolish(style.glass) && isPaintable(style.fillColor)) {
+          var swGB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
+                                    : { x: bx, y: by, w: swSz, h: bh });
+          paint.push(paddedSvgShapeNode(glassOverlaySvg(style, swGB.w, swGB.h),
+            swGB, style));
         }
         if (label !== '') {
           var swLB = swFlipBox(swH ? { x: bx, y: by, w: bw, h: swSz }
