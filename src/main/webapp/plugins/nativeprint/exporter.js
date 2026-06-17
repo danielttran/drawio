@@ -5823,11 +5823,24 @@
       }
     }
     if (clip == null) return null;
-    var m = /^inset\(\s*([^\s)]+)(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?(?:\s+([^\s)]+))?\s*(?:round\s+([^\s)]+)\s*)?\)$/i
-      .exec(clip.trim());
-    if (!m) {
+    // Parse inset(<1-4 margins> [round <radius>]). Splitting on the `round`
+    // keyword (rather than a fixed 4-slot regex) is required: a fixed regex's
+    // margin groups greedily swallowed the literal `round` token whenever fewer
+    // than 4 margins preceded it, dropping the corner radius AND mis-cropping.
+    var im = /^inset\(\s*(.*?)\s*\)$/i.exec(clip.trim());
+    if (!im) {
       // circle()/ellipse()/polygon() crops have no headless port yet:
       // print the FULL image with a loud notice, never a silent wrong crop.
+      if (notices) {
+        notices.push(degradation('ExporterUnsupportedImage',
+          'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
+      }
+      return null;
+    }
+    var insetParts = im[1].split(/\s+round\s+/i);
+    var marginToks = insetParts[0].trim().split(/\s+/).filter(function (s) { return s !== ''; });
+    var radTok = insetParts.length > 1 ? (insetParts[1].trim().split(/\s+/)[0] || null) : null;
+    if (marginToks.length < 1 || marginToks.length > 4) {
       if (notices) {
         notices.push(degradation('ExporterUnsupportedImage',
           'image clipPath "' + clip + '" is not applied (printed uncropped).', cellId));
@@ -5840,12 +5853,13 @@
       if (!Number.isFinite(n)) return 0;
       return /%$/.test(v) ? n / 100 * ref : n;
     };
-    // CSS inset(): 1-4 values per margin shorthand order T R B L.
-    var t = len(m[1], box.h);
-    var rr = len(m[2] != null ? m[2] : m[1], box.w);
-    var b = len(m[3] != null ? m[3] : m[1], box.h);
-    var l = len(m[4] != null ? m[4] : (m[2] != null ? m[2] : m[1]), box.w);
-    var rad = m[5] != null ? len(m[5], Math.min(box.w, box.h)) : 0;
+    // CSS inset() margin shorthand order T R B L (1-4 values).
+    var mt = marginToks;
+    var t = len(mt[0], box.h);
+    var rr = len(mt[1] != null ? mt[1] : mt[0], box.w);
+    var b = len(mt[2] != null ? mt[2] : mt[0], box.h);
+    var l = len(mt[3] != null ? mt[3] : (mt[1] != null ? mt[1] : mt[0]), box.w);
+    var rad = radTok != null ? len(radTok, Math.min(box.w, box.h)) : 0;
     var cw = Math.max(0, box.w - l - rr);
     var ch = Math.max(0, box.h - t - b);
     var id = 'imgclip' + (imgClipCounter++);

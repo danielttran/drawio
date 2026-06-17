@@ -4364,6 +4364,36 @@ test('audit9: %pagenumber%/%pagecount% globals resolve per page', async () => {
   assert.match(pageText(contract.document.pages[1]), /pg 2\/2/, 'page 2 footer');
 });
 
+test('audit9: clipPath inset() with <4 margins + round parses correctly (crop + radius)', async () => {
+  // The old fixed-slot regex let the margin groups swallow the `round` keyword
+  // when <4 margins preceded it, dropping the corner radius and mis-cropping.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  async function clipRect(style) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="shape=image;image=data:image/png;base64,${png};${style}" parent="1"><mxGeometry x="0" y="0" width="40" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /clipPath/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    if (!n) return null;
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    const m = s.match(/<rect x="([-0-9.]+)" y="([-0-9.]+)" width="([-0-9.]+)" height="([-0-9.]+)"(?: rx="([-0-9.]+)")?/);
+    return m ? { x: +m[1], y: +m[2], w: +m[3], h: +m[4], rx: m[5] != null ? +m[5] : 0 } : null;
+  }
+  // inset(0% round 50%): full image, 50% radius (NOT bottom-half cropped, NOT radius-less).
+  let r = await clipRect('clipPath=inset(0% round 50%);');
+  assert.deepEqual(r, { x: 0, y: 0, w: 40, h: 40, rx: 20 }, 'inset(0% round 50%)');
+  // rounded=1 + inset(10%) shorthand: 10% inset all sides + synthesized round.
+  r = await clipRect('rounded=1;clipPath=inset(10%);');
+  assert.equal(r.x, 4); assert.equal(r.w, 32); assert.ok(r.rx > 0, 'rounded synthesis kept');
+  // Two-margin form with round.
+  r = await clipRect('clipPath=inset(10% 20% round 5%);');
+  assert.deepEqual({ x: r.x, y: r.y, w: r.w, h: r.h, rx: r.rx }, { x: 8, y: 4, w: 24, h: 32, rx: 2 });
+  // Full 4-value form still correct.
+  r = await clipRect('clipPath=inset(5 10 15 20 round 4);');
+  assert.deepEqual({ x: r.x, y: r.y, w: r.w, h: r.h, rx: r.rx }, { x: 20, y: 5, w: 10, h: 20, rx: 4 });
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
