@@ -6608,9 +6608,14 @@
   function scanGlyphMetric(paint, notices) {
     var seen = {};
     function scanText(txt) {
-      for (var k = 0; k < txt.length; k++) {
-        if (txt.charCodeAt(k) < 0x20) continue;     // newlines/tabs are not glyphs
-        var ch = txt.charAt(k);
+      // Iterate by CODE POINT so astral glyphs (emoji) are one unit, not two
+      // surrogate halves — the notice then reports U+1F600, not U+D83D/U+DE00.
+      var s = String(txt);
+      for (var k = 0; k < s.length;) {
+        var cp = s.codePointAt(k);
+        var ch = String.fromCodePoint(cp);
+        k += ch.length;
+        if (cp < 0x20) continue;                    // newlines/tabs are not glyphs
         if (!glyphHasMetric(ch)) seen[ch] = true;
       }
     }
@@ -6644,7 +6649,7 @@
     var chars = Object.keys(seen).sort();
     if (chars.length > 0) {
       var shown = chars.slice(0, 12).map(function (c) {
-        return 'U+' + c.charCodeAt(0).toString(16).toUpperCase();
+        return 'U+' + c.codePointAt(0).toString(16).toUpperCase();
       });
       notices.push(degradation('GlyphMetricApprox',
         'text contains glyph(s) outside the core Arial/Times/Courier metric ' +
