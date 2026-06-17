@@ -2775,6 +2775,46 @@ test('audit14: metric-compatible fonts (Arial/Times/Courier + clones) raise NO F
   }
 });
 
+test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise FontMetricApprox', async () => {
+  // fontMetricClass maps Georgia/Garamond/Cambria/Palatino to the serif AFM
+  // table and Consolas to mono, but their true metrics are NOT Times/Courier;
+  // the notice must still fire for them (they are absent from FONT_METRIC_EXACT).
+  for (const fam of ['Georgia', 'Garamond', 'Cambria', 'Palatino', 'Consolas']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Patient" style="rounded=0;fontFamily=${fam};fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 1,
+      `deceptive class font "${fam}" must raise FontMetricApprox`);
+  }
+});
+
+test('audit15: %date{}% named masks and quoted literals resolve like drawio (no garbage)', async () => {
+  // npFormatDate was a partial port: named masks ("shortDate") were emitted as
+  // garbage ("461ortDate") and 'T' quotes were kept. It now mirrors
+  // Graph.formatDate (named-mask table + quoted literals).
+  async function dateLabel(mask) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="%date{${mask}}%" placeholders="1" id="o1"><mxCell vertex="1" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="320" height="40" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg');
+    const svg = Buffer.from(n.source, 'base64').toString('utf8');
+    return [...svg.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join('');
+  }
+  // No leftover mask letters / quotes (the old bug emitted "ortDate", "'T'").
+  assert.match(await dateLabel('isoDate'), /^\d{4}-\d{2}-\d{2}$/, 'isoDate must be ISO');
+  assert.match(await dateLabel('shortDate'), /^\d{1,2}\/\d{1,2}\/\d{2}$/, 'shortDate must be m/d/yy');
+  assert.match(await dateLabel('mediumDate'), /^[A-Z][a-z]{2} \d{1,2}, \d{4}$/, 'mediumDate must be "Mmm d, yyyy"');
+  const iso = await dateLabel("yyyy-mm-dd'T'HH:MM:ss");
+  assert.match(iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, `quoted 'T' must be literal T, got ${iso}`);
+  assert.ok(!/'/.test(iso), 'quotes must be stripped');
+  // Plain numeric mask still works.
+  assert.match(await dateLabel('yyyy-mm-dd'), /^\d{4}-\d{2}-\d{2}$/, 'numeric mask preserved');
+});
+
 // ---------------------------------------------------------------------------
 // Round-2 audit regression tests: shape fidelity fixes verified against
 // Shapes.js / mxgraph shape sources (structural assertions on the baked

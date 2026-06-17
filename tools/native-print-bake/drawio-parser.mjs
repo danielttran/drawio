@@ -914,28 +914,58 @@ function npToUnit(px, unit) {
   return px;
 }
 
-// Subset of Graph.formatDate (Steven Levithan's date format) covering the
-// common tokens drawio's %date{...}% uses. m/mm = month, M/MM = minutes.
-function npFormatDate(d, mask) {
-  const pad = (n, len) => String(n).padStart(len || 2, '0');
-  const months = ['January','February','March','April','May','June','July',
-    'August','September','October','November','December'];
-  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  let h12 = d.getHours() % 12; if (h12 === 0) h12 = 12;
-  const tok = {
-    yyyy: d.getFullYear(), yy: pad(d.getFullYear() % 100),
-    mmmm: months[d.getMonth()], mmm: months[d.getMonth()].slice(0, 3),
-    mm: pad(d.getMonth() + 1), m: d.getMonth() + 1,
-    dddd: days[d.getDay()], ddd: days[d.getDay()].slice(0, 3),
-    dd: pad(d.getDate()), d: d.getDate(),
-    HH: pad(d.getHours()), H: d.getHours(),
-    hh: pad(h12), h: h12,
-    MM: pad(d.getMinutes()), M: d.getMinutes(),
-    ss: pad(d.getSeconds()), s: d.getSeconds(),
-    TT: d.getHours() < 12 ? 'AM' : 'PM', tt: d.getHours() < 12 ? 'am' : 'pm'
+// Faithful port of Graph.formatDate (Steven Levithan's dateFormat), including
+// the NAMED mask table and 'quoted'/"quoted" literals. drawio's %date{mask}%
+// passes `mask` here: a named mask (shortDate, isoDate, isoDateTime, ...)
+// resolves via NP_DATE_MASKS, an explicit mask (yyyy-mm-dd) is used verbatim,
+// and quoted runs ('T') are emitted literally. m/mm = month, M/MM = minutes
+// (Levithan convention). A partial port previously left named masks unresolved
+// ("shortDate" -> garbage "461ortDate") and kept the 'T' quotes -- silent
+// divergence on a medical date label; this mirrors Graph.js exactly.
+const NP_DATE_MASKS = {
+  'default':      'ddd mmm dd yyyy HH:MM:ss',
+  shortDate:      'm/d/yy',
+  mediumDate:     'mmm d, yyyy',
+  longDate:       'mmmm d, yyyy',
+  fullDate:       'dddd, mmmm d, yyyy',
+  shortTime:      'h:MM TT',
+  mediumTime:     'h:MM:ss TT',
+  longTime:       'h:MM:ss TT Z',
+  isoDate:        'yyyy-mm-dd',
+  isoTime:        'HH:MM:ss',
+  isoDateTime:    "yyyy-mm-dd'T'HH:MM:ss",
+  isoUtcDateTime: "UTC:yyyy-mm-dd'T'HH:MM:ss'Z'"
+};
+const NP_DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat',
+  'Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const NP_MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
+  'January','February','March','April','May','June','July','August','September','October','November','December'];
+function npFormatDate(date, mask, utc) {
+  const pad = (val, len) => { val = String(val); len = len || 2; while (val.length < len) val = '0' + val; return val; };
+  const timezone = /\b(?:[PMCEA][SDP]T|(?:Pacific|Mountain|Central|Eastern|Atlantic) (?:Standard|Daylight|Prevailing) Time|(?:GMT|UTC)(?:[-+]\d{4})?)\b/g;
+  const timezoneClip = /[^-+\dA-Z]/g;
+  mask = String(NP_DATE_MASKS[mask] || mask || NP_DATE_MASKS['default']);
+  if (mask.slice(0, 4) === 'UTC:') { mask = mask.slice(4); utc = true; }
+  const g = utc ? 'getUTC' : 'get';
+  const d = date[g + 'Date'](), D = date[g + 'Day'](), m = date[g + 'Month'](),
+        y = date[g + 'FullYear'](), H = date[g + 'Hours'](), M = date[g + 'Minutes'](),
+        s = date[g + 'Seconds'](), L = date[g + 'Milliseconds']();
+  const o = utc ? 0 : date.getTimezoneOffset();
+  const flags = {
+    d: d, dd: pad(d), ddd: NP_DAY_NAMES[D], dddd: NP_DAY_NAMES[D + 7],
+    m: m + 1, mm: pad(m + 1), mmm: NP_MONTH_NAMES[m], mmmm: NP_MONTH_NAMES[m + 12],
+    yy: String(y).slice(2), yyyy: y,
+    h: H % 12 || 12, hh: pad(H % 12 || 12), H: H, HH: pad(H),
+    M: M, MM: pad(M), s: s, ss: pad(s),
+    l: pad(L, 3), L: pad(L > 99 ? Math.round(L / 10) : L),
+    t: H < 12 ? 'a' : 'p', tt: H < 12 ? 'am' : 'pm',
+    T: H < 12 ? 'A' : 'P', TT: H < 12 ? 'AM' : 'PM',
+    Z: utc ? 'UTC' : (String(date).match(timezone) || ['']).pop().replace(timezoneClip, ''),
+    o: (o > 0 ? '-' : '+') + pad(Math.floor(Math.abs(o) / 60) * 100 + Math.abs(o) % 60, 4),
+    S: ['th', 'st', 'nd', 'rd'][d % 10 > 3 ? 0 : (d % 100 - d % 10 !== 10) * d % 10]
   };
-  return mask.replace(/yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|HH|H|hh|h|MM|M|ss|s|TT|tt/g,
-    (t) => String(tok[t]));
+  const token = /d{1,4}|m{1,4}|yy(?:yy)?|([HhMsTt])\1?|[LloSZ]|"[^"]*"|'[^']*'/g;
+  return mask.replace(token, ($0) => ($0 in flags ? flags[$0] : $0.slice(1, $0.length - 1)));
 }
 
 // Faithful port of Graph.replacePlaceholders / getGlobalVariable: resolve %name%
