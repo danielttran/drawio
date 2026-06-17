@@ -6376,9 +6376,6 @@
     if (style.shape === 'label' &&
         typeof style.image === 'string' && style.image !== '') {
       var lblR = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
-      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
-        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
-                    : rectPath(box.x, box.y, box.w, box.h) });
       var liw = number(style.imageWidth, 24), lih = number(style.imageHeight, 24);
       var lsp = number(style.spacing, 2) + 5;            // mxLabel: spacing + 5
       var lia = style.imageAlign || 'left', liv = style.imageVerticalAlign || 'middle';
@@ -6390,6 +6387,74 @@
       var lImgSrc = (resolved && resolved[style.image]) || style.image;
       var lImg = parseImage(lImgSrc);
       var lMime = embeddableImageMime(lImg);
+      // Rotated mxLabel+image: the per-node path below cannot carry rotation,
+      // so a rotated label-with-icon printed axis-aligned with NO notice (the
+      // generic shape path rotates; this branch returned early). Compose the
+      // background + icon + label into ONE rotated SVG, exactly like the
+      // generic rotated-shape path, so the whole label rotates as a unit.
+      var lblRotDeg = number(style.rotation, 0);
+      if (lblRotDeg) {
+        var lblTheta = lblRotDeg * Math.PI / 180;
+        var lblCosT = Math.abs(Math.cos(lblTheta)), lblSinT = Math.abs(Math.sin(lblTheta));
+        var lblExpW = box.w * lblCosT + box.h * lblSinT;
+        var lblExpH = box.w * lblSinT + box.h * lblCosT;
+        var lblOffX = (lblExpW - box.w) / 2, lblOffY = (lblExpH - box.h) / 2;
+        var lblRcx = lblExpW / 2, lblRcy = lblExpH / 2;
+        var lblDefs = '', lblGradId = '';
+        if (isPaintable(style.gradientColor) && isPaintable(style.fillColor)) {
+          lblGradId = 'lg' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
+          lblDefs = '<defs>' + linearGradDef(lblGradId, hex(style.fillColor),
+            hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        }
+        var lblBgD = lblR > 0 ? roundedRectPath(lblOffX, lblOffY, box.w, box.h, lblR)
+                              : rectPath(lblOffX, lblOffY, box.w, box.h);
+        var lblBgEl = '<path d="' + lblBgD + '"' + fillSvgAttr(style, lblGradId) +
+          strokeSvgAttrs(style) + '/>';
+        var lblIconX = lblOffX + (liBox.x - box.x), lblIconY = lblOffY + (liBox.y - box.y);
+        var lblIconEl;
+        if ((lImg && lImg.format === 'png') || lMime) {
+          var lblHref = (lImg && lImg.format === 'png')
+            ? 'data:image/png;base64,' + lImg.data
+            : 'data:' + lMime + ';base64,' + lImg.data;
+          var lblImgOp = opacity(style, 'fillOpacity');
+          // mxLabel stretches the icon (preserveAspectRatio="none") + honors flips.
+          var lblFh = boolish(style.imageFlipH) || boolish(style.flipH);
+          var lblFv = boolish(style.imageFlipV) || boolish(style.flipV);
+          var lblFlipTf = (lblFh || lblFv)
+            ? ' transform="translate(' + fmt(lblFh ? 2 * lblIconX + liw : 0) + ' ' +
+              fmt(lblFv ? 2 * lblIconY + lih : 0) + ') scale(' + (lblFh ? -1 : 1) + ',' +
+              (lblFv ? -1 : 1) + ')"'
+            : '';
+          lblIconEl = '<image x="' + fmt(lblIconX) + '" y="' + fmt(lblIconY) + '" width="' +
+            fmt(liw) + '" height="' + fmt(lih) + '" preserveAspectRatio="none"' +
+            (lblImgOp < 1 ? ' opacity="' + fmt(lblImgOp) + '"' : '') + lblFlipTf +
+            ' xlink:href="' + lblHref + '"/>';
+        } else {
+          notices.push(degradation('ExporterUnsupportedImage',
+            'label image could not be embedded — placeholder box printed.', cell.id));
+          lblIconEl = '<rect x="' + fmt(lblIconX) + '" y="' + fmt(lblIconY) + '" width="' +
+            fmt(liw) + '" height="' + fmt(lih) + '" fill="none"' + strokeSvgAttrs(style) + '/>';
+        }
+        var lblTextEl = label !== ''
+          ? rotatedLabelEls(graph, cell, style, lblOffX, lblOffY, box.w, box.h, label, notices, resolved)
+          : '';
+        var lblInner = '<g transform="rotate(' + fmt(lblRotDeg) + ' ' + fmt(lblRcx) + ' ' +
+          fmt(lblRcy) + ')">' + lblBgEl + lblIconEl + lblTextEl + '</g>';
+        var lblSvgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
+          'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(lblExpW) +
+          '" height="' + fmt(lblExpH) + '">' + lblDefs + lblInner + '</svg>';
+        paint.push({
+          kind: 'svg',
+          box: { x: box.x + box.w / 2 - lblExpW / 2, y: box.y + box.h / 2 - lblExpH / 2,
+                 w: lblExpW, h: lblExpH },
+          source: base64(lblSvgStr),
+          aspect: 'preserve'
+        });
+        return;
+      }
+      paint.push({ kind: 'path', fill: fillOf(style), stroke: strokeOf(style),
+        d: lblR > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, lblR)
+                    : rectPath(box.x, box.y, box.w, box.h) });
       // mxLabel.paintImage calls c.image(...aspect=false...) — the icon is
       // STRETCHED to the icon box (preserveAspectRatio="none"), NOT letterboxed,
       // regardless of imageAspect (mxLabel.js:131-139).

@@ -4047,6 +4047,29 @@ test('audit9: rotated PNG image cell keeps fillOpacity (was dropped -> fully opa
     'fillOpacity=40 -> opacity="0.4" on the rotated image');
 });
 
+test('audit9: rotated shape=label with image rotates as a unit (was unrotated)', async () => {
+  // A shape=label cell with an image returned early before the generic rotated
+  // path, so rotation was silently dropped (bg + icon + text printed
+  // axis-aligned). It must now compose into one rotated SVG (rotate() + the
+  // expanded AABB), like the generic rotated-shape path.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const xml = `<mxGraphModel pageWidth="500" pageHeight="500"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Lbl" style="shape=label;rotation=30;image=data:image/png;base64,${png};fillColor=#ddeeff;strokeColor=#003366;" parent="1"><mxGeometry x="60" y="60" width="120" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful rotated render, no notice');
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /rotate\(30 /.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'rotated label+image composed into one rotate()-wrapped svg');
+  const svg = Buffer.from(node.source, 'base64').toString('utf8');
+  assert.match(svg, /<image /, 'icon image present in the rotated composite');
+  assert.match(svg, /<text /, 'label text present in the rotated composite');
+  // Expanded AABB of 120x80 @30deg: w≈143.9, h≈129.3 (> the unrotated box).
+  assert.ok(node.box.w > 135 && node.box.w < 150, `AABB w ~144, got ${node.box.w}`);
+  assert.ok(node.box.h > 122 && node.box.h < 135, `AABB h ~129, got ${node.box.h}`);
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;
