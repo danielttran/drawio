@@ -333,6 +333,120 @@ fn contains_foreign_object(bytes: &[u8]) -> bool {
     false
 }
 
+/// Byte-level scan for an SVG `<image>` element whose `href`/`xlink:href`
+/// points at an EXTERNAL resource (anything that is not a `data:` URI). usvg's
+/// default `ImageHrefResolver` resolves ONLY `data:` URIs; a non-data href
+/// (http/https/file/relative path) resolves to `None` and the `<image>` renders
+/// as nothing while `Tree::from_data` still returns `Ok` -- the printer draws a
+/// blank where artwork should be, with no error and no notice. That is the
+/// exact silent-blank class the `foreignObject` guard exists to refuse, so refuse
+/// it here too: the host then draws its loud crosshatch + `StubbedSvgArtwork`
+/// notice instead of a silent blank.
+///
+/// Scoped to `<image>` ELEMENTS (namespace-prefix aware, case-sensitive on the
+/// element name) so legitimate internal fragment refs on OTHER elements
+/// (`<use href="#id">`, `<linearGradient xlink:href="#base">`, clipPath refs)
+/// are never mistaken for external image artwork. Tolerant of malformed/non-UTF8
+/// bytes, exactly like `contains_foreign_object`.
+fn contains_external_image_href(bytes: &[u8]) -> bool {
+    fn is_name_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')
+    }
+    fn starts_with_ci(value: &[u8], prefix: &[u8]) -> bool {
+        value.len() >= prefix.len()
+            && value[..prefix.len()]
+                .iter()
+                .zip(prefix)
+                .all(|(a, b)| a.to_ascii_lowercase() == *b)
+    }
+    // Does this `<image ...>` tag body carry an href attribute whose value is
+    // not a `data:` URI? Searches for the `href` attribute name (covers both
+    // `href` and `xlink:href`, which share the `href` suffix), then reads its
+    // quoted value.
+    fn tag_has_external_href(tag: &[u8]) -> bool {
+        let needle = b"href";
+        let mut k = 0usize;
+        while k + needle.len() <= tag.len() {
+            if &tag[k..k + needle.len()] != needle {
+                k += 1;
+                continue;
+            }
+            // Attribute-name boundary: the char before `href` must not be a
+            // name char that would make this the tail of a longer word. The
+            // `:` of `xlink:href` is allowed (not in the rejected set).
+            let prev_ok = k == 0 || {
+                let p = tag[k - 1];
+                p == b':' || (!is_name_char(p))
+            };
+            let mut m = k + needle.len();
+            while m < tag.len() && tag[m].is_ascii_whitespace() {
+                m += 1;
+            }
+            if prev_ok && m < tag.len() && tag[m] == b'=' {
+                m += 1;
+                while m < tag.len() && tag[m].is_ascii_whitespace() {
+                    m += 1;
+                }
+                if m < tag.len() && (tag[m] == b'"' || tag[m] == b'\'') {
+                    let quote = tag[m];
+                    m += 1;
+                    let mut v = m;
+                    while v < tag.len() && tag[v].is_ascii_whitespace() {
+                        v += 1;
+                    }
+                    let vstart = v;
+                    while v < tag.len() && tag[v] != quote {
+                        v += 1;
+                    }
+                    let val = &tag[vstart..v];
+                    return !starts_with_ci(val, b"data:");
+                }
+            }
+            k += 1;
+        }
+        false
+    }
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= bytes.len() || matches!(bytes[i], b'/' | b'!' | b'?') {
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_name_char(bytes[i]) {
+            i += 1;
+        }
+        if i == start {
+            continue;
+        }
+        let name = &bytes[start..i];
+        let local = name
+            .iter()
+            .rposition(|&b| b == b':')
+            .map(|pos| &name[pos + 1..])
+            .unwrap_or(name);
+        if local != b"image" {
+            continue;
+        }
+        // Read this element's attribute list up to the closing '>'.
+        let tag_start = i;
+        let mut j = i;
+        while j < bytes.len() && bytes[j] != b'>' {
+            j += 1;
+        }
+        if tag_has_external_href(&bytes[tag_start..j.min(bytes.len())]) {
+            return true;
+        }
+        i = j;
+    }
+    false
+}
+
 fn write_err(err_buf: *mut c_char, err_buf_len: usize, msg: &str) {
     if err_buf.is_null() || err_buf_len == 0 {
         return;
@@ -393,6 +507,23 @@ pub extern "C" fn spe_svg_render(
                 err_buf,
                 err_buf_len,
                 "svg contains <foreignObject>; resvg cannot render HTML, refusing loudly",
+            );
+            return SPE_SVG_ERR_UNSUPPORTED;
+        }
+
+        // WYSIWYG guard. usvg resolves ONLY `data:` image hrefs; an external
+        // `<image href="http|file|relative">` renders as nothing with status=Ok
+        // -- a silent blank where artwork should be. Refuse loudly so the host's
+        // crosshatch + StubbedSvgArtwork notice fire instead. (The draw.io bake
+        // already embeds every image as a data: URI and raises its own loud
+        // notice for unresolved externals; this is the engine-side backstop, in
+        // the same spirit as the foreignObject guard above.)
+        if contains_external_image_href(svg_bytes) {
+            write_err(
+                err_buf,
+                err_buf_len,
+                "svg contains <image> with a non-data: href; the external resource \
+                 cannot be resolved offline and would render blank, refusing loudly",
             );
             return SPE_SVG_ERR_UNSUPPORTED;
         }
@@ -492,7 +623,7 @@ pub extern "C" fn spe_svg_render(
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_foreign_object, fontdb};
+    use super::{contains_external_image_href, contains_foreign_object, fontdb};
     use resvg::usvg::fontdb::Family;
     use std::os::raw::c_char;
 
@@ -603,6 +734,57 @@ mod tests {
         ));
         assert!(contains_foreign_object(
             b"<svg><svg:foreignObject width='1'/></svg>"
+        ));
+    }
+
+    #[test]
+    fn external_image_href_guard_flags_non_data_urls() {
+        // http/https/file/relative hrefs all resolve to nothing in usvg's
+        // data-only resolver -> silent blank. Each must trip the guard.
+        assert!(contains_external_image_href(
+            br#"<svg><image href="http://example.com/logo.png"/></svg>"#
+        ));
+        assert!(contains_external_image_href(
+            br#"<svg><image xlink:href="file:///etc/logo.png"/></svg>"#
+        ));
+        assert!(contains_external_image_href(
+            br#"<svg><image href="assets/icon.svg"/></svg>"#
+        ));
+        // Single-quoted attribute, leading whitespace in the value.
+        assert!(contains_external_image_href(
+            b"<svg><image href=' https://x/y.png'/></svg>"
+        ));
+        // Namespace-prefixed <image> element name.
+        assert!(contains_external_image_href(
+            br#"<svg><svg:image href="http://x/y.png"/></svg>"#
+        ));
+    }
+
+    #[test]
+    fn external_image_href_guard_allows_embedded_data_uris() {
+        // Embedded data: artwork (what the bake always emits) must NOT trip.
+        assert!(!contains_external_image_href(
+            br#"<svg><image href="data:image/png;base64,iVBORw0KGgo="/></svg>"#
+        ));
+        assert!(!contains_external_image_href(
+            br#"<svg><image xlink:href="data:image/jpeg;base64,/9j/4AAQ"/></svg>"#
+        ));
+        // Case-insensitive scheme.
+        assert!(!contains_external_image_href(
+            br#"<svg><image href="DATA:image/png;base64,AAAA"/></svg>"#
+        ));
+    }
+
+    #[test]
+    fn external_image_href_guard_ignores_internal_fragment_refs_on_other_elements() {
+        // <use>/<linearGradient> fragment refs are legitimate and common in
+        // baked SVG; they must NEVER be mistaken for external image artwork.
+        assert!(!contains_external_image_href(
+            br##"<svg><use href="#shape"/><linearGradient xlink:href="#base"/></svg>"##
+        ));
+        // An <image> with a data: href alongside a gradient fragment ref.
+        assert!(!contains_external_image_href(
+            br##"<svg><linearGradient xlink:href="#g"/><image href="data:image/png;base64,AA"/></svg>"##
         ));
     }
 

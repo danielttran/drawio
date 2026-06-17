@@ -111,6 +111,76 @@ bool contains_foreign_object_element(const std::string& svg) {
   return false;
 }
 
+// Mirror of the Rust shim's contains_external_image_href: detect an SVG
+// `<image>` whose href/xlink:href is not a `data:` URI. resvg resolves only
+// data: image hrefs, so an external href renders as a silent blank with
+// status=Ok. The host refuses upfront (loud crosshatch + StubbedSvgArtwork
+// notice) so it is never a silent blank, exactly like the foreignObject guard.
+// Scoped to <image> elements so internal fragment refs on <use>/gradients are
+// never mistaken for external image artwork.
+bool image_tag_has_external_href(const std::string& tag) {
+  const std::string needle = "href";
+  for (std::size_t k = 0; k + needle.size() <= tag.size(); ++k) {
+    if (tag.compare(k, needle.size(), needle) != 0) continue;
+    const bool prev_ok =
+        k == 0 || tag[k - 1] == ':' || !is_xml_name_char(tag[k - 1]);
+    std::size_t m = k + needle.size();
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    if (!prev_ok || m >= tag.size() || tag[m] != '=') continue;
+    ++m;
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    if (m >= tag.size() || (tag[m] != '"' && tag[m] != '\'')) continue;
+    const char quote = tag[m++];
+    while (m < tag.size() &&
+           std::isspace(static_cast<unsigned char>(tag[m]))) ++m;
+    const std::size_t vstart = m;
+    while (m < tag.size() && tag[m] != quote) ++m;
+    std::string value = tag.substr(vstart, m - vstart);
+    std::string lower;
+    lower.reserve(5);
+    for (std::size_t c = 0; c < value.size() && c < 5; ++c) {
+      lower.push_back(static_cast<char>(
+          std::tolower(static_cast<unsigned char>(value[c]))));
+    }
+    return lower.rfind("data:", 0) != 0;
+  }
+  return false;
+}
+
+bool contains_external_image_href(const std::string& svg) {
+  std::size_t i = 0;
+  while (i < svg.size()) {
+    if (svg[i] != '<') {
+      ++i;
+      continue;
+    }
+    ++i;
+    if (i >= svg.size() || svg[i] == '/' || svg[i] == '!' || svg[i] == '?') {
+      continue;
+    }
+    const std::size_t start = i;
+    while (i < svg.size() && is_xml_name_char(svg[i])) {
+      ++i;
+    }
+    if (i == start) continue;
+    const std::string name = svg.substr(start, i - start);
+    const std::size_t colon = name.rfind(':');
+    const std::string local =
+        colon == std::string::npos ? name : name.substr(colon + 1);
+    if (local != "image") continue;
+    const std::size_t tag_start = i;
+    std::size_t j = i;
+    while (j < svg.size() && svg[j] != '>') ++j;
+    if (image_tag_has_external_href(svg.substr(tag_start, j - tag_start))) {
+      return true;
+    }
+    i = j;
+  }
+  return false;
+}
+
 struct PrinterHandle {
   HANDLE handle = nullptr;
   explicit PrinterHandle(HANDLE h = nullptr) : handle(h) {}
@@ -1234,6 +1304,14 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
             raster_fail_detail =
                 "svg_source contains <foreignObject>; refusing loudly "
                 "(host transcribes HTML labels before bake)";
+          } else if (contains_external_image_href(decoded)) {
+            // resvg resolves only data: image hrefs; an external href renders
+            // as a silent blank. Refuse loudly (the bake embeds every image as
+            // a data: URI, so this is the engine-side backstop).
+            raster_fail_detail =
+                "svg_source contains <image> with a non-data: href; the "
+                "external resource cannot be resolved offline and would "
+                "render blank, refusing loudly";
           } else {
             // Aspect policy lives HERE (the shim stretches to exactly the
             // requested pixel size): "preserve" aspect-fits the SVG's
