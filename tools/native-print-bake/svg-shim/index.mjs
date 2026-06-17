@@ -24,6 +24,32 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 // Used by ShimElement.innerHTML setter so that richContent() and plainLabel()
 // work correctly headlessly.
 
+const NAMED_ENTITIES = {
+  iexcl: '¡', cent: '¢', pound: '£', curren: '¤', yen: '¥',
+  brvbar: '¦', sect: '§', uml: '¨', copy: '©', ordf: 'ª',
+  laquo: '«', not: '¬', shy: '­', reg: '®', macr: '¯',
+  deg: '°', plusmn: '±', sup2: '²', sup3: '³', acute: '´',
+  micro: 'µ', para: '¶', middot: '·', cedil: '¸', sup1: '¹',
+  ordm: 'º', raquo: '»', frac14: '¼', frac12: '½', frac34: '¾',
+  iquest: '¿', times: '×', divide: '÷',
+  Agrave:'À',Aacute:'Á',Acirc:'Â',Atilde:'Ã',Auml:'Ä',Aring:'Å',AElig:'Æ',
+  Ccedil:'Ç',Egrave:'È',Eacute:'É',Ecirc:'Ê',Euml:'Ë',Igrave:'Ì',Iacute:'Í',
+  Icirc:'Î',Iuml:'Ï',ETH:'Ð',Ntilde:'Ñ',Ograve:'Ò',Oacute:'Ó',Ocirc:'Ô',
+  Otilde:'Õ',Ouml:'Ö',Oslash:'Ø',Ugrave:'Ù',Uacute:'Ú',Ucirc:'Û',Uuml:'Ü',
+  Yacute:'Ý',THORN:'Þ',szlig:'ß',agrave:'à',aacute:'á',acirc:'â',atilde:'ã',
+  auml:'ä',aring:'å',aelig:'æ',ccedil:'ç',egrave:'è',eacute:'é',ecirc:'ê',
+  euml:'ë',igrave:'ì',iacute:'í',icirc:'î',iuml:'ï',eth:'ð',ntilde:'ñ',
+  ograve:'ò',oacute:'ó',ocirc:'ô',otilde:'õ',ouml:'ö',oslash:'ø',ugrave:'ù',
+  uacute:'ú',ucirc:'û',uuml:'ü',yacute:'ý',thorn:'þ',yuml:'ÿ',
+  ndash:'–',mdash:'—',lsquo:'‘',rsquo:'’',sbquo:'‚',ldquo:'“',rdquo:'”',
+  bdquo:'„',dagger:'†',Dagger:'‡',bull:'•',hellip:'…',permil:'‰',
+  prime:'′',Prime:'″',lsaquo:'‹',rsaquo:'›',oline:'‾',frasl:'⁄',euro:'€',
+  trade:'™',larr:'←',uarr:'↑',rarr:'→',darr:'↓',harr:'↔',minus:'−',
+  infin:'∞',ne:'≠',le:'≤',ge:'≥',radic:'√',sum:'∑',part:'∂',
+  alpha:'α',beta:'β',gamma:'γ',delta:'δ',mu:'μ',pi:'π',sigma:'σ',
+  omega:'ω',Delta:'Δ',Sigma:'Σ',Omega:'Ω'
+};
+
 function decodeHtmlEntities(s) {
   // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
   // "<" instead of the literal "&lt;"); numeric references need fromCodePoint
@@ -34,6 +60,8 @@ function decodeHtmlEntities(s) {
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ')
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, (m, name) =>
+      Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, name) ? NAMED_ENTITIES[name] : m)
     .replace(/&amp;/g, '&');
 }
 

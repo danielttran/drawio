@@ -265,9 +265,10 @@
       }
       if (state.dashed) {
         var dp = state.dashPattern
-          ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
+          ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v >= 0; })
           : [3, 3];
-        if (!dp.length) dp = [3, 3];
+        // drawio keeps 0-length segments (a dot under round caps; "N 0" => solid).
+        if (!dp.length || dp.every(function(v){ return v === 0; })) dp = [3, 3];
         // Match drawio: dash values scale with stroke width (createDashPattern),
         // unless fixDash=1 (then the pattern is in absolute px).
         var dsc = boolish(style.fixDash) ? 1 : (state.strokeWidth || 1);
@@ -1284,8 +1285,9 @@
     var raw = style.dashPattern || '3 3';
     var out = String(raw).split(/[ ,]+/).map(function (v) {
       return number(v, 0);
-    }).filter(function (v) { return v > 0; });
-    if (!out.length) out = [3, 3];
+    }).filter(function (v) { return v >= 0; });
+    // drawio keeps 0-length segments (round-cap dots; "N 0" renders solid).
+    if (!out.length || out.every(function (v) { return v === 0; })) out = [3, 3];
     // drawio mxSvgCanvas2D.createDashPattern multiplies each dash value by the
     // stroke width (unless fixDash=1), so thick dashed strokes have
     // proportionally larger dashes/gaps. Match it — previously strokeWidth was
@@ -1507,6 +1509,34 @@
     return pbg + textSvgStr(lit, ox, oy, w, h, style);
   }
 
+  // HTML named entities a drawio html=1 label can carry (browser innerHTML
+  // decodes the full set). 'amp' is intentionally absent (must decode LAST).
+  var NAMED_HTML_ENTITIES = {
+    iexcl:'\u00a1',cent:'\u00a2',pound:'\u00a3',curren:'\u00a4',yen:'\u00a5',brvbar:'\u00a6',
+    sect:'\u00a7',uml:'\u00a8',copy:'\u00a9',ordf:'\u00aa',laquo:'\u00ab',not:'\u00ac',
+    shy:'\u00ad',reg:'\u00ae',macr:'\u00af',deg:'\u00b0',plusmn:'\u00b1',sup2:'\u00b2',
+    sup3:'\u00b3',acute:'\u00b4',micro:'\u00b5',para:'\u00b6',middot:'\u00b7',cedil:'\u00b8',
+    sup1:'\u00b9',ordm:'\u00ba',raquo:'\u00bb',frac14:'\u00bc',frac12:'\u00bd',frac34:'\u00be',
+    iquest:'\u00bf',times:'\u00d7',divide:'\u00f7',
+    Agrave:'\u00c0',Aacute:'\u00c1',Acirc:'\u00c2',Atilde:'\u00c3',Auml:'\u00c4',Aring:'\u00c5',
+    AElig:'\u00c6',Ccedil:'\u00c7',Egrave:'\u00c8',Eacute:'\u00c9',Ecirc:'\u00ca',Euml:'\u00cb',
+    Igrave:'\u00cc',Iacute:'\u00cd',Icirc:'\u00ce',Iuml:'\u00cf',ETH:'\u00d0',Ntilde:'\u00d1',
+    Ograve:'\u00d2',Oacute:'\u00d3',Ocirc:'\u00d4',Otilde:'\u00d5',Ouml:'\u00d6',Oslash:'\u00d8',
+    Ugrave:'\u00d9',Uacute:'\u00da',Ucirc:'\u00db',Uuml:'\u00dc',Yacute:'\u00dd',THORN:'\u00de',
+    szlig:'\u00df',agrave:'\u00e0',aacute:'\u00e1',acirc:'\u00e2',atilde:'\u00e3',auml:'\u00e4',
+    aring:'\u00e5',aelig:'\u00e6',ccedil:'\u00e7',egrave:'\u00e8',eacute:'\u00e9',ecirc:'\u00ea',
+    euml:'\u00eb',igrave:'\u00ec',iacute:'\u00ed',icirc:'\u00ee',iuml:'\u00ef',eth:'\u00f0',
+    ntilde:'\u00f1',ograve:'\u00f2',oacute:'\u00f3',ocirc:'\u00f4',otilde:'\u00f5',ouml:'\u00f6',
+    oslash:'\u00f8',ugrave:'\u00f9',uacute:'\u00fa',ucirc:'\u00fb',uuml:'\u00fc',yacute:'\u00fd',
+    thorn:'\u00fe',yuml:'\u00ff',ndash:'\u2013',mdash:'\u2014',lsquo:'\u2018',rsquo:'\u2019',
+    sbquo:'\u201a',ldquo:'\u201c',rdquo:'\u201d',bdquo:'\u201e',dagger:'\u2020',Dagger:'\u2021',
+    bull:'\u2022',hellip:'\u2026',permil:'\u2030',prime:'\u2032',Prime:'\u2033',lsaquo:'\u2039',
+    rsaquo:'\u203a',oline:'\u203e',frasl:'\u2044',euro:'\u20ac',trade:'\u2122',larr:'\u2190',
+    uarr:'\u2191',rarr:'\u2192',darr:'\u2193',harr:'\u2194',minus:'\u2212',infin:'\u221e',
+    ne:'\u2260',le:'\u2264',ge:'\u2265',radic:'\u221a',sum:'\u2211',part:'\u2202',
+    alpha:'\u03b1',beta:'\u03b2',gamma:'\u03b3',delta:'\u03b4',mu:'\u03bc',pi:'\u03c0',
+    sigma:'\u03c3',omega:'\u03c9',Delta:'\u0394',Sigma:'\u03a3',Omega:'\u03a9'
+  };
   function decodeHtmlEntities(s) {
     // &amp; must decode LAST (decoding it first double-decoded "&amp;lt;" to
     // "<" instead of the literal 4-char "&lt;"); numeric references need
@@ -1519,6 +1549,10 @@
       .replace(/&#(\d+);/g, function(_, n) { return String.fromCodePoint(+n); })
       .replace(/&#x([0-9a-fA-F]+);/g, function(_, h) {
         return String.fromCodePoint(parseInt(h, 16));
+      })
+      .replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, function (m, name) {
+        return Object.prototype.hasOwnProperty.call(NAMED_HTML_ENTITIES, name)
+          ? NAMED_HTML_ENTITIES[name] : m;
       })
       .replace(/&amp;/g, '&');
   }
@@ -6559,6 +6593,38 @@
         fill: solid(pgBg, 1), stroke: null });
     }
 
+    // Page background IMAGE (File > Background) prints behind all content. It was
+    // silently dropped (a watermark / pre-printed label template / logo backdrop
+    // vanished). Place it at its model box (transformed by origin/scale like a
+    // cell); a data-URI/embeddable src prints faithfully, an unembeddable one
+    // raises the same loud ExporterUnsupportedImage as cell images.
+    var bgImg = paper && paper.backgroundImage;
+    if (bgImg && bgImg.src) {
+      var bgW = bgImg.width > 0 ? bgImg.width : page.w;
+      var bgH = bgImg.height > 0 ? bgImg.height : page.h;
+      var bgBox = {
+        x: (bgImg.x * scale - origin.x) / scale,
+        y: (bgImg.y * scale - origin.y) / scale,
+        w: Math.max(1, bgW), h: Math.max(1, bgH)
+      };
+      var bgSrc = (resolved && resolved[bgImg.src]) || bgImg.src;
+      var bgParsed = parseImage(bgSrc);
+      var bgMime = embeddableImageMime(bgParsed);
+      if (bgParsed && bgParsed.format === 'png') {
+        paint.push(imageNode({}, bgBox, bgParsed, notices, '', 'none'));
+      } else if (bgMime) {
+        paint.push(dataUriImageSvgNode(bgMime, bgParsed.data, bgBox, {}, notices, '', 'none', 0));
+      } else {
+        var bgWhy = bgParsed && bgParsed.unsupportedFormat
+          ? 'background image format "' + bgParsed.unsupportedFormat + '" cannot be embedded'
+          : bgParsed && bgParsed.externalUrl
+            ? 'background image URL could not be fetched for embedding'
+            : 'background image source is missing or unreadable';
+        notices.push(degradation('ExporterUnsupportedImage',
+          bgWhy + ' — page background not printed.', ''));
+      }
+    }
+
     // WYSIWYG paint order = mxGraph z-order. The model's `cells` dict is keyed
     // by id (creation order); "Send to Back" / "Bring to Front" reorder a
     // cell's parent.children[] WITHOUT changing the dict. Iterating the dict
@@ -6784,6 +6850,13 @@
     if (boolish(style.textShadow)) {
       notices.push(degradation('ExporterUnsupportedShape',
         'textShadow is not rendered (text drawn without its drop shadow).', cell.id));
+    }
+    // comic=1 applies a hand-drawn HandJiggle wobble to outlines (Shapes.js).
+    // The bake draws clean geometry; flag it loudly for parity with sketch=1
+    // (position/size/color/text stay faithful — only the decorative wobble is lost).
+    if (boolish(style.comic) && !boolish(style.sketch)) {
+      notices.push(degradation('ExporterUnsupportedShape',
+        'comic=1 hand-drawn (HandJiggle) outline is rendered as clean geometry.', cell.id));
     }
     if (isPaintable(style.indicatorShape) || style.indicatorShape ||
         (typeof style.indicatorImage === 'string' && style.indicatorImage !== '')) {

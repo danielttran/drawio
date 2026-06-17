@@ -2857,6 +2857,76 @@ test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not pr
   assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
 });
 
+test('audit23: page background image is printed behind content (was silently dropped)', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const bgi = JSON.stringify({ src: 'data:image/png;base64,' + png, x: 0, y: 0, width: 200, height: 120 })
+    .replace(/"/g, '&quot;');
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120" backgroundImage="${bgi}"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;fillColor=#ffffff;" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  const paint = contract.document.pages[0].paint;
+  // Background image must be the FIRST paint node (behind content) and carry the data.
+  assert.equal(paint[0].kind, 'image', 'bg image must paint first (behind content)');
+  assert.equal(paint[0].data, png, 'bg image carries the PNG bytes');
+  assert.equal(notices.length, 0, 'embeddable bg image raises no notice');
+});
+
+test('audit23: an unembeddable background image raises a loud ExporterUnsupportedImage', async () => {
+  const bgi = JSON.stringify({ src: 'https://example.com/x.png', x: 0, y: 0, width: 200, height: 120 })
+    .replace(/"/g, '&quot;');
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120" backgroundImage="${bgi}"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="20" y="20" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'ExporterUnsupportedImage').length, 1,
+    'unembeddable bg image must be loud, not silent');
+});
+
+test('audit23: zero-length dash segments are preserved (drawio keeps them)', async () => {
+  async function dash(dp) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="80"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="e" edge="1" style="dashed=1;dashPattern=${dp};fixDash=1;" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="10" y="40" as="sourcePoint"/><mxPoint x="180" y="40" as="targetPoint"/></mxGeometry></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const e = contract.document.pages[0].paint.find((n) => n.kind === 'path' && n.stroke && n.stroke.dash);
+    return e && e.stroke.dash;
+  }
+  // "6 0" -> [6,0] (renders solid like drawio); "8 4 0 4" keeps the 0-length dot.
+  assert.deepEqual(await dash('6 0'), [6, 0], 'N 0 pattern preserved (solid)');
+  assert.deepEqual(await dash('8 4 0 4'), [8, 4, 0, 4], 'internal zero preserved (dash-dot)');
+});
+
+test('audit23: comic=1 hand-drawn style raises a loud notice (parity with sketch=1)', async () => {
+  const { notices } = await bake(`<mxGraphModel pageWidth="100" pageHeight="80"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;comic=1;" parent="1"><mxGeometry x="10" y="10" width="60" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true });
+  assert.ok(notices.some((n) => n.kind === 'ExporterUnsupportedShape'),
+    'comic=1 must not be a silent clean render');
+});
+
+test('audit23: HTML named entities in html=1 labels decode (5&micro;g -> 5µg)', async () => {
+  const xml = `<mxGraphModel pageWidth="220" pageHeight="80"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="5&amp;micro;g 25&amp;deg;C &amp;plusmn;1 &amp;amp; x" style="text;html=1;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+  const text = [...Buffer.from(sv.source, 'base64').toString('utf8')
+    .matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join('');
+  assert.match(text, /5µg/, 'named entity micro decodes');
+  assert.match(text, /25°C/, 'named entity deg decodes');
+  assert.match(text, /±1/, 'named entity plusmn decodes');
+  // The literal & shows XML-escaped as &amp; in the SVG (decoded once, not the
+  // double-escaped &amp;amp; that an un-decoded &amp; would produce).
+  assert.match(text, /&amp; x/, '&amp; decodes to a single & (last)');
+  assert.doesNotMatch(text, /&amp;amp;/, '& not double-escaped');
+});
+
 test('audit22: text color alpha (fontColor + rich runs) is honored, not silently opaque', async () => {
   async function textNode(style, val) {
     const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>

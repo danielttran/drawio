@@ -874,6 +874,22 @@ function parseModel(modelXml) {
   if (modelAttrs.background && modelAttrs.background !== 'none') {
     paper.background = modelAttrs.background;
   }
+  // Page background IMAGE (File > Background): drawio serializes it as a JSON
+  // object on <mxGraphModel backgroundImage="{src,x,y,width,height}"> and paints
+  // it behind all content. It was silently dropped; carry it so the bake can
+  // print it (a watermark / pre-printed label template / logo backdrop).
+  if (typeof modelAttrs.backgroundImage === 'string' && modelAttrs.backgroundImage) {
+    try {
+      const bgi = JSON.parse(modelAttrs.backgroundImage);
+      if (bgi && typeof bgi.src === 'string' && bgi.src) {
+        paper.backgroundImage = {
+          src: bgi.src,
+          x: Number(bgi.x) || 0, y: Number(bgi.y) || 0,
+          width: Number(bgi.width) || 0, height: Number(bgi.height) || 0
+        };
+      }
+    } catch (e) { /* malformed backgroundImage JSON: drawio ignores it too */ }
+  }
 
   return { cells, modelAttrs, paper };
 }
