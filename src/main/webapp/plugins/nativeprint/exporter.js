@@ -836,8 +836,8 @@
   }
 
   function isPaintable(c) {
-    return c && c !== 'none' && c !== 'transparent' &&
-      /^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c);
+    var r = resolveColor(c);
+    return !!(r && !r.none && r.hex);
   }
 
   // STRICT WYSIWYG (project rule, no exceptions): the bake must resolve every
@@ -1005,7 +1005,7 @@
   // The live path: getCellStyle merges the mxStylesheet defaults so these keys
   // are always present. The headless path: getCellStyle returns only the raw cell
   // style → no defaults. Supply them here so headless and live are consistent.
-  function resolveThemeDefaults(style, graph, isVertex, cell) {
+  function resolveThemeDefaults(style, graph, isVertex, cell, notices) {
     if (!style) return style;
     var model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null;
     var bg = themeColor(graph && graph.shapeBackgroundColor,
@@ -1111,6 +1111,28 @@
     if (!isVertex && !('endArrow' in out) && !rawExplicitNone('endArrow')) {
       set('endArrow', 'classic');
     }
+    // A cell color that survived theme/default resolution but is still not a
+    // color the bake can resolve (an exotic CSS4 lab()/color()/oklch(), or a
+    // typo) would otherwise paint NULL/black silently. Flag it loudly so a
+    // medical label never prints a blank/wrong-colored region without warning.
+    if (Array.isArray(notices)) {
+      var seenBad = {};
+      ['fillColor', 'strokeColor', 'fontColor', 'gradientColor',
+       'labelBackgroundColor', 'labelBorderColor'].forEach(function (k) {
+        var v = out[k];
+        if (typeof v !== 'string' || v === '' || v === 'default') return;
+        var lc = v.toLowerCase();
+        if (lc === 'none' || lc === 'transparent') return;
+        if (resolveColor(v) == null && !seenBad[lc]) {
+          seenBad[lc] = true;
+          notices.push(degradation('ExporterUnsupportedColor',
+            'color "' + v + '" on ' + k + ' is not a hex/named/rgb()/rgba()/hsl() ' +
+            'value the bake can resolve; drawio renders it but the print would ' +
+            'drop it. Use a standard CSS color for exact WYSIWYG.',
+            (cell && cell.id) || ''));
+        }
+      });
+    }
     return out;
   }
 
@@ -1159,7 +1181,10 @@
         fmt(Math.max(0.1, number(style.labelBorderWidth, 1))) + '"' : ' stroke="none"') + '/>';
   }
 
-  function hex(c) {
+  // Low-level: normalize a 3/6-digit hex string to lowercase #rrggbb. Used by
+  // the colour PARSERS (colorParts/cssColor) so they never re-enter the
+  // full resolveColor() resolver (which would recurse back through them).
+  function normHex(c) {
     if (!c) return '#000000';
     c = String(c);
     if (c.charAt(0) !== '#') c = '#' + c;
@@ -1170,8 +1195,21 @@
     return c.toLowerCase();
   }
 
+  function hex(c) {
+    var r = resolveColor(c);
+    return (r && r.hex) ? r.hex : '#000000';
+  }
+
+  // alpha = caller opacity (e.g. fillOpacity) MULTIPLIED by the colour's own
+  // intrinsic alpha (rgba()/#rrggbbaa), matching drawio's compositing.
   function solid(color, alpha) {
-    return { type: 'solid', color: hex(color), alpha: alpha == null ? 1 : alpha };
+    var r = resolveColor(color);
+    var ca = (r && typeof r.alpha === 'number') ? r.alpha : 1;
+    return {
+      type: 'solid',
+      color: (r && r.hex) ? r.hex : '#000000',
+      alpha: clamp01((alpha == null ? 1 : alpha) * ca)
+    };
   }
 
   function fillOf(style) {
@@ -2064,8 +2102,51 @@
     }
     var cp = colorParts(s);
     if (cp) return cp;
-    if (/^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return { hex: hex(s), alpha: 1 };
+    if (/^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return { hex: normHex(s), alpha: 1 };
     return null;
+  }
+
+  function hslToHex(h, s, l) {
+    h = ((h % 360) + 360) % 360;
+    s = clamp01(s / 100); l = clamp01(l / 100);
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    var mm = l - c / 2;
+    var r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return '#' + toHex2(Math.round((r + mm) * 255)) +
+      toHex2(Math.round((g + mm) * 255)) + toHex2(Math.round((b + mm) * 255));
+  }
+
+  // The single canonical drawio-color resolver -> { hex, alpha } | { none:true }
+  // | null (unresolvable). drawio (mxUtils.isValidColor/parseColor) accepts and
+  // RENDERS the full CSS set in fillColor/strokeColor/fontColor/gradientColor:
+  // 3/6/8-digit hex, named colors, rgb()/rgba(), hsl()/hsla(). The bake formerly
+  // recognised ONLY 3/6-digit hex at the cell level, so a "red"/"rgb()"/8-digit/
+  // "hsl()" fill baked to NULL (blank) or black text with no notice -- a C1
+  // silent divergence. isPaintable/hex/solid all route through this so every
+  // path (fill, stroke, gradient stops, label box, rich runs) resolves alike;
+  // an unresolvable value is flagged loudly by resolveThemeDefaults.
+  function resolveColor(c) {
+    if (c == null) return null;
+    var s = String(c).trim();
+    if (s === '') return null;
+    var lc = s.toLowerCase();
+    if (lc === 'none' || lc === 'transparent') return { none: true };
+    var m8 = /^#?([0-9a-f]{6})([0-9a-f]{2})$/i.exec(s);
+    if (m8) return { hex: ('#' + m8[1]).toLowerCase(), alpha: parseInt(m8[2], 16) / 255 };
+    var mh = /^hsla?\(([^)]+)\)$/i.exec(lc);
+    if (mh) {
+      var pr = mh[1].split(/[ ,/]+/).filter(function (x) { return x !== ''; });
+      if (pr.length < 3) return null;
+      var H = parseFloat(pr[0]), S = parseFloat(pr[1]), L = parseFloat(pr[2]);
+      if (!Number.isFinite(H) || !Number.isFinite(S) || !Number.isFinite(L)) return null;
+      var al = pr.length > 3 ? parseFloat(pr[3]) : 1;
+      return { hex: hslToHex(H, S, L), alpha: clamp01(Number.isFinite(al) ? al : 1) };
+    }
+    return cssColor(s); // named / rgb / rgba / hex3 / hex6 (or null)
   }
 
   function parseInlineStyle(el) {
@@ -5437,7 +5518,7 @@
     if (typeof c !== 'string') return null;
     var s = c.trim().toLowerCase();
     if (s === '' || s === 'none' || s === 'transparent') return { none: true };
-    if (/^#[0-9a-f]{3}$/.test(s)) return { hex: hex(s), alpha: 1 };
+    if (/^#[0-9a-f]{3}$/.test(s)) return { hex: normHex(s), alpha: 1 };
     if (/^#[0-9a-f]{6}$/.test(s)) return { hex: s, alpha: 1 };
     var m = /^rgba?\(([^)]+)\)$/.exec(s);
     if (m) {
@@ -6477,7 +6558,7 @@
       if (state == null) return;
       var isEdgeCell = model.isEdge(cell);
       var style = resolveThemeDefaults(
-        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell, cell);
+        graph.getCellStyle(cell) || state.style || {}, graph, !isEdgeCell, cell, notices);
 
       if (isEdgeCell) {
         emitEdge(graph, cell, state, style, origin, scale, paint, notices, resolved);

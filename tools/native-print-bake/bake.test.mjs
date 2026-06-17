@@ -2799,6 +2799,59 @@ test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise F
   }
 });
 
+test('audit20: non-hex cell colors (named/rgb/rgba/hsl/8-digit) resolve like drawio, no silent blank', async () => {
+  async function fillOf(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    const p = contract.document.pages[0].paint.find((n) => n.kind === 'path');
+    return { fill: p && p.fill, stroke: p && p.stroke, notices: notices.map((n) => n.kind) };
+  }
+  // CRITICAL fix: these all RENDER in drawio; the bake must not drop them to
+  // null (blank) or black. red == rgb == hsl == #ff0000; rgba/8-digit carry alpha.
+  const red = (await fillOf('fillColor=red;strokeColor=none;')).fill;
+  assert.deepEqual(red, { type: 'solid', color: '#ff0000', alpha: 1 }, 'named "red" fill');
+  assert.equal((await fillOf('fillColor=rgb(255,0,0);')).fill.color, '#ff0000', 'rgb() fill');
+  assert.equal((await fillOf('fillColor=Red;')).fill.color, '#ff0000', 'named color is case-insensitive');
+  assert.equal((await fillOf('fillColor=hsl(120,100%,50%);')).fill.color, '#00ff00', 'hsl() fill');
+  const rgba = (await fillOf('fillColor=rgba(255,0,0,0.5);')).fill;
+  assert.equal(rgba.color, '#ff0000'); assert.ok(Math.abs(rgba.alpha - 0.5) < 1e-9, 'rgba alpha folded');
+  const a8 = (await fillOf('fillColor=#ff000080;')).fill;
+  assert.equal(a8.color, '#ff0000'); assert.ok(Math.abs(a8.alpha - 128 / 255) < 1e-9, '8-digit hex alpha');
+  assert.equal((await fillOf('fillColor=#ff0000;strokeColor=green;')).stroke.paint.color, '#008000', 'named stroke');
+  // The worst case must NOT silently vanish: a named fill with strokeColor=none
+  // still produces a visible fill (not both-null blank).
+  const worst = await fillOf('fillColor=red;strokeColor=none;');
+  assert.ok(worst.fill && !worst.stroke, 'named fill survives even with strokeColor=none');
+  assert.equal(worst.notices.length, 0, 'a standard CSS color raises no notice');
+});
+
+test('audit20: an unresolvable color raises a loud ExporterUnsupportedColor (never silent)', async () => {
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="fillColor=lab(50% 40 59);" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'ExporterUnsupportedColor').length, 1,
+    `unresolvable color must raise ExporterUnsupportedColor, got ${notices.map((n) => n.kind).join(',')}`);
+});
+
+test('audit20: fontColor accepts named/rgb (text not forced black)', async () => {
+  async function textFill(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Hi" style="text;html=1;${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    return (Buffer.from(sv.source, 'base64').toString('utf8').match(/fill="(#[0-9a-f]+)"/) || [])[1];
+  }
+  assert.equal(await textFill('fontColor=red;'), '#ff0000', 'named fontColor');
+  assert.equal(await textFill('fontColor=rgb(0,128,0);'), '#008000', 'rgb fontColor');
+});
+
 test('audit18: covered WinAnsi symbols are measured (no GlyphMetricApprox)', async () => {
   // Degree/micro/plus-minus/multiply/currency, ©®™, en/em dash, smart quotes,
   // bullet, ellipsis, fractions and accented Latin must all be measured from the
