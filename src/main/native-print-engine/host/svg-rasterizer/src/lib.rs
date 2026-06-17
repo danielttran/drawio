@@ -257,7 +257,11 @@ fn measure_text_inner(
     })?
 }
 
-/// D3: one font-metrics engine shared by bake measurement and rasterization.
+/// D3 font-metrics measurement over the host's real installed faces (ttf-parser
+/// advances), exposed for the host/service to verify metric compatibility. NOTE:
+/// the JS bake computes its own wrap/alignment layout from the bundled core AFM
+/// tables (exporter.js) — it does NOT call this FFI — so this is a host-side
+/// measurement/preflight aid, not a layout engine shared with the bake.
 #[no_mangle]
 pub extern "C" fn spe_text_measure(
     family: *const c_char,
