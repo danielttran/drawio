@@ -925,6 +925,45 @@ function npGlobalVar(name, pageCtx) {
   }
   return null;
 }
+// Resolve a single placeholder NAME (without the % delimiters) to its value, or
+// null if unresolved. Mirrors Graph.replacePlaceholders' resolution order.
+function npResolveName(name, cell, cells, pageCtx, units) {
+  let tmp = null;
+  if (name === 'id') {
+    tmp = cell.id;
+  } else if (name.substring(0, 5) === 'width' && cell.vertex && cell.geometry) {
+    tmp = cell.geometry.width;
+    if (name.length > 5 && units[name.substring(6)]) tmp = npToUnit(tmp, units[name.substring(6)]);
+  } else if (name.substring(0, 6) === 'height' && cell.vertex && cell.geometry) {
+    tmp = cell.geometry.height;
+    if (name.length > 6 && units[name.substring(7)]) tmp = npToUnit(tmp, units[name.substring(7)]);
+  } else if (name.substring(0, 6) === 'length') {
+    return null; // routed edge length unavailable at resolution time (residual)
+  } else if (name.indexOf('{') < 0) {
+    let c = cell, hops = 0;
+    while (tmp == null && c && hops++ < 1000) {
+      if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) {
+        tmp = (c.meta[name] != null) ? c.meta[name] : '';
+      }
+      const pid = c.parent;
+      c = (pid != null) ? cells[pid] : null;
+    }
+  }
+  if (tmp == null) {
+    const am = name.match(/^(pagecount|pagenumber)\s*([+-])\s*(\d+)$/);
+    if (am) {
+      const base = npGlobalVar(am[1], pageCtx);
+      if (base != null) {
+        const n = parseInt(am[3], 10);
+        tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
+      }
+    } else {
+      tmp = npGlobalVar(name, pageCtx);
+    }
+  }
+  return tmp != null ? String(tmp) : null;
+}
+
 function resolvePlaceholders(value, cell, cells, pageCtx) {
   if (typeof value !== 'string' || value.indexOf('%') < 0) return value;
   const enabled = (cell.meta && String(cell.meta.placeholders) === '1') ||
@@ -932,43 +971,32 @@ function resolvePlaceholders(value, cell, cells, pageCtx) {
     (cell.style && String(cell.style.placeholders) === '1');
   if (!enabled) return value;
   const units = { mm: 'mm', in: 'in', m: 'm', cm: 'mm' };
-  return value.replace(/%([^%]*)%/g, function (full, name) {
-    if (name === '' || full === '%label%' || full === '%tooltip%') return full;
-    let tmp = null;
-    if (name === 'id') {
-      tmp = cell.id;
-    } else if (name.substring(0, 5) === 'width' && cell.vertex && cell.geometry) {
-      tmp = cell.geometry.width;
-      if (name.length > 5 && units[name.substring(6)]) tmp = npToUnit(tmp, units[name.substring(6)]);
-    } else if (name.substring(0, 6) === 'height' && cell.vertex && cell.geometry) {
-      tmp = cell.geometry.height;
-      if (name.length > 6 && units[name.substring(7)]) tmp = npToUnit(tmp, units[name.substring(7)]);
-    } else if (name.substring(0, 6) === 'length') {
-      return full; // routed edge length unavailable at resolution time (residual)
-    } else if (name.indexOf('{') < 0) {
-      let c = cell, hops = 0;
-      while (tmp == null && c && hops++ < 1000) {
-        if (c.meta && Object.prototype.hasOwnProperty.call(c.meta, name)) {
-          tmp = (c.meta[name] != null) ? c.meta[name] : '';
-        }
-        const pid = c.parent;
-        c = (pid != null) ? cells[pid] : null;
-      }
-    }
-    if (tmp == null) {
-      const am = name.match(/^(pagecount|pagenumber)\s*([+-])\s*(\d+)$/);
-      if (am) {
-        const base = npGlobalVar(am[1], pageCtx);
-        if (base != null) {
-          const n = parseInt(am[3], 10);
-          tmp = String((parseInt(base, 10) || 0) + (am[2] === '+' ? n : -n));
-        }
+  // EXACT mirror of Graph.placeholderPattern: the placeholder name excludes
+  // % { } " ' = ; (so a CSS percentage like font-size:80% in an HTML label does
+  // NOT swallow the real %TOKEN%), with date{...} as a special alternative. A
+  // too-permissive [^%]* regex bound the wrong span and left variable-data
+  // tokens unresolved -- a silent, patient-safety-grade divergence. The exec
+  // loop also replicates drawio's %%-escape (a placeholder immediately preceded
+  // by % is emitted literally with one % stripped).
+  const pattern = /%(date\{.*\}|[^%{}"'=;]+)%/g;
+  let result = '';
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(value)) !== null) {
+    const val = match[0];
+    if (val.length > 2 && val !== '%label%' && val !== '%tooltip%') {
+      let tmp;
+      if (match.index > last && value.charAt(match.index - 1) === '%') {
+        tmp = val.substring(1); // escaped %%name% -> literal %name%
       } else {
-        tmp = npGlobalVar(name, pageCtx);
+        tmp = npResolveName(val.substring(1, val.length - 1), cell, cells, pageCtx, units);
       }
+      result += value.substring(last, match.index) + (tmp != null ? tmp : val);
+      last = match.index + val.length;
     }
-    return (tmp != null) ? String(tmp) : full; // unresolved => literal, like drawio
-  });
+  }
+  result += value.substring(last);
+  return result;
 }
 
 export function buildGraph(cells, paper, pageCtx) {

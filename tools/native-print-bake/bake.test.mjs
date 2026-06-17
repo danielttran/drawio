@@ -4309,6 +4309,34 @@ test('audit9: built-in placeholders (id/width/height/date{}/arithmetic/precedenc
   assert.match(await one('X %NOPE% Y'), /X %NOPE% Y/, 'unknown token literal');
 });
 
+test('audit9: placeholder regex matches drawio (CSS %% in HTML labels does not swallow tokens)', async () => {
+  // The placeholder name class must exclude % { } " \' = ; (drawio
+  // Graph.placeholderPattern), or a CSS percentage in an HTML label (e.g.
+  // font-size:80%) binds the wrong %...% span and leaves the real token literal
+  // -- a silent, patient-safety-grade divergence.
+  function texts(contract) {
+    const out = [];
+    for (const p of contract.document.pages) for (const n of p.paint) {
+      if (n.kind !== 'svg') continue;
+      const s = Buffer.from(n.source, 'base64').toString('utf8');
+      for (const t of (s.match(/<t(?:ext|span)[^>]*>([^<]*)<\/t(?:ext|span)>/g) || [])) out.push(t.replace(/<[^>]*>/g, ''));
+    }
+    return out.join(' ');
+  }
+  async function one(label, extra) {
+    const xml = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+      <object label="${label}" placeholders="1" ${extra || ''} id="a"><mxCell vertex="1" parent="1" style="whiteSpace=wrap;html=1;"><mxGeometry x="40" y="40" width="240" height="60" as="geometry"/></mxCell></object>
+    </root></mxGraphModel>`;
+    return texts((await bake(xml, { keepPx: true })).contract);
+  }
+  const css = await one('&lt;span style=&quot;font-size:80%&quot;&gt;Dose: &lt;b&gt;%DOSE%&lt;/b&gt;&lt;/span&gt;', 'DOSE="10mg"');
+  assert.match(css, /10mg/, 'CSS percentage must not swallow %DOSE%');
+  assert.ok(!/%DOSE%/.test(css), 'token resolved, not left literal');
+  // %% escape -> literal %name%, real token still resolves.
+  const esc = await one('Lit %%PID% and %PID%', 'PID="00123"');
+  assert.match(esc, /%PID% and 00123/, '%% escapes to literal; real token resolves');
+});
+
 test('audit9: %pagenumber+N% arithmetic resolves per page', async () => {
   const mp = `<mxfile>
     <diagram name="A"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><object label="next=%pagenumber+1%" placeholders="1" id="2"><mxCell vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="180" height="30" as="geometry"/></mxCell></object></root></mxGraphModel></diagram>
