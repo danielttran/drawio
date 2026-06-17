@@ -2857,6 +2857,40 @@ test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not pr
   assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
 });
 
+test('audit27: metric-exact families wrap identically to their core face (classifier == exact-set)', async () => {
+  // fontMetricClass must pick the AFM table matching each FONT_METRIC_EXACT
+  // family's real face, or a no-notice family silently wraps with the wrong
+  // metrics (sans-serif->serif, tinos/nimbus roman->sans, cousine->sans).
+  async function wrap(fam) {
+    const xml = `<mxGraphModel pageWidth="300" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Hazardous Drug Handle With Care" style="text;html=1;whiteSpace=wrap;fontFamily=${fam};fontSize=14;" parent="1"><mxGeometry x="0" y="0" width="120" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+      /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+    const lines = (Buffer.from(sv.source, 'base64').toString('utf8').match(/<text/g) || []).length;
+    return { lines, notices: notices.filter((n) => /FontMetricApprox|GlyphMetricApprox/.test(n.kind)).length };
+  }
+  // sans clones wrap like Arial; serif clones like Times; mono clones like Courier.
+  const arial = (await wrap('Arial')).lines;
+  for (const f of ['sans-serif', 'Helvetica', 'Liberation Sans', 'Arimo']) {
+    const r = await wrap(f);
+    assert.equal(r.lines, arial, `${f} must wrap like Arial (sans table)`);
+    assert.equal(r.notices, 0, `${f} is metric-exact -> no notice`);
+  }
+  const times = (await wrap('Times New Roman')).lines;
+  for (const f of ['Tinos', 'Liberation Serif', 'serif']) {
+    assert.equal((await wrap(f)).lines, times, `${f} must wrap like Times (serif table)`);
+  }
+  const mono = (await wrap('Liberation Mono')).lines;
+  for (const f of ['Cousine', 'Courier New']) {
+    assert.equal((await wrap(f)).lines, mono, `${f} must wrap like Courier (mono table)`);
+  }
+  // sans != serif != mono here, so the test would catch any future mis-classification.
+  assert.ok(arial !== times || times !== mono, 'the three tables produce distinct wraps for this text');
+});
+
 test('audit24: %page% resolves to the page NAME, %pagenumber% to the index (drawio Pages.js)', async () => {
   const xml = `<mxfile>
     <diagram name="ICU-BATCH-A"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>

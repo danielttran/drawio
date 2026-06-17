@@ -2002,6 +2002,12 @@
     '€':[556,556,500,500], '™':[1000,1000,980,1000]
   };
   function fontMetricClass(fam) {
+    // Exact metric-compatible families pick the table their real face uses, so
+    // the measured table always agrees with the no-notice exact-set (FONT_
+    // METRIC_EXACT) -- the regex below is only a heuristic for OTHER families
+    // (which also raise a loud FontMetricApprox, so a wrong class is noticed).
+    var exact = FONT_METRIC_EXACT[fontFamilyFirstToken(fam)];
+    if (exact) return exact;
     var f = String(fam == null ? '' : fam).toLowerCase();
     if (/courier|consol|mono/.test(f)) return 'mono';
     if (/times|serif|georgia|garamond|cambria|book antiqua|palatino/.test(f)) return 'serif';
@@ -2019,16 +2025,22 @@
   // WYSIWYG divergence, so scanFontMetricFallbacks() raises a loud
   // FontMetricApprox notice for it (never a quiet approximation on a medical
   // label). Set membership is the first family token, lower-cased.
+  // Maps each metric-compatible family to the AFM table CLASS its real face
+  // uses. This is BOTH the no-notice exact-set AND the single source of truth
+  // for fontMetricClass(), so the table the bake measures with can never
+  // disagree with the no-notice gate (a regex-only classifier mis-sent
+  // "sans-serif"->serif, "tinos"/"nimbus roman"->sans, "cousine"->sans while
+  // they were exempt from FontMetricApprox -> silent wrap/alignment drift).
   var FONT_METRIC_EXACT = {
     // Arial/Helvetica metric (AFM_SANS / AFM_SANS_BOLD)
-    'arial': 1, 'helvetica': 1, 'liberation sans': 1, 'arimo': 1,
-    'nimbus sans': 1, 'nimbus sans l': 1, 'sans-serif': 1, 'sans serif': 1,
-    // Times New Roman metric (AFM_SERIF)
-    'times': 1, 'times new roman': 1, 'liberation serif': 1, 'tinos': 1,
-    'nimbus roman': 1, 'nimbus roman no9 l': 1, 'serif': 1,
+    'arial': 'sans', 'helvetica': 'sans', 'liberation sans': 'sans', 'arimo': 'sans',
+    'nimbus sans': 'sans', 'nimbus sans l': 'sans', 'sans-serif': 'sans', 'sans serif': 'sans',
+    // Times New Roman metric (AFM_SERIF / AFM_SERIF_BOLD)
+    'times': 'serif', 'times new roman': 'serif', 'liberation serif': 'serif', 'tinos': 'serif',
+    'nimbus roman': 'serif', 'nimbus roman no9 l': 'serif', 'serif': 'serif',
     // Courier metric (fixed 600/1000)
-    'courier': 1, 'courier new': 1, 'liberation mono': 1, 'cousine': 1,
-    'nimbus mono': 1, 'nimbus mono l': 1, 'nimbus mono ps': 1, 'monospace': 1
+    'courier': 'mono', 'courier new': 'mono', 'liberation mono': 'mono', 'cousine': 'mono',
+    'nimbus mono': 'mono', 'nimbus mono l': 'mono', 'nimbus mono ps': 'mono', 'monospace': 'mono'
   };
   function fontFamilyFirstToken(stack) {
     return String(stack == null ? '' : stack)
@@ -2036,7 +2048,7 @@
   }
   function fontMetricExact(fam) {
     var first = fontFamilyFirstToken(fam);
-    return first === '' || FONT_METRIC_EXACT[first] === 1;
+    return first === '' || FONT_METRIC_EXACT[first] != null;
   }
   // True when glyphEmWidth has a real metric for ch (so the bake's wrap/box math
   // matches the rasterized glyph): CJK fullwidth, ASCII core, NBSP, a Latin-1
