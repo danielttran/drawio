@@ -2828,6 +2828,49 @@ test('audit20: non-hex cell colors (named/rgb/rgba/hsl/8-digit) resolve like dra
   assert.equal(worst.notices.length, 0, 'a standard CSS color raises no notice');
 });
 
+test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not printed opaque', async () => {
+  // drawio renders a gradient stop's own alpha; the bake must carry it (svg
+  // stop-opacity OR structural stop.alpha), else a translucent gradient band
+  // prints solid. Was dropped when Round-20 enabled rgba/8-digit gradient colors.
+  async function stops(style) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    for (const n of contract.document.pages[0].paint) {
+      if (n.fill && n.fill.type === 'linear') return { kind: 'struct', a0: n.fill.stops[0].alpha };
+      if (n.kind === 'svg') {
+        const d = Buffer.from(n.source, 'base64').toString('utf8');
+        const m = d.match(/<stop offset="0"[^>]*stop-opacity="([\d.]+)"/);
+        if (/Gradient/.test(d)) return { kind: 'svg', a0: m ? Number(m[1]) : 1 };
+      }
+    }
+    return null;
+  }
+  const r = await stops('fillColor=#ff000080;gradientColor=#0000ff;');
+  assert.ok(r && Math.abs(r.a0 - 0.502) < 0.01, `first stop must carry ~0.5 alpha, got ${JSON.stringify(r)}`);
+  const r2 = await stops('fillColor=rgba(255,0,0,0.5);gradientColor=#0000ff;');
+  assert.ok(r2 && Math.abs(r2.a0 - 0.5) < 0.01, `rgba stop alpha preserved, got ${JSON.stringify(r2)}`);
+  // Opaque stops stay opaque (no spurious stop-opacity / alpha<1).
+  const r3 = await stops('fillColor=#ff0000;gradientColor=#0000ff;');
+  assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
+});
+
+test('audit21: percentage alpha in rgba()/hsla() is honored (not forced opaque)', async () => {
+  async function fillAlpha(c) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" style="fillColor=${c};" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    return contract.document.pages[0].paint.find((n) => n.fill && n.fill.type === 'solid').fill.alpha;
+  }
+  assert.ok(Math.abs(await fillAlpha('rgba(255,0,0,50%)') - 0.5) < 1e-9, 'rgba percentage alpha');
+  assert.ok(Math.abs(await fillAlpha('hsla(0,100%,50%,25%)') - 0.25) < 1e-9, 'hsla percentage alpha');
+  assert.ok(Math.abs(await fillAlpha('rgba(0,0,255,0.3)') - 0.3) < 1e-9, 'numeric alpha still works');
+});
+
 test('audit20: an unresolvable color raises a loud ExporterUnsupportedColor (never silent)', async () => {
   const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>

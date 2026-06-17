@@ -48,19 +48,27 @@
   // gradientDirection=radial is a REAL radial gradient in drawio
   // (mxSvgCanvas2D creates <radialGradient>, default 50%/50%/50%) -- the
   // old fallthrough silently printed it as a top-to-bottom linear fade.
+  // A gradient stop. c1/c2 are RAW color strings (NOT pre-hex'd): drawio honors a
+  // stop color's intrinsic alpha (rgba()/#rrggbbaa/hsla()), so emit stop-opacity
+  // when it is < 1 — otherwise a translucent gradient prints opaque (silent C1).
+  function gradStopStr(offset, color) {
+    var r = resolveColor(color);
+    var h = (r && r.hex) ? r.hex : '#000000';
+    var a = (r && typeof r.alpha === 'number') ? r.alpha : 1;
+    return '<stop offset="' + offset + '" stop-color="' + h + '"' +
+      (a < 1 ? ' stop-opacity="' + fmt(a) + '"' : '') + '/>';
+  }
   function linearGradDef(id, c1, c2, dir) {
     if (String(dir || '').toLowerCase() === 'radial') {
       return '<radialGradient id="' + id + '" cx="0.5" cy="0.5" r="0.5"' +
         ' gradientUnits="objectBoundingBox">' +
-        '<stop offset="0" stop-color="' + c1 + '"/>' +
-        '<stop offset="1" stop-color="' + c2 + '"/>' +
+        gradStopStr('0', c1) + gradStopStr('1', c2) +
         '</radialGradient>';
     }
     var v = gradientVector(dir);
     return '<linearGradient id="' + id + '" x1="' + v.x1 + '" y1="' + v.y1 +
       '" x2="' + v.x2 + '" y2="' + v.y2 + '" gradientUnits="objectBoundingBox">' +
-      '<stop offset="0" stop-color="' + c1 + '"/>' +
-      '<stop offset="1" stop-color="' + c2 + '"/>' +
+      gradStopStr('0', c1) + gradStopStr('1', c2) +
       '</linearGradient>';
   }
 
@@ -212,7 +220,7 @@
     var gradDefs = [];     // every gradient def emitted for this stencil
     if (isPaintable(state.fillColor) && isPaintable(style.gradientColor)) {
       gradId = stableGradId(state.fillColor, style.gradientColor);
-      gradDefs.push(linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection));
+      gradDefs.push(linearGradDef(gradId, state.fillColor, style.gradientColor, style.gradientDirection));
     }
 
     // mxShape.configureCanvas seeds setFillAlpha(fillOpacity/100) +
@@ -1212,14 +1220,22 @@
     };
   }
 
+  // A color's intrinsic alpha (rgba()/#rrggbbaa/hsla()); 1 if opaque/unknown.
+  function colorAlpha(c) {
+    var r = resolveColor(c);
+    return (r && typeof r.alpha === 'number') ? r.alpha : 1;
+  }
   function fillOf(style) {
     if (!isPaintable(style.fillColor)) return null;
     if (isPaintable(style.gradientColor)) {
+      var fo = opacity(style, 'fillOpacity');
+      // Structural gradient stops fold the stop color's intrinsic alpha with
+      // fillOpacity (drawio honors both); the contract carries per-stop alpha.
       return {
         type: 'linear',
         stops: [
-          { offset: 0, color: hex(style.fillColor), alpha: opacity(style, 'fillOpacity') },
-          { offset: 1, color: hex(style.gradientColor), alpha: opacity(style, 'fillOpacity') }
+          { offset: 0, color: hex(style.fillColor), alpha: clamp01(fo * colorAlpha(style.fillColor)) },
+          { offset: 1, color: hex(style.gradientColor), alpha: clamp01(fo * colorAlpha(style.gradientColor)) }
         ]
       };
     }
@@ -1236,8 +1252,8 @@
     if (isPaintable(style.gradientColor)) {
       var gid = 'r' + stableGradId(style.fillColor, style.gradientColor);
       var rfa = opacity(style, 'fillOpacity');
-      var inner = '<defs>' + linearGradDef(gid, hex(style.fillColor),
-        hex(style.gradientColor), style.gradientDirection) + '</defs>' +
+      var inner = '<defs>' + linearGradDef(gid, style.fillColor,
+        style.gradientColor, style.gradientDirection) + '</defs>' +
         '<rect x="0" y="0" width="' + fmt(rbox.w) + '" height="' + fmt(rbox.h) +
         '" fill="url(#' + gid + ')"' +
         (rfa < 1 ? ' fill-opacity="' + fmt(rfa) + '"' : '') + '/>';
@@ -2129,6 +2145,16 @@
   // silent divergence. isPaintable/hex/solid all route through this so every
   // path (fill, stroke, gradient stops, label box, rich runs) resolves alike;
   // an unresolvable value is flagged loudly by resolveThemeDefaults.
+  // Parse a CSS alpha token: a number (0..1) OR a <percentage> ("50%" -> 0.5).
+  // CSS Color-4 allows percentage alpha in rgba()/hsla(); treating it as a bare
+  // number printed it opaque (clamp01(50)=1).
+  function parseAlpha(tok) {
+    if (tok == null) return 1;
+    var t = String(tok).trim();
+    var n = parseFloat(t);
+    if (!Number.isFinite(n)) return 1;
+    return clamp01(t.charAt(t.length - 1) === '%' ? n / 100 : n);
+  }
   function resolveColor(c) {
     if (c == null) return null;
     var s = String(c).trim();
@@ -2143,7 +2169,7 @@
       if (pr.length < 3) return null;
       var H = parseFloat(pr[0]), S = parseFloat(pr[1]), L = parseFloat(pr[2]);
       if (!Number.isFinite(H) || !Number.isFinite(S) || !Number.isFinite(L)) return null;
-      var al = pr.length > 3 ? parseFloat(pr[3]) : 1;
+      var al = pr.length > 3 ? parseAlpha(pr[3]) : 1;
       return { hex: hslToHex(H, S, L), alpha: clamp01(Number.isFinite(al) ? al : 1) };
     }
     return cssColor(s); // named / rgb / rgba / hex3 / hex6 (or null)
@@ -4195,7 +4221,7 @@
       var nfa = opacity(style, 'fillOpacity');
       var nfaAttr = nfa < 1 ? ' fill-opacity="' + fmt(nfa) + '"' : '';
       if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
-        defs = '<defs>' + linearGradDef('ngrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        defs = '<defs>' + linearGradDef('ngrad', style.fillColor, style.gradientColor, style.gradientDirection) + '</defs>';
         fillAttr = ' fill="url(#ngrad)"' + nfaAttr;
       } else if (isPaintable(style.fillColor)) {
         fillAttr = ' fill="' + hex(style.fillColor) + '"' + nfaAttr;
@@ -4256,7 +4282,7 @@
       var cfa = opacity(style, 'fillOpacity');
       var cfaAttr = cfa < 1 ? ' fill-opacity="' + fmt(cfa) + '"' : '';
       if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
-        defs = '<defs>' + linearGradDef('cgrad', hex(style.fillColor), hex(style.gradientColor), style.gradientDirection) + '</defs>';
+        defs = '<defs>' + linearGradDef('cgrad', style.fillColor, style.gradientColor, style.gradientDirection) + '</defs>';
         fillAttr = ' fill="url(#cgrad)"' + cfaAttr;
       } else if (isPaintable(style.fillColor)) {
         fillAttr = ' fill="' + hex(style.fillColor) + '"' + cfaAttr;
@@ -4336,8 +4362,8 @@
     var defs = '';
     if (isPaintable(style.fillColor) && isPaintable(style.gradientColor)) {
       gradId = 'b' + stableGradId(style.fillColor, style.gradientColor);
-      defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor),
-        hex(style.gradientColor), style.gradientDirection) + '</defs>';
+      defs = '<defs>' + linearGradDef(gradId, style.fillColor,
+        style.gradientColor, style.gradientDirection) + '</defs>';
     }
     var content = builtinShapeSvgImpl(style, w, h, gradId);
     return content == null ? null : defs + content;
@@ -5524,7 +5550,7 @@
     if (m) {
       var pr = m[1].split(/[ ,/]+/).filter(function (x) { return x !== ''; });
       if (pr.length < 3) return null;
-      var al = pr.length > 3 ? parseFloat(pr[3]) : 1;
+      var al = pr.length > 3 ? parseAlpha(pr[3]) : 1;
       return {
         hex: '#' + toHex2(clampByte(pr[0])) + toHex2(clampByte(pr[1])) +
           toHex2(clampByte(pr[2])),
@@ -6896,8 +6922,8 @@
         var lblDefs = '', lblGradId = '';
         if (isPaintable(style.gradientColor) && isPaintable(style.fillColor)) {
           lblGradId = 'lg' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          lblDefs = '<defs>' + linearGradDef(lblGradId, hex(style.fillColor),
-            hex(style.gradientColor), style.gradientDirection) + '</defs>';
+          lblDefs = '<defs>' + linearGradDef(lblGradId, style.fillColor,
+            style.gradientColor, style.gradientDirection) + '</defs>';
         }
         var lblBgD = lblR > 0 ? roundedRectPath(lblOffX, lblOffY, box.w, box.h, lblR)
                               : rectPath(lblOffX, lblOffY, box.w, box.h);
@@ -7678,7 +7704,7 @@
         var gradId = '';
         if (isPaintable(style.gradientColor)) {
           gradId = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-          defs = '<defs>' + linearGradDef(gradId, hex(style.fillColor), hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
+          defs = '<defs>' + linearGradDef(gradId, style.fillColor, style.gradientColor, rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
@@ -7758,8 +7784,8 @@
       // so the C++ engine renders the correct direction via resvg.
       } else if (isPaintable(style.gradientColor)) {
         var ggid = 'g' + String(cell.id || '').replace(/[^a-z0-9]/gi, '');
-        var gdefs = '<defs>' + linearGradDef(ggid, hex(style.fillColor),
-          hex(style.gradientColor), rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
+        var gdefs = '<defs>' + linearGradDef(ggid, style.fillColor,
+          style.gradientColor, rotateGradDir(style.gradientDirection, dirDeg)) + '</defs>';
         var relD = outlinePath(0, 0, box.w, box.h) || rectPath(0, 0, box.w, box.h);
         var gInner = gdefs + '<path d="' + relD + '"' + fillSvgAttr(style, ggid) + strokeSvgAttrs(style) + '/>';
         paint.push(paddedSvgShapeNode(gInner, { x: box.x, y: box.y, w: box.w, h: box.h }, style));
