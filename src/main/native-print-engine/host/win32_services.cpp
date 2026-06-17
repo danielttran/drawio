@@ -270,11 +270,16 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
     if (const auto custom = parse_custom_stock_id(stock_id); custom) {
       devmode->dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
       devmode->dmPaperSize = DMPAPER_USER;
-      // Microns / 100 == tenths of millimetre (the dmPaperWidth/Length unit).
+      // Microns -> tenths of millimetre (the dmPaperWidth/Length unit), ROUNDED
+      // not truncated: integer `/100` discards up to 99 um (~2.3 px @600 dpi,
+      // ~4.7 px @1200 dpi) per axis, silently selecting paper slightly smaller
+      // than requested -- and the coercion re-check below could not see it
+      // because it compared against the same truncated value. Round to nearest
+      // (the parser caps microns so the rounded tenth-mm still fits SHORT).
       devmode->dmPaperWidth =
-          static_cast<short>(custom->width_microns / 100);
+          static_cast<short>(microns_to_tenth_mm_rounded(custom->width_microns));
       devmode->dmPaperLength =
-          static_cast<short>(custom->height_microns / 100);
+          static_cast<short>(microns_to_tenth_mm_rounded(custom->height_microns));
       // Orientation stays PORTRAIT: dmPaperWidth/Length already describe
       // the physical sheet exactly as the contract page maps onto it
       // (identity, no rotation). Adding DMORIENT_LANDSCAPE because
@@ -303,8 +308,8 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
       // loud typed refusal naming requested vs got (never silently-wrong
       // paper).
       {
-        const short want_w = static_cast<short>(custom->width_microns / 100);
-        const short want_h = static_cast<short>(custom->height_microns / 100);
+        const short want_w = static_cast<short>((custom->width_microns + 50) / 100);
+        const short want_h = static_cast<short>((custom->height_microns + 50) / 100);
         constexpr int kTenthMmTolerance = 10;  // 1 mm
         if (devmode->dmPaperSize != DMPAPER_USER ||
             std::abs(static_cast<int>(devmode->dmPaperWidth) - want_w) >
@@ -319,6 +324,18 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
                   std::to_string(devmode->dmPaperSize) + " dims " +
                   std::to_string(devmode->dmPaperWidth) + "x" +
                   std::to_string(devmode->dmPaperLength)});
+        }
+        // Orientation coercion re-check (mirrors the paperSize guard): we forced
+        // DMORIENT_PORTRAIT before the merge, but the merge may revert it to the
+        // tray default (landscape) and still report IDOK -- which lays the
+        // portrait-baked page onto a rotated sheet, silently wrong. Refuse loud.
+        if ((devmode->dmFields & DM_ORIENTATION) &&
+            devmode->dmOrientation != DMORIENT_PORTRAIT) {
+          return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+              ContractErrorCode::PrintDeviceError, stock_id,
+              "driver coerced page orientation away from portrait (custom "
+              "stock): merged DEVMODE dmOrientation=" +
+                  std::to_string(devmode->dmOrientation)});
         }
       }
       return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
@@ -408,6 +425,19 @@ Result<std::vector<std::uint8_t>, ContractError> merged_devmode_for(
             std::to_string(*requested_named_paper) +
             ", merged DEVMODE has dmPaperSize=" +
             std::to_string(devmode->dmPaperSize)});
+  }
+  // Orientation coercion re-check, only for a named stock we forced to PORTRAIT
+  // (the empty-stock default path keeps the driver's own orientation, sized by
+  // HORZRES/VERTRES + the loud HardwareMarginClip check). A driver that reverts
+  // a forced portrait to its landscape tray default would lay the portrait-baked
+  // page onto a rotated sheet -- silently wrong paper, same class as paperSize.
+  if (requested_named_paper && (devmode->dmFields & DM_ORIENTATION) &&
+      devmode->dmOrientation != DMORIENT_PORTRAIT) {
+    return Result<std::vector<std::uint8_t>, ContractError>::err(ContractError{
+        ContractErrorCode::PrintDeviceError, stock_id,
+        "driver coerced page orientation away from portrait (named stock): "
+        "merged DEVMODE dmOrientation=" +
+            std::to_string(devmode->dmOrientation)});
   }
   return Result<std::vector<std::uint8_t>, ContractError>::ok(std::move(buffer));
 }
