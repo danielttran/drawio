@@ -37,7 +37,7 @@ print to a screenshot (which C2 forbids):
 
 | Link | Claim | How it's proven (browser-free) |
 |---|---|---|
-| 1 canvas→contract | every object/label becomes a faithful paint node; any loss is a **loud notice**, never silent | `exporter` (205) + `bake` (360) structural invariants; **production audit**: 86 registered shapes + **8 910 stencils**, **zero gating notices** |
+| 1 canvas→contract | every object/label becomes a faithful paint node; any loss is a **loud notice**, never silent | `exporter` (205) + `bake` (380) structural invariants; **production audit**: 86 registered shapes + **8 910 stencils**, **zero gating notices** |
 | 2 contract→trace | engine transcribes `svg_source` verbatim, no heuristic re-layout; engine is drawio-concept-free | C++ `ctest` 217/217 incl. INV-1 architecture scan, contract-loader, golden render determinism |
 | 3 trace→pixels | the real **resvg** renders the full SVG vocabulary with **no silent blanks**, deterministically | C++ `ctest` pixel-determinism + 24-case `[conformance]` corpus + `[richtext]` case, all >0 opaque px, against the real resvg-0.47 cdylib |
 | 4 pixels→printer | the device bitmap is blitted **1:1, opaque, at device DPI**; preview and print share one `draw_trace` + one rasterizer (INV-5) | `host/win32_services.cpp` `print()` (banded `DrawImage` at `UnitPixel`); INV-5 parity ctests |
@@ -53,7 +53,7 @@ render gate (§3) rasterizes here** using the *same* production resvg backend.
 ```bash
 # Link 1 — bake/contract fidelity + full object catalogue, zero notices
 npm run test:nativeprint-exporter        # 205 pass (1 skip)
-npm run test:nativeprint-bake            # 360 pass
+npm run test:nativeprint-bake            # 380 pass
 npm run test:nativeprint-service         # 19 pass
 npm run test:nativeprint-validate        # 64 pass
 npm run audit:nativeprint-production     # 86 shapes + 8910 stencils, zero gating notices
