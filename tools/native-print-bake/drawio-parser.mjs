@@ -906,12 +906,20 @@ export function parseDrawio(xml) {
 // placeholders="1", substitute each %name% with the cell's (or an ancestor's)
 // custom attribute value; unresolved tokens stay literal (matching the editor).
 // Global page placeholders resolve from the optional pageCtx the bake supplies.
-// Editor.toUnit: a pixel value (96 px/inch) -> the requested unit.
+// Editor.toUnit (Editor.js): convert a pixel value to the requested unit. It
+// uses drawio's CANONICAL on-canvas constants PIXELS_PER_INCH = 100 and
+// PIXELS_PER_MM = 3.937 -- deliberately NOT the physical 96 px/in / 25.4 mm/in.
+// A %width_mm% / %width_in% placeholder is variable data the operator reads on
+// a (medical) label, so the printed value MUST equal what the editor shows: a
+// 200px cell reads 50.8 mm / 2 in in drawio. This mirrors Editor.toUnit
+// byte-for-byte; using the physical constants printed ~4% wrong (52.92 mm).
+const NP_PIXELS_PER_INCH = 100;
+const NP_PIXELS_PER_MM = 3.937;
 function npToUnit(px, unit) {
-  if (unit === 'mm') return Math.round(px / 96 * 25.4 * 100) / 100;
-  if (unit === 'in') return Math.round(px / 96 * 100) / 100;
-  if (unit === 'm') return Math.round(px / 96 * 0.0254 * 1000) / 1000;
-  return px;
+  if (unit === 'in') return Math.round(px * 100 / NP_PIXELS_PER_INCH) / 100;
+  if (unit === 'mm') return Math.round(px * 100 / NP_PIXELS_PER_MM) / 100;
+  if (unit === 'm') return Math.round(px * 1000 / (NP_PIXELS_PER_MM * 1000)) / 1000;
+  return Math.round(px); // Editor.toUnit else-branch (points/px)
 }
 
 // Faithful port of Graph.formatDate (Steven Levithan's dateFormat), including

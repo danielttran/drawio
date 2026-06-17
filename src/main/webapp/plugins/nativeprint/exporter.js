@@ -1843,15 +1843,26 @@
   // Arial/Helvetica BOLD advance widths (units/1000). Arial Bold runs ~5-9%
   // wider than Regular, so bold runs (drug names on labels) need their own
   // table or wrapping/rich-token-x drifts. Arial ITALIC shares Regular's
-  // widths, and Arial BOLD-ITALIC shares Bold's, so this one extra table covers
-  // all sans weight/style combinations. (Serif bold/italic reuse the Times
-  // regular table — a small residual for the rare serif-label case.)
+  // widths, and Arial BOLD-ITALIC shares Bold's, so this one table covers all
+  // sans weight/style combinations.
   var AFM_SANS_BOLD = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,
     556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,
     722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
     333,278,333,584,556,333,
     556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,
     389,280,389,584];
+  // Times-Bold advance widths (units/1000). Times Bold runs ~3-13% wider than
+  // Times Roman per glyph, so a serif BOLD run (a bold heading on a serif
+  // label) measured with the regular AFM_SERIF table wraps/positions short and
+  // overflows its box silently. Times BOLD-ITALIC shares Bold's widths closely;
+  // serif italic (non-bold) reuses AFM_SERIF (Times-Italic ≈ Roman width). This
+  // table closes the last silent serif metric gap (was reused-regular before).
+  var AFM_SERIF_BOLD = [250,333,555,500,500,1000,833,278,333,333,500,570,250,333,250,278,
+    500,500,500,500,500,500,500,500,500,500,333,333,570,570,570,500,930,
+    722,667,722,722,667,611,778,778,389,500,778,667,944,722,778,611,778,722,556,667,722,722,1000,722,722,667,
+    333,278,333,581,500,333,
+    500,556,444,556,444,333,500,556,278,333,556,278,833,556,500,556,556,444,389,333,556,500,722,500,500,444,
+    394,220,394,520];
   // Accented Latin-1 letters advance like their unaccented base in Arial/Times;
   // map them to the base ASCII char so the table covers common diacritics.
   var AFM_DEACCENT = {
@@ -1905,7 +1916,9 @@
     if (isWideBreakChar(ch)) return 1.0; // fullwidth advance (CJK etc.)
     var cls = fontMetricClass(fam);
     if (cls === 'mono') return 0.6;        // Courier: fixed advance
-    var tbl = cls === 'serif' ? AFM_SERIF : (bold ? AFM_SANS_BOLD : AFM_SANS);
+    var tbl = cls === 'serif'
+      ? (bold ? AFM_SERIF_BOLD : AFM_SERIF)
+      : (bold ? AFM_SANS_BOLD : AFM_SANS);
     var code = ch.charCodeAt(0);
     if (code >= 32 && code <= 126) return tbl[code - 32] / 1000;
     if (code === 0x00A0) return tbl[0] / 1000; // NBSP advances like a space

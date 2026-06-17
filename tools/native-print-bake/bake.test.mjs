@@ -2790,6 +2790,33 @@ test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise F
   }
 });
 
+test('audit16: serif BOLD measures wider than serif regular (AFM_SERIF_BOLD, not reused-regular)', async () => {
+  // Times Bold is ~3-13%/glyph wider than Times Roman. Measuring a serif bold
+  // run with the regular table under-counts width, so a line that should wrap
+  // overflows the box silently (Times/serif is in FONT_METRIC_EXACT so no
+  // FontMetricApprox fires). A dedicated AFM_SERIF_BOLD table closes that gap.
+  async function lines(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Hazardous Drug Handle With" style="text;html=1;whiteSpace=wrap;fontFamily=Times New Roman;fontSize=14;align=left;${style}" parent="1"><mxGeometry x="0" y="0" width="180" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /<text/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    const svg = Buffer.from(n.source, 'base64').toString('utf8');
+    return { n: (svg.match(/<text/g) || []).length, notices };
+  }
+  const reg = await lines('');
+  const bold = await lines('fontStyle=1;');
+  // Bold wraps to >=2 lines; regular (narrower) fits on 1 — proves bold uses a
+  // wider metric table.
+  assert.ok(bold.n >= 2, `serif bold must wrap with bold metrics (got ${bold.n} lines)`);
+  assert.ok(bold.n > reg.n, `serif bold (${bold.n}) must be wider than serif regular (${reg.n})`);
+  // Times New Roman stays metric-compatible (no spurious notice in either case).
+  assert.equal(bold.notices.filter((x) => x.kind === 'FontMetricApprox').length, 0,
+    'serif bold must not raise FontMetricApprox (Times is metric-exact, now incl. bold)');
+});
+
 test('audit15: %date{}% named masks and quoted literals resolve like drawio (no garbage)', async () => {
   // npFormatDate was a partial port: named masks ("shortDate") were emitted as
   // garbage ("461ortDate") and 'T' quotes were kept. It now mirrors
@@ -4409,7 +4436,11 @@ test('audit9: built-in placeholders (id/width/height/date{}/arithmetic/precedenc
   }
   assert.match(await one('ID=%id%'), /ID=cellX/, '%id% -> cell id');
   assert.match(await one('W=%width% H=%height%'), /W=200 H=80/, 'geometry width/height');
-  assert.match(await one('Wmm=%width_mm%'), /Wmm=52\.92/, 'width unit conversion (px->mm)');
+  // drawio Editor.toUnit uses PIXELS_PER_MM=3.937 (NOT physical 25.4/96), so a
+  // 200px cell reads 50.8 mm in the editor — the print must match that, not the
+  // physically-correct 52.92.
+  assert.match(await one('Wmm=%width_mm%'), /Wmm=50\.8\b/, 'width unit conversion matches drawio Editor.toUnit');
+  assert.match(await one('Win=%width_in%'), /Win=2\b/, 'width inch conversion matches drawio (PIXELS_PER_INCH=100)');
   // Cell attribute named `page` must WIN over the page-number global (drawio order).
   assert.match(await one('P=%page%', 'page="CUSTOM-A"'), /P=CUSTOM-A/, 'attribute precedence over global');
   // %date{fmt}% resolves to today's date in the requested format (deterministic shape).
