@@ -4151,6 +4151,65 @@ test('audit9: serif text measures narrower than sans (font-aware AFM tables)', a
   assert.ok(Math.abs(serif - 40.52) < 0.05, `serif x ${serif}`);
 });
 
+test('audit9: rotated generic shape keeps shadow + glass (early-return dropped them)', async () => {
+  // The generic rotated-shape path returned before the shadow/glass emission,
+  // silently dropping both on rotated shapes. They must now be composed into
+  // the rotated SVG (shadow under, offset in screen space; glass rotates with
+  // the shape).
+  async function svg(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="" style="${style}" parent="1"><mxGeometry x="60" y="60" width="120" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.length, 0);
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg');
+    return Buffer.from(n.source, 'base64').toString('utf8');
+  }
+  const sh = await svg('triangle;rotation=30;fillColor=#ff0000;shadow=1;');
+  assert.match(sh, /rotate\(30 /, 'shape is rotated');
+  assert.match(sh, /opacity="0\.25"/, 'rotated shadow present');
+  const gl = await svg('rounded=0;rotation=30;fillColor=#ff0000;glass=1;');
+  assert.match(gl, /glassg/, 'rotated glass present');
+  // Non-glass-family rotated shape must NOT gain glass (no over-render).
+  const tri = await svg('triangle;rotation=30;fillColor=#ff0000;glass=1;');
+  assert.ok(!/glassg/.test(tri), 'triangle does not glass (rect/ellipse/rhombus only)');
+});
+
+test('audit9: rotated label keeps labelBackgroundColor/Border box (was dropped)', async () => {
+  // rotatedLabelEls emitted only the text, never the label background/border box
+  // (mxText rotates it with the label). Now emitted, sized to the text bbox.
+  async function hasBg(val) {
+    const xml = `<mxGraphModel pageWidth="500" pageHeight="400"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${val}" style="rounded=0;rotation=30;html=1;labelBackgroundColor=#ffff00;labelBorderColor=#ff0000;" parent="1"><mxGeometry x="80" y="80" width="160" height="80" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    return contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+      /<rect[^>]*fill="#ffff00"[^>]*stroke="#ff0000"/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  }
+  assert.ok(await hasBg('Hi'), 'plain rotated label background+border present');
+  assert.ok(await hasBg('&lt;b&gt;Bold&lt;/b&gt; txt'), 'rich rotated label background+border present');
+});
+
+test('audit9: swimlane shadow header follows flipV (was on the wrong side)', async () => {
+  // The shadow silhouette header-fill region + divider must flip with the
+  // shape; built in fixed top/left coords they stayed put under flipV.
+  async function headerY(extra) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="L" style="swimlane;shadow=1;fillColor=#dae8fc;startSize=40;${extra}" parent="1"><mxGeometry x="40" y="40" width="200" height="160" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg' &&
+      /opacity="0\.25"/.test(Buffer.from(x.source, 'base64').toString('utf8')));
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    return Number(s.match(/<rect x="[-0-9.]+" y="([-0-9.]+)"[^>]*fill="#000000" stroke="none"/)[1]);
+  }
+  assert.ok(Math.abs(await headerY('') - 0) < 0.5, 'no-flip: shadow header at top');
+  assert.ok(Math.abs(await headerY('flipV=1;') - 120) < 0.5, 'flipV: shadow header at bottom (h-startSize)');
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

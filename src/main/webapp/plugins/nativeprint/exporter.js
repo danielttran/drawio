@@ -1145,6 +1145,20 @@
     };
   }
 
+  // SVG-string form of labelBoxNode (labelBackgroundColor/labelBorderColor),
+  // for the rotated label builders where the box must live INSIDE the rotate
+  // group (it rotates with the text). Returns '' when neither is set.
+  function labelBoxSvgStr(style, bx, by, bw, bh) {
+    var bg = colorToSolid(style.labelBackgroundColor);
+    var bc = isPaintable(style.labelBorderColor) ? style.labelBorderColor : null;
+    if (!bg && !bc) return '';
+    return '<rect x="' + fmt(bx) + '" y="' + fmt(by) + '" width="' + fmt(Math.max(0, bw)) +
+      '" height="' + fmt(Math.max(0, bh)) + '" fill="' + (bg ? hex(bg.color) : 'none') + '"' +
+      (bg && bg.alpha < 1 ? ' fill-opacity="' + fmt(bg.alpha) + '"' : '') +
+      (bc ? ' stroke="' + hex(bc) + '" stroke-width="' +
+        fmt(Math.max(0.1, number(style.labelBorderWidth, 1))) + '"' : ' stroke="none"') + '/>';
+  }
+
   function hex(c) {
     if (!c) return '#000000';
     c = String(c);
@@ -1373,17 +1387,44 @@
       var rich = renderRichLabel(src, style, { w: w, h: h }, resolved, notices, cell && cell.id);
       if (!rich || rich.body === '') return '';
       var v = textDefaultValign(style);
-      if (style.overflow === 'fill' || style.overflow === 'width') v = 'top';
+      var fillW = style.overflow === 'fill' || style.overflow === 'width';
+      if (fillW) v = 'top';
       var rlpads = labelPads(style);
       var off = v === 'middle' ? (h - rich.height) / 2 : v === 'bottom' ? h - rich.height - rlpads.b : rlpads.t;
       off = Math.max(0, off);
-      return '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
+      // labelBackgroundColor/labelBorderColor box (rotates with the label) —
+      // sized to the laid-out text bbox (or the full region for fill/width),
+      // matching drawio's mxText label background. Dropped silently before.
+      var rbg = fillW
+        ? labelBoxSvgStr(style, ox, oy, w, h)
+        : labelBoxSvgStr(style, ox + rlpads.l + (rich.minX || 0), oy + off,
+            Math.max(1, (rich.maxX || 0) - (rich.minX || 0)), rich.height);
+      return rbg + '<g transform="translate(' + fmt(ox + rlpads.l) + ' ' + fmt(oy + off) + ')">' +
         rich.body + '</g>';
     }
     // HTML-style label without markup: still entity-encoded (browser innerHTML
     // decodes &amp;/&nbsp;/… even with no tags) — decode before literal render.
     var lit = isHtmlLabelStyle(style) ? decodeHtmlEntities(src) : label;
-    return lit !== '' ? textSvgStr(lit, ox + w / 2, oy + h / 2, style) : '';
+    if (lit === '') return '';
+    // labelBackground/border box for the plain centered label: text bbox sized
+    // via the AFM metrics (or the full region for fill/width overflow).
+    var pbg = '';
+    if (style.labelBackgroundColor || style.labelBorderColor) {
+      if (style.overflow === 'fill' || style.overflow === 'width') {
+        pbg = labelBoxSvgStr(style, ox, oy, w, h);
+      } else {
+        var pfs = Math.max(1, number(style.fontSize, 11));
+        var pbold = !!(number(style.fontStyle, 0) & 1);
+        var plines = String(lit).split('\n');
+        var pw = 0;
+        for (var pli = 0; pli < plines.length; pli++) {
+          pw = Math.max(pw, textWidthPx(plines[pli], pfs, 0, style.fontFamily, pbold));
+        }
+        var ph = plines.length * pfs * 1.2;
+        pbg = labelBoxSvgStr(style, ox + w / 2 - pw / 2, oy + h / 2 - ph / 2, pw, ph);
+      }
+    }
+    return pbg + textSvgStr(lit, ox + w / 2, oy + h / 2, style);
   }
 
   function decodeHtmlEntities(s) {
@@ -7044,10 +7085,17 @@
           var swSgw = Math.max(0.1, number(style.strokeWidth, 1));
           var swShColor = hex(swSp.color);
           var swShParts = '';
+          // The header-fill region and divider must follow flipH/flipV exactly
+          // like the real geometry (swFlipBox), or under flipV / a flipped
+          // vertical lane the shadow's dark header band shows on the wrong side.
+          // Local (box-relative) header offset + divider position, flip-aware:
+          var swShHx = swH ? 0 : (swFH ? bw - swSz : 0);
+          var swShHy = swH ? (swFV ? bh - swSz : 0) : 0;
+          var swShDiv = swH ? (swFV ? bh - swSz : swSz) : (swFH ? bw - swSz : swSz);
           if (swFill) {
-            swShParts += '<rect x="0" y="0" width="' + fmt(swH ? bw : swSz) +
-              '" height="' + fmt(swH ? swSz : bh) + '" fill="' + swShColor +
-              '" stroke="none"/>';
+            swShParts += '<rect x="' + fmt(swShHx) + '" y="' + fmt(swShHy) +
+              '" width="' + fmt(swH ? bw : swSz) + '" height="' + fmt(swH ? swSz : bh) +
+              '" fill="' + swShColor + '" stroke="none"/>';
           }
           swShParts += swR > 0
             ? '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
@@ -7056,8 +7104,9 @@
             : '<rect x="0" y="0" width="' + fmt(bw) + '" height="' + fmt(bh) +
               '" fill="none" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '"/>';
           if (String(style.swimlaneLine) !== '0') {
-            swShParts += '<path d="' + (swH ? 'M 0 ' + fmt(swSz) + ' L ' + fmt(bw) +
-              ' ' + fmt(swSz) : 'M ' + fmt(swSz) + ' 0 L ' + fmt(swSz) + ' ' + fmt(bh)) +
+            swShParts += '<path d="' + (swH
+              ? 'M 0 ' + fmt(swShDiv) + ' L ' + fmt(bw) + ' ' + fmt(swShDiv)
+              : 'M ' + fmt(swShDiv) + ' 0 L ' + fmt(swShDiv) + ' ' + fmt(bh)) +
               '" stroke="' + swShColor + '" stroke-width="' + fmt(swSgw) + '" fill="none"/>';
           }
           paint.push(paddedSvgShapeNode('<g opacity="' + fmt(swSp.alpha) + '">' +
@@ -7232,9 +7281,40 @@
         }
         var pathEl = '<path d="' + relD + '"' +
           fillSvgAttr(style, gradId) + strokeSvgAttrs(style) + '/>';
+        // Shadow under the shape: the rotated silhouette, offset by (dx,dy) in
+        // SCREEN space (translate OUTSIDE the rotate, applied last), at the
+        // shadow alpha. The non-rotated path emits this separately; the rotated
+        // early-return skipped it, dropping shadows on rotated shapes silently.
+        var rotShadowEl = '';
+        if (boolish(style.shadow)) {
+          var rsp = shadowParams(style);
+          var rShFill = isPaintable(style.fillColor) ? hex(rsp.color) : 'none';
+          var rShStroke = isPaintable(style.strokeColor) ? hex(rsp.color) : 'none';
+          var rShSw = Math.max(0.1, number(style.strokeWidth, 1));
+          rotShadowEl = '<g opacity="' + fmt(rsp.alpha) + '" transform="translate(' +
+            fmt(rsp.dx) + ' ' + fmt(rsp.dy) + ')"><g transform="rotate(' + fmt(rotDeg) +
+            ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')"><path d="' + relD + '" fill="' + rShFill +
+            '" stroke="' + rShStroke + '"' +
+            (rShStroke !== 'none' ? ' stroke-width="' + fmt(rShSw) + '"' : '') +
+            '/></g></g>';
+        }
+        // Glass highlight over the shape (rotates with it), for the same family
+        // the non-rotated path glasses (rect/label, ellipse, rhombus). Skipped
+        // by the rotated early-return before — silently dropped.
+        var rotGlassEl = '';
+        var rGlassShape = style.shape;
+        var rGlassRectFamily = !rGlassShape || rGlassShape === 'rectangle' || rGlassShape === 'label';
+        var rGlassOk = rGlassRectFamily || rGlassShape === 'ellipse' ||
+          rGlassShape === 'rhombus' || rGlassShape === 'diamond';
+        if (boolish(style.glass) && rGlassOk && isPaintable(style.fillColor)) {
+          rotGlassEl = '<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ')">' +
+            glassOverlaySvg(style, box.w, box.h, rGlassRectFamily ? undefined : rGlassShape) +
+            '</g>';
+        }
         var textEl = rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved);
-        var inner = '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
-          pathEl + textEl + '</g>';
+        var inner = rotShadowEl +
+          '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
+          pathEl + rotGlassEl + textEl + '</g>';
         var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" ' +
           'width="' + fmt(expW) + '" height="' + fmt(expH) + '">' +
           defs + inner + '</svg>';
