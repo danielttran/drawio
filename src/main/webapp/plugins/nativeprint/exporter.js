@@ -1875,6 +1875,42 @@
     'ñ':'n','ò':'o','ó':'o','ô':'o','õ':'o','ö':'o','ø':'o',
     'ù':'u','ú':'u','û':'u','ü':'u','ý':'y','ÿ':'y'
   };
+  // Canonical Adobe Core-14 WinAnsi advance widths (units/1000) for the printable
+  // Latin-1 Supplement symbols and the common General-Punctuation glyphs that the
+  // ASCII AFM tables above do not cover (degree, micro, plus-minus, multiply,
+  // currency, ©/®/™, en/em dash, smart quotes, bullet, ellipsis, fractions, …).
+  // These render IN the metric-compatible deployment face (Liberation/Arial,
+  // Times), so measuring them here keeps a "Store at 2-8 °C", "5 µg", "A–B" or a
+  // smart-quoted label faithful instead of using the rough heuristic fallback
+  // (which mis-sized the label-background box silently). Values: [sans, sansBold,
+  // serif, serifBold]. Glyphs OUTSIDE this set + ASCII + Latin-1 letters + CJK
+  // (non-Latin scripts, arrows, geometric shapes, emoji) are not in these faces
+  // and fall to the heuristic — those are flagged loudly by scanGlyphMetric().
+  var AFM_SYMBOL = {
+    '¡':[333,333,333,333], '¢':[556,556,500,500], '£':[556,556,500,500],
+    '¤':[556,556,500,500], '¥':[556,556,500,500], '¦':[260,280,200,220],
+    '§':[556,556,500,500], '¨':[333,333,333,333], '©':[737,737,760,747],
+    'ª':[370,370,276,300], '«':[556,556,500,500], '¬':[584,584,564,570],
+    '­':[333,333,333,333], '®':[737,737,760,747], '¯':[333,333,333,333],
+    '°':[400,400,400,400], '±':[584,584,564,570], '²':[333,333,300,300],
+    '³':[333,333,300,300], '´':[333,333,333,333], 'µ':[556,556,500,500],
+    '¶':[537,556,453,540], '·':[278,278,250,250], '¸':[333,333,333,333],
+    '¹':[333,333,300,300], 'º':[365,365,310,330], '»':[556,556,500,500],
+    '¼':[834,834,750,750], '½':[834,834,750,750], '¾':[834,834,750,750],
+    '¿':[611,611,444,500], '×':[584,584,564,570], '÷':[584,584,564,570],
+    '–':[556,556,500,500], '—':[1000,1000,1000,1000],
+    '‘':[222,333,333,333], '’':[222,333,333,333], '‚':[222,333,333,333],
+    '“':[333,500,444,500], '”':[333,500,444,500], '„':[333,500,444,500],
+    '†':[556,556,500,500], '‡':[556,556,500,500], '•':[350,350,350,350],
+    // List markers the bake itself emits for nested <ul> levels (disc→circle→
+    // square). Approximated at the disc-bullet advance: this is part of the
+    // accepted HTML-list re-derivation (char bullets + fixed indent), so they
+    // must NOT trip the glyph-metric notice on every bulleted list.
+    '◦':[350,350,350,350], '▪':[350,350,350,350],
+    '…':[1000,1000,1000,1000], '‰':[1000,1000,1000,1000],
+    '‹':[333,333,333,333], '›':[333,333,333,333], '⁄':[167,167,167,167],
+    '€':[556,556,500,500], '™':[1000,1000,980,1000]
+  };
   function fontMetricClass(fam) {
     var f = String(fam == null ? '' : fam).toLowerCase();
     if (/courier|consol|mono/.test(f)) return 'mono';
@@ -1912,11 +1948,24 @@
     var first = fontFamilyFirstToken(fam);
     return first === '' || FONT_METRIC_EXACT[first] === 1;
   }
+  // True when glyphEmWidth has a real metric for ch (so the bake's wrap/box math
+  // matches the rasterized glyph): CJK fullwidth, ASCII core, NBSP, a Latin-1
+  // accented letter, or a covered WinAnsi symbol. False => the heuristic fallback
+  // is used (non-Latin scripts, arrows, geometric shapes, emoji) — a silent
+  // metric divergence that scanGlyphMetric() must flag loudly.
+  function glyphHasMetric(ch) {
+    if (isWideBreakChar(ch)) return true;
+    var code = ch.charCodeAt(0);
+    if (code >= 32 && code <= 126) return true;
+    if (code === 0x00A0) return true;
+    return AFM_DEACCENT[ch] != null || AFM_SYMBOL[ch] != null;
+  }
   function glyphEmWidth(ch, fam, bold) {
     if (isWideBreakChar(ch)) return 1.0; // fullwidth advance (CJK etc.)
     var cls = fontMetricClass(fam);
     if (cls === 'mono') return 0.6;        // Courier: fixed advance
-    var tbl = cls === 'serif'
+    var serif = (cls === 'serif');
+    var tbl = serif
       ? (bold ? AFM_SERIF_BOLD : AFM_SERIF)
       : (bold ? AFM_SANS_BOLD : AFM_SANS);
     var code = ch.charCodeAt(0);
@@ -1924,8 +1973,11 @@
     if (code === 0x00A0) return tbl[0] / 1000; // NBSP advances like a space
     var base = AFM_DEACCENT[ch];
     if (base) return tbl[base.charCodeAt(0) - 32] / 1000;
-    // Fallback for glyphs outside the AFM tables (rare punctuation, unlisted
-    // scripts): the old per-class heuristic, so exotic text is never zero-width.
+    var sym = AFM_SYMBOL[ch]; // WinAnsi Latin-1 / punctuation symbols
+    if (sym) return sym[serif ? (bold ? 3 : 2) : (bold ? 1 : 0)] / 1000;
+    // Fallback for glyphs outside the AFM tables (unlisted scripts, arrows,
+    // geometric shapes, emoji): the per-class heuristic, so exotic text is never
+    // zero-width. scanGlyphMetric() raises a loud notice when this path is hit.
     if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
     if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
     if ('mMW'.indexOf(ch) >= 0) return 0.87;
@@ -6447,6 +6499,7 @@
     // direction.
     scanGradientFallbacks(paint, notices);
     scanFontMetricFallbacks(paint, notices);
+    scanGlyphMetric(paint, notices);
 
     return {
       contract: {
@@ -6531,6 +6584,75 @@
         'label-background boxes may shift from the drawio canvas. Use a ' +
         'metric-compatible face (Arial/Helvetica, Times, Courier — or the ' +
         'Liberation/Arimo/Tinos/Cousine clones) for exact WYSIWYG.',
+        ''));
+    }
+  }
+
+  // Decode the XML/numeric entities in baked text PCDATA so the glyph scan sees
+  // the real code points (e.g. a Cyrillic letter written as &#1044;).
+  function decodeXmlText(s) {
+    return String(s == null ? '' : s)
+      .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) { return String.fromCodePoint(parseInt(h, 16)); })
+      .replace(/&#(\d+);/g, function (_, d) { return String.fromCodePoint(parseInt(d, 10)); })
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  }
+  // Raise a loud GlyphMetricApprox notice when rendered text contains glyph(s)
+  // the bake cannot measure (no entry in the ASCII/Latin-1/symbol AFM tables and
+  // not CJK-fullwidth): non-Latin scripts (Cyrillic/Greek/Arabic/Thai/…), arrows,
+  // geometric shapes, emoji. Those render from a fallback face with unknown
+  // advances, so the bake's wrap points and label-background boxes around them
+  // drift from the drawio canvas. Surfacing it (degradation) keeps the metric
+  // gap from being a SILENT divergence on a medical label, even when the font
+  // family itself is metric-compatible (so FontMetricApprox would not fire).
+  function scanGlyphMetric(paint, notices) {
+    var seen = {};
+    function scanText(txt) {
+      for (var k = 0; k < txt.length; k++) {
+        if (txt.charCodeAt(k) < 0x20) continue;     // newlines/tabs are not glyphs
+        var ch = txt.charAt(k);
+        if (!glyphHasMetric(ch)) seen[ch] = true;
+      }
+    }
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n) continue;
+      if (n.kind === 'svg' && typeof n.source === 'string') {
+        var svg = '';
+        try {
+          svg = (typeof Buffer !== 'undefined')
+            ? Buffer.from(n.source, 'base64').toString('utf8')
+            : decodeUtf8B64(n.source);
+        } catch (e) { svg = ''; }
+        // PCDATA only (between '>' and '<'), so element/attribute names and
+        // font-family values (which may legitimately be non-Latin) are skipped.
+        var re = />([^<]+)</g, m;
+        while ((m = re.exec(svg)) !== null) scanText(decodeXmlText(m[1]));
+      } else if (n.kind === 'text') {
+        if (typeof n.text === 'string') scanText(n.text);
+        var c = n.content;
+        if (c && c.type === 'rich' && Array.isArray(c.paragraphs)) {
+          for (var p = 0; p < c.paragraphs.length; p++) {
+            var runs = c.paragraphs[p].runs || [];
+            for (var r = 0; r < runs.length; r++) {
+              if (typeof runs[r].text === 'string') scanText(runs[r].text);
+            }
+          }
+        }
+      }
+    }
+    var chars = Object.keys(seen).sort();
+    if (chars.length > 0) {
+      var shown = chars.slice(0, 12).map(function (c) {
+        return 'U+' + c.charCodeAt(0).toString(16).toUpperCase();
+      });
+      notices.push(degradation('GlyphMetricApprox',
+        'text contains glyph(s) outside the core Arial/Times/Courier metric ' +
+        'tables (' + shown.join(', ') + (chars.length > 12 ? ', …' : '') + '): ' +
+        'a non-Latin script, arrow, geometric symbol or emoji. Their advance ' +
+        'widths are estimated, so wrap points and the label-background box around ' +
+        'that text may shift from the drawio canvas. Keep variable data in ' +
+        'Latin/CJK plus the covered symbol set for exact WYSIWYG.',
         ''));
     }
   }

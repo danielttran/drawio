@@ -65,14 +65,16 @@ async function validateContract(contract, label, tmpDir) {
 
 function assertNoDegradationNotices(notices, label) {
   if (!Array.isArray(notices) || notices.length === 0) return;
-  // FontMetricApprox is a DEPLOYMENT-font signal, not a stencil-contract defect:
-  // some bundled stencils (AWS groups, ...) declare a non-Arial-metric internal
-  // face (HelveticaNeueLTStd-Md). Whether that drifts depends on the print
-  // server's installed fonts, which the SERVICE certifies separately via
-  // assertFontsAvailable; if the face is absent it falls back to the
-  // Arial-metric design font and does not drift at all. The corpus audit
-  // verifies stencil CONTRACT faithfulness, so it does not gate on this.
-  const gating = notices.filter((n) => n.kind !== 'FontMetricApprox');
+  // FontMetricApprox / GlyphMetricApprox are DEPLOYMENT/content signals, not
+  // stencil-contract defects: some bundled stencils declare a non-Arial-metric
+  // internal face (HelveticaNeueLTStd-Md) or carry non-Latin/symbol glyphs in
+  // their labels. Whether those drift depends on the print server's installed
+  // fonts, which the SERVICE certifies separately via assertFontsAvailable; an
+  // absent face falls back to the Arial-metric design font and does not drift.
+  // The corpus audit verifies stencil CONTRACT faithfulness, so it does not gate
+  // on these loud, content-dependent notices.
+  const gating = notices.filter((n) =>
+    n.kind !== 'FontMetricApprox' && n.kind !== 'GlyphMetricApprox');
   if (gating.length === 0) return;
   const rendered = gating.map((n) => `${n.kind}: ${n.detail?.detail || ''}`).join('; ');
   throw new Error(`${label} produced ${gating.length} notice(s): ${rendered}`);

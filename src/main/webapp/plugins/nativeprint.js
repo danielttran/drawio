@@ -175,6 +175,9 @@
       'FontMetricApprox':
         'A text font is not metric-compatible with the core Arial/Times/Courier ' +
         'tables — wrap points and alignment may shift from screen',
+      'GlyphMetricApprox':
+        'Text contains glyphs outside the measured set (non-Latin scripts, ' +
+        'arrows, symbols or emoji) — their spacing/box sizing may shift from screen',
       'RichApproximate':
         'Rich-text layout is approximated (word-wrap requires font metrics)',
       'RichApproximateAlpha':

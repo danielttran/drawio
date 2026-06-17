@@ -1012,12 +1012,18 @@ test('WYSIWYG: master-test — dashed rotated shape embeds stroke-dasharray in S
   assert.ok(dashedSvg, 'expected a kind:svg node with stroke-dasharray for the dashed rotated shape');
 });
 
-test('WYSIWYG: master-test — only GradientDirectionApprox notice expected', async () => {
+test('WYSIWYG: master-test — only GradientDirectionApprox + GlyphMetricApprox notices expected', async () => {
   const xml = await readFile(masterTestDrawio, 'utf8');
   const { notices } = await bake(xml);
-  const unexpected = notices.filter((n) => n.kind !== 'GradientDirectionApprox');
+  // GradientDirectionApprox = path-gradient fallback; GlyphMetricApprox = the
+  // "Tri ▲/▼/▶/◀" labels' geometric symbols (outside the AFM tables) — both are
+  // loud, expected residuals.
+  const expected = { GradientDirectionApprox: 1, GlyphMetricApprox: 1 };
+  const unexpected = notices.filter((n) => !expected[n.kind]);
   assert.equal(unexpected.length, 0,
     `unexpected notices: ${unexpected.map((n) => n.kind).join(', ')}`);
+  assert.ok(notices.some((n) => n.kind === 'GlyphMetricApprox'),
+    'the geometric-symbol labels must raise a loud GlyphMetricApprox');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2361,7 +2367,10 @@ test('audit3: shim decodes "&amp;lt;" to the literal "&lt;" once (decode &amp; L
 
 test('audit3: astral numeric reference (emoji) survives the rich path', async () => {
   const { svg, notices } = await bakeRichLabel('<b>&#128512;</b>');
-  assert.equal(notices.length, 0);
+  // The emoji renders from a fallback face with an unknown advance, so it
+  // correctly raises a loud GlyphMetricApprox (and nothing else); the point of
+  // this test is that the astral code point itself survives (fromCodePoint).
+  assert.deepEqual(notices.map((n) => n.kind), ['GlyphMetricApprox']);
   assert.ok(svg.includes('\u{1F600}'), 'U+1F600 preserved (fromCodePoint, not fromCharCode)');
 });
 
@@ -2788,6 +2797,49 @@ test('audit15: deceptive serif/mono-class fonts (Georgia/Consolas) still raise F
     assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 1,
       `deceptive class font "${fam}" must raise FontMetricApprox`);
   }
+});
+
+test('audit18: covered WinAnsi symbols are measured (no GlyphMetricApprox)', async () => {
+  // Degree/micro/plus-minus/multiply/currency, ©®™, en/em dash, smart quotes,
+  // bullet, ellipsis, fractions and accented Latin must all be measured from the
+  // AFM tables — a medical label like "Store at 2-8 °C, 5 µg ± 1" must NOT raise
+  // a glyph-metric notice (was silently mis-measured by the 0.52 heuristic).
+  for (const v of ['Store at 2-8 °C', '5 µg ± 1 mL', 'A–B — “C” … ½ × ÷', 'José ©®™ €£¢', 'a•b']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'GlyphMetricApprox').length, 0,
+      `covered symbols in "${v}" must not raise GlyphMetricApprox`);
+  }
+});
+
+test('audit18: uncovered glyphs (non-Latin script / arrow / emoji) raise a loud GlyphMetricApprox', async () => {
+  // Glyphs with no AFM metric render from a fallback face with unknown advance,
+  // so the box/wrap math drifts — that must be loud, even under an allowlisted
+  // font family (FontMetricApprox keys on family, so it would NOT fire here).
+  for (const v of ['Доза', 'Δόση', 'الجرعة', 'go → here', '😀 dose']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    const gm = notices.filter((n) => n.kind === 'GlyphMetricApprox');
+    assert.equal(gm.length, 1, `uncovered glyphs in "${v}" must raise GlyphMetricApprox (got ${notices.map((n) => n.kind).join(',')})`);
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 0,
+      `Arial is metric-compatible — only the GLYPH notice should fire for "${v}"`);
+  }
+});
+
+test('audit18: CJK text is not flagged (fullwidth advance is the measured path)', async () => {
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="日本語の用量" style="text;html=1;fontFamily=Arial;" parent="1"><mxGeometry x="10" y="10" width="200" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.filter((n) => n.kind === 'GlyphMetricApprox').length, 0,
+    'CJK (fullwidth) text must not raise GlyphMetricApprox');
 });
 
 test('audit17: pagenumber/pagecount arithmetic matches drawio (unanchored, prefix-guarded)', async () => {
