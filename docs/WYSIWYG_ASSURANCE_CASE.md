@@ -153,10 +153,12 @@ Across sizes `80×40, 120×60, 50×50, 200×30` and arcSize `10/20/40`.
 | R1 | Exact rounding not yet implemented for `hexagon/parallelogram/step/trapezoid` etc. | Low | **Loud notice today (C1 holds).** Implement via `roundedPoly` + Shapes.js oracle. |
 | R2 | `cylinder`/`cloud` deviate from mxGraph-core oracle (~5–14px, size-dependent) | Medium | Confirm drawio's actual shape impl; extend oracle to Shapes.js; fix or document tolerance. |
 | R3 | Oracle covers mxGraph-core shapes only; drawio-overridden & stencil geometry not yet diffed at the path level | Medium | Extend oracle to drawio `Shapes.js` shapes and to `mxStencil` (declarative XML is authoritative). Stencils currently covered structurally (§5). |
-| R4 | Text *rasterization* (glyph shaping) not pixel-proven | Medium | Mitigated by pinned fonts shared by layout & resvg; metrics-based layout conformance is the planned closure. |
+| R4 | Text *rasterization* (glyph shaping) not pixel-proven | Medium | Mitigated by core Arial/Times/Courier AFM tables shared by layout & resvg (≤0.02% vs `spe_text_measure`). A font that is **not** metric-compatible now raises a **loud `FontMetricApprox`** degradation (`exporter.js scanFontMetricFallbacks`), so any residual drift is noticed, never silent. |
 | R5 | L1 axiom not yet discharged | Medium | One-time supervised audit (§7); owner-gated. |
 | R6 | L4 printer hardware not calibrated | Medium | Scheduled out-of-band QA (§7). |
 | R7 | Unbounded style space — covering-array/property-based generation not yet wired | Low | Add t-way covering array + fuzzing over the style grammar through the oracle. |
+| R8 | Explicit-page origin uses a single-page **centre-anchoring** heuristic; drawio's multi-page print (`getPageLayout`) tiles content >1 page across sheets, so for oversize content the chosen sheet can differ | Low | **C1 holds**: content within one page is identical to drawio; any ink past a page edge is caught by the engine's loud `HardwareMarginClip`/`TileCoverageGap` (renderer.cpp escape ≈4px), never silently cropped. Single-page bake is the contract; multi-tile output would need an owner-gated schema change. |
+| R9 | `%date{}%` resolves to **bake-time** values (inherent to time-varying placeholders) | Low | Named masks/quoted literals now faithfully match `Graph.formatDate`; the value is correct as of print time (not a prior editor view) — expected behaviour for live variable data. |
 
 No **silent** divergence is known to remain in the covered population: every
 item above is either faithful, loudly noticed, or an out-of-band/owner-gated
