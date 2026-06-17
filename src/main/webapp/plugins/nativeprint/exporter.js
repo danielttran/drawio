@@ -1334,7 +1334,13 @@
       '<path d="' + relD + '" fill="none"' + strokeSvgAttrs(style) + '/>';
   }
 
-  function textSvgStr(label, cx, cy, style) {
+  // Centered/aligned plain-text label inside the box [ox,oy,w,h]. Honors
+  // align/verticalAlign exactly like the non-rotated textSvgNode path -- the
+  // old version hard-anchored text-anchor=middle + central, so a ROTATED plain
+  // label (whose `text` shape default is align=left;verticalAlign=top) printed
+  // centered instead of at the left/top edge (a silent divergence on the very
+  // common rotated side-rail label).
+  function textSvgStr(label, ox, oy, w, h, style) {
     if (!label) return '';
     var fs = Math.max(1, number(style.fontSize, 11));
     var ff = style.fontFamily || 'Arial';
@@ -1346,7 +1352,17 @@
     if (fsVal & 4) deco.push('underline');
     if (fsVal & 8) deco.push('line-through');
     var topac = number(style.textOpacity, 100) / 100;
-    var attrs = ' text-anchor="middle" dominant-baseline="central"' +
+    var align = textDefaultAlign(style);   // left | center | right
+    var valign = textDefaultValign(style); // top | middle | bottom
+    var pads = labelPads(style);
+    var anchor = align === 'right' ? 'end' : align === 'center' ? 'middle' : 'start';
+    var cx = align === 'right' ? (ox + w - pads.r)
+      : align === 'center' ? (ox + w / 2) : (ox + pads.l);
+    var baseline = valign === 'bottom' ? 'text-after-edge'
+      : valign === 'middle' ? 'central' : 'text-before-edge';
+    var cy = valign === 'bottom' ? (oy + h - pads.b)
+      : valign === 'middle' ? (oy + h / 2) : (oy + pads.t);
+    var attrs = ' text-anchor="' + anchor + '" dominant-baseline="' + baseline + '"' +
       ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
       ' fill="' + fc + '"' +
       (topac < 1 ? ' fill-opacity="' + fmt(topac) + '"' : '') +
@@ -1359,7 +1375,8 @@
         escXml(label) + '</text>';
     }
     var lineH = fs * 1.2;
-    var startDy = -(lines.length - 1) * lineH / 2;
+    var startDy = valign === 'bottom' ? -(lines.length - 1) * lineH
+      : valign === 'middle' ? -(lines.length - 1) * lineH / 2 : 0;
     var spans = lines.map(function (ln, i) {
       return '<tspan x="' + fmt(cx) + '" dy="' + fmt(i === 0 ? startDy : lineH) + '">' +
         escXml(ln) + '</tspan>';
@@ -1406,8 +1423,9 @@
     // decodes &amp;/&nbsp;/… even with no tags) — decode before literal render.
     var lit = isHtmlLabelStyle(style) ? decodeHtmlEntities(src) : label;
     if (lit === '') return '';
-    // labelBackground/border box for the plain centered label: text bbox sized
-    // via the AFM metrics (or the full region for fill/width overflow).
+    // labelBackground/border box for the plain label: text bbox sized via the
+    // AFM metrics and positioned to the label's align/verticalAlign (matching
+    // textSvgStr), or the full region for fill/width overflow.
     var pbg = '';
     if (style.labelBackgroundColor || style.labelBorderColor) {
       if (style.overflow === 'fill' || style.overflow === 'width') {
@@ -1421,10 +1439,16 @@
           pw = Math.max(pw, textWidthPx(plines[pli], pfs, 0, style.fontFamily, pbold));
         }
         var ph = plines.length * pfs * 1.2;
-        pbg = labelBoxSvgStr(style, ox + w / 2 - pw / 2, oy + h / 2 - ph / 2, pw, ph);
+        var palign = textDefaultAlign(style), pvalign = textDefaultValign(style);
+        var ppads = labelPads(style);
+        var pbx = palign === 'right' ? (ox + w - ppads.r - pw)
+          : palign === 'center' ? (ox + w / 2 - pw / 2) : (ox + ppads.l);
+        var pby = pvalign === 'bottom' ? (oy + h - ppads.b - ph)
+          : pvalign === 'middle' ? (oy + h / 2 - ph / 2) : (oy + ppads.t);
+        pbg = labelBoxSvgStr(style, pbx, pby, pw, ph);
       }
     }
-    return pbg + textSvgStr(lit, ox + w / 2, oy + h / 2, style);
+    return pbg + textSvgStr(lit, ox, oy, w, h, style);
   }
 
   function decodeHtmlEntities(s) {

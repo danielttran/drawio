@@ -4394,6 +4394,63 @@ test('audit9: clipPath inset() with <4 margins + round parses correctly (crop + 
   assert.deepEqual({ x: r.x, y: r.y, w: r.w, h: r.h, rx: r.rx }, { x: 20, y: 5, w: 10, h: 20, rx: 4 });
 });
 
+test('audit9: rotated plain-text labels honor align/verticalAlign (was forced center)', async () => {
+  // rotatedLabelEls routed plain labels through textSvgStr which hard-anchored
+  // text-anchor=middle + central, so a rotated `text` shape (default left/top)
+  // printed centered -- a silent divergence on the common rotated side-rail
+  // label. textSvgStr must honor align/verticalAlign like the non-rotated path.
+  async function anchor(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Rx" style="${style}" parent="1"><mxGeometry x="40" y="40" width="120" height="30" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const n = contract.document.pages[0].paint.find((p) => p.kind === 'svg' &&
+      /<text/.test(Buffer.from(p.source, 'base64').toString('utf8')));
+    const s = Buffer.from(n.source, 'base64').toString('utf8');
+    const m = s.match(/text-anchor="([a-z-]+)" dominant-baseline="([a-z-]+)"/);
+    return { a: m[1], b: m[2] };
+  }
+  // text shape default is align=left;verticalAlign=top.
+  assert.deepEqual(await anchor('text;html=1;rotation=90;'),
+    { a: 'start', b: 'text-before-edge' }, 'rotated text default = left/top');
+  assert.deepEqual(await anchor('text;html=1;rotation=90;align=center;verticalAlign=middle;'),
+    { a: 'middle', b: 'central' }, 'explicit center honored');
+  assert.deepEqual(await anchor('text;html=1;rotation=90;align=right;verticalAlign=bottom;'),
+    { a: 'end', b: 'text-after-edge' }, 'right/bottom honored');
+  // Non-text shape default stays center/middle (mxRectangleShape).
+  assert.deepEqual(await anchor('rounded=0;html=1;rotation=90;'),
+    { a: 'middle', b: 'central' }, 'rect default = center/middle');
+});
+
+test('audit9: empty <diagram> page is kept (multi-page count faithful)', async () => {
+  const mp = `<mxfile>
+    <diagram name="Empty" id="e"></diagram>
+    <diagram name="Real" id="r"><mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="X" vertex="1" parent="1" style="html=1;"><mxGeometry x="10" y="10" width="50" height="20" as="geometry"/></mxCell></root></mxGraphModel></diagram>
+  </mxfile>`;
+  const { contract } = await bake(mp, { keepPx: true });
+  assert.equal(contract.document.pages.length, 2, 'empty page kept as a blank sheet');
+});
+
+test('audit9: cyclic parent refs do not hang the bake; orphan cells do not inflate bounds', async () => {
+  // Cyclic parents (A->B,B->A) must not loop forever (unattended-print hang).
+  const cyc = `<mxGraphModel pageWidth="200" pageHeight="100"><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="A" vertex="1" parent="B" style="html=1;"><mxGeometry x="10" y="10" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="B" vertex="1" parent="A" style="html=1;"><mxGeometry x="30" y="30" width="20" height="20" as="geometry"/></mxCell></root></mxGraphModel>`;
+  const t0 = Date.now();
+  await bake(cyc, { keepPx: true });
+  assert.ok(Date.now() - t0 < 5000, 'cyclic parents completed without hanging');
+  // Orphan cell (nonexistent parent) is not painted -> must not enlarge the
+  // auto-fit page (no explicit pageWidth/Height).
+  const orph = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="real" vertex="1" parent="1" style="html=1;"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="ghostchild" vertex="1" parent="ghost" style="html=1;"><mxGeometry x="1000" y="1000" width="20" height="20" as="geometry"/></mxCell></root></mxGraphModel>`;
+  const { contract } = await bake(orph, { keepPx: true });
+  const SCALE = 25400 / 96;
+  assert.ok(contract.document.pages[0].size.w < 200 * SCALE,
+    `orphan must not inflate auto-fit page (got w=${contract.document.pages[0].size.w})`);
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

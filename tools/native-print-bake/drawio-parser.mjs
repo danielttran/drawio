@@ -202,7 +202,16 @@ function extractAllModels(xml) {
   while ((m = diagRe.exec(xml)) !== null) {
     const diagAttrs = parseAttrs(m[1]);
     const decoded = decodeDiagramBlock(m[2]);
-    if (!decoded && m[2].trim() !== '') {
+    if (decoded) {
+      results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
+    } else if (m[2].trim() === '') {
+      // Empty/blank page (the common "added a new page" serialization):
+      // drawio keeps it as a BLANK SHEET that counts toward %pagecount% and
+      // renumbers nothing. Dropping it silently miscounted pages and shifted
+      // %pagenumber% on the surviving pages. Emit a minimal empty model.
+      results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '',
+        xml: '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>' });
+    } else {
       // A page that exists but cannot be decoded must REFUSE the whole
       // bake: silently printing the other pages is a partial document --
       // the worst C1 outcome for an unattended print.
@@ -210,7 +219,6 @@ function extractAllModels(xml) {
         (diagAttrs.name ? ' ("' + diagAttrs.name + '")' : '') +
         ' could not be decoded (corrupt base64/deflate content)');
     }
-    if (decoded) results.push({ name: diagAttrs.name || '', id: diagAttrs.id || '', xml: decoded });
     diagramIndex++;
   }
   if (results.length > 0) return results;
@@ -360,10 +368,16 @@ function parseCells(xml) {
 // Vertices with geometry.relative=true use x,y as fractions (0–1) of parent
 // width/height plus an optional pixel offset (geometry.offset). This is how
 // draw.io positions decorators like UML component notches.
-function absolutePos(cell, cells) {
+function absolutePos(cell, cells, depth) {
   if (!cell.geometry) return { ax: 0, ay: 0 };
   const g = cell.geometry;
   const parentId = cell.parent;
+  // Cycle guard: a malformed/imported file can contain a parent cycle (A->B,
+  // B->A), which drawio's model cannot hold but the parser does not reject.
+  // Without this the recursion / parent-walk below loops forever and the
+  // unattended bake hangs with no output and no notice -- the worst outcome.
+  depth = depth || 0;
+  if (depth > 1000) return { ax: g.x || 0, ay: g.y || 0 };
 
   if (g.relative && cell.vertex && parentId && parentId !== '0' && parentId !== '1') {
     const parent = cells[parentId];
@@ -372,7 +386,7 @@ function absolutePos(cell, cells) {
       const oy = g.offset ? g.offset.y : 0;
       const relX = (parent.geometry.width  || 0) * (g.x || 0) + ox;
       const relY = (parent.geometry.height || 0) * (g.y || 0) + oy;
-      const { ax: pax, ay: pay } = absolutePos(parent, cells);
+      const { ax: pax, ay: pay } = absolutePos(parent, cells, depth + 1);
       // mxGraphView.updateVertexState: a RELATIVE child of a rotated parent
       // rotates its CENTER around the parent center (absolute-geometry
       // children stay put — the editor bakes rotation into their geometry).
@@ -399,7 +413,8 @@ function absolutePos(cell, cells) {
   let ax = g.x || 0;
   let ay = g.y || 0;
   let pid = parentId;
-  while (pid && pid !== '0' && pid !== '1') {
+  let hops = 0;
+  while (pid && pid !== '0' && pid !== '1' && hops++ < 1000) {
     const parent = cells[pid];
     if (!parent || !parent.geometry) break;
     ax += parent.geometry.x || 0;
@@ -628,6 +643,23 @@ function edgePoints(cell, cells) {
   return out;
 }
 
+// A cell is painted only if its parent chain reaches the root ('0') or a layer
+// ('1'). An orphan (parent id that doesn't exist) or a cell in a parent cycle is
+// NOT in the paint tree, so it must not inflate the auto-fit page bounds either
+// (doing so silently enlarged the sheet / shifted content vs drawio).
+function isReachableFromRoot(cell, cells) {
+  let pid = cell.parent;
+  let hops = 0;
+  while (hops++ < 1000) {
+    if (pid === '0' || pid === '1') return true;
+    if (pid == null) return false;
+    const parent = cells[pid];
+    if (!parent) return false; // orphan: parent does not exist
+    pid = parent.parent;
+  }
+  return false; // cycle / pathological depth
+}
+
 // Compute bounding box of all vertex/edge geometry using absolute positions.
 function computeBounds(cells) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -637,6 +669,7 @@ function computeBounds(cells) {
   };
   for (const cell of Object.values(cells)) {
     if (!cell.geometry) continue;
+    if (!isReachableFromRoot(cell, cells)) continue; // not painted => not in bounds
     const g = cell.geometry;
     if (cell.vertex && g.width > 0 && g.height > 0) {
       const { ax, ay } = absolutePos(cell, cells);
@@ -970,7 +1003,7 @@ function resolvePlaceholders(value, cell, cells, pageCtx) {
     (cell.resolvedStyle && String(cell.resolvedStyle.placeholders) === '1') ||
     (cell.style && String(cell.style.placeholders) === '1');
   if (!enabled) return value;
-  const units = { mm: 'mm', in: 'in', m: 'm', cm: 'mm' };
+  const units = { mm: 'mm', in: 'in', m: 'm' }; // drawio's set; unknown unit => raw px
   // EXACT mirror of Graph.placeholderPattern: the placeholder name excludes
   // % { } " ' = ; (so a CSS percentage like font-size:80% in an HTML label does
   // NOT swallow the real %TOKEN%), with date{...} as a special alternative. A
