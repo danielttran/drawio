@@ -4004,6 +4004,49 @@ test('audit7: flipH on a GIF image cell reaches the printed SVG (non-PNG flip)',
     'flipH transform present');
 });
 
+test('audit9: rotation on a non-PNG image cell reaches the printed SVG (was unrotated)', async () => {
+  // mxShape.updateTransform rotates EVERY image by the cell rotation regardless
+  // of format. The PNG path wrapped the image in rotate(); the non-PNG
+  // (JPEG/GIF/SVG) path silently dropped it, printing the image axis-aligned
+  // with the wrong AABB. Both the rotate() transform AND the expanded
+  // axis-aligned bounding box must now be present.
+  const gif = 'R0lGODlhAQABAIAAAP8AAP///yH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==';
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;rotation=30;image=data:image/gif,${gif};" parent="1"><mxGeometry x="60" y="60" width="80" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract, notices } = await bake(xml, { keepPx: true });
+  assert.equal(notices.length, 0, 'faithful rotated render, no notice');
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /image\/gif/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'gif image baked as svg-wrapped node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /rotate\(30 /,
+    'rotate(30 ...) transform present in the wrapped SVG');
+  // Expanded AABB of an 80x120 box rotated 30deg: w = 80cos30+120sin30 = 129.3,
+  // h = 80sin30+120cos30 = 143.9 (> the unrotated 80x120).
+  assert.ok(node.box.w > 120 && node.box.w < 140,
+    `rotated AABB width ~129, got ${node.box.w}`);
+  assert.ok(node.box.h > 135 && node.box.h < 150,
+    `rotated AABB height ~144, got ${node.box.h}`);
+});
+
+test('audit9: rotated PNG image cell keeps fillOpacity (was dropped -> fully opaque)', async () => {
+  // The rotated-PNG branch read bare 'opacity' instead of composing
+  // 'fillOpacity' (alpha * fillAlpha, per mxSvgCanvas2D.image), so a rotated
+  // translucent image printed fully opaque.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="shape=image;rotation=20;fillOpacity=40;image=data:image/png;base64,${png};" parent="1"><mxGeometry x="60" y="60" width="80" height="120" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /rotate\(20 /.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  assert.ok(node, 'rotated PNG baked as rotate()-wrapped svg node');
+  assert.match(Buffer.from(node.source, 'base64').toString('utf8'), /opacity="0\.4"/,
+    'fillOpacity=40 -> opacity="0.4" on the rotated image');
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

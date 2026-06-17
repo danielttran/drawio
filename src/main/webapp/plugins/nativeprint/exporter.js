@@ -5772,7 +5772,7 @@
   // wrapping the data URI as <image>. Built from the BYTES, not the live DOM,
   // so it works headless and never carries an unresolved external href. resvg
   // decodes the format (verified). aspect mirrors drawio's imageAspect.
-  function dataUriImageSvgNode(mime, data, box, style, notices, cellId, aspectOverride) {
+  function dataUriImageSvgNode(mime, data, box, style, notices, cellId, aspectOverride, rotationDeg) {
     if (style && style.shape === 'icon') {
       var pad = Math.max(4, Math.min(box.w, box.h) * 0.16);
       box = {
@@ -5805,11 +5805,35 @@
         (boolish(style.flipH) ? -1 : 1) + ' ' +
         (boolish(style.flipV) ? -1 : 1) + ')">' + img + '</g>';
     }
+    // mxShape.updateTransform rotates EVERY image by the cell rotation,
+    // independent of format; the PNG path carries this via a rotate() wrapper,
+    // but this SVG-wrapped path (JPEG/GIF/SVG payloads) dropped rotation
+    // silently -- a rotated non-PNG image printed axis-aligned with the wrong
+    // AABB. Mirror the PNG rotated path: expand the viewport to the rotated
+    // axis-aligned bbox, rotate the content about its centre, and centre the
+    // expanded node box on the cell-box centre.
+    var duRot = number(rotationDeg, 0);
+    var vpW = box.w, vpH = box.h;
+    var nodeBox = box;
+    if (duRot) {
+      var duTheta = duRot * Math.PI / 180;
+      var duCosT = Math.abs(Math.cos(duTheta));
+      var duSinT = Math.abs(Math.sin(duTheta));
+      vpW = box.w * duCosT + box.h * duSinT;
+      vpH = box.w * duSinT + box.h * duCosT;
+      var duOffX = (vpW - box.w) / 2;
+      var duOffY = (vpH - box.h) / 2;
+      img = '<g transform="rotate(' + fmt(duRot) + ' ' + fmt(vpW / 2) + ' ' +
+        fmt(vpH / 2) + ') translate(' + fmt(duOffX) + ' ' + fmt(duOffY) + ')">' +
+        img + '</g>';
+      nodeBox = { x: box.x + box.w / 2 - vpW / 2,
+        y: box.y + box.h / 2 - vpH / 2, w: vpW, h: vpH };
+    }
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" ' +
-      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(box.w) +
-      '" height="' + fmt(box.h) + '">' +
+      'xmlns:xlink="http://www.w3.org/1999/xlink" width="' + fmt(vpW) +
+      '" height="' + fmt(vpH) + '">' +
       (clipDecor2 ? '<defs>' + clipDecor2.defs + '</defs>' : '') + img + '</svg>';
-    return { kind: 'svg', box: box, source: base64(svg), aspect: 'preserve' };
+    return { kind: 'svg', box: nodeBox, source: base64(svg), aspect: 'preserve' };
   }
 
   // Re-encode an ALREADY-LOADED <img> element's pixels to a PNG data URI via an
@@ -6444,7 +6468,10 @@
             ? ' transform="translate(' + fmt(imgFlipTx) + ' ' + fmt(imgFlipTy) +
               ') scale(' + imgFlipSx + ',' + imgFlipSy + ')"'
             : '';
-          var imgRotOp = opacity(style, 'opacity');
+          // Image opacity = alpha * fillAlpha (mxSvgCanvas2D.image); the
+          // non-rotated path uses 'fillOpacity' too. Reading bare 'opacity'
+          // here silently dropped fillOpacity on rotated PNG images.
+          var imgRotOp = opacity(style, 'fillOpacity');
           var imgEl = '<image x="' + fmt(imgOffX) + '" y="' + fmt(imgOffY) + '"' +
             ' width="' + fmt(imageBox.w) + '" height="' + fmt(imageBox.h) + '"' +
             ' preserveAspectRatio="' + imgFit + '"' +
@@ -6471,7 +6498,8 @@
         // Any rasterizer-embeddable format (JPEG/GIF/SVG, embedded or fetched)
         // -> build the SVG <image> from the bytes (no live-DOM dependency, so
         // it's faithful headless AND in-browser). No notice.
-        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices, cell.id));
+        paint.push(dataUriImageSvgNode(mime, img.data, box, style, notices,
+          cell.id, undefined, number(style.rotation, 0)));
       } else {
         // Genuinely cannot embed faithfully (external URL that could not be
         // fetched — cross-origin without CORS, 404, offline; non-base64; or a
