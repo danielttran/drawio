@@ -2857,6 +2857,51 @@ test('audit21: gradient stop intrinsic alpha (8-digit/rgba) is preserved, not pr
   assert.ok(r3 && Math.abs(r3.a0 - 1) < 1e-9, `opaque gradient stays opaque, got ${JSON.stringify(r3)}`);
 });
 
+test('audit22: text color alpha (fontColor + rich runs) is honored, not silently opaque', async () => {
+  async function textNode(style, val) {
+    const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${val || 'Hi'}" style="${style}" parent="1"><mxGeometry x="20" y="20" width="100" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const sv = contract.document.pages[0].paint.find((n) => n.kind === 'svg');
+    const d = Buffer.from(sv.source, 'base64').toString('utf8');
+    return (d.match(/<text[^>]*>/g) || []).find((t) => /fill=/.test(t)) || '';
+  }
+  // Plain fontColor alpha (rgba + 8-digit) -> fill-opacity, not opaque.
+  let t = await textNode('text;html=1;fontColor=#ff000080;');
+  assert.match(t, /fill="#ff0000"/); assert.match(t, /fill-opacity="0\.50?2?"/, `plain 8-digit fontColor alpha: ${t}`);
+  t = await textNode('text;html=1;fontColor=rgba(255,0,0,0.5);');
+  assert.match(t, /fill-opacity="0\.5"/, `plain rgba fontColor alpha: ${t}`);
+  // Rich run: 8-digit hex color was the WORST bug — dropped to BLACK. Must be the
+  // right hue AND carry alpha.
+  t = await textNode('text;html=1;', '&lt;span style=&quot;color:#ff000080&quot;&gt;Hi&lt;/span&gt;');
+  assert.match(t, /fill="#ff0000"/, `rich 8-digit hue must not be black: ${t}`);
+  assert.match(t, /fill-opacity="0\.50?2?"/, `rich 8-digit alpha: ${t}`);
+  t = await textNode('text;html=1;', '&lt;font color=&quot;#ff000080&quot;&gt;Hi&lt;/font&gt;');
+  assert.match(t, /fill="#ff0000"/, `<font> 8-digit hue: ${t}`);
+  // Opaque color stays opaque (no spurious fill-opacity).
+  t = await textNode('text;html=1;fontColor=red;');
+  assert.match(t, /fill="#ff0000"/); assert.doesNotMatch(t, /fill-opacity/, `opaque red must not get fill-opacity: ${t}`);
+});
+
+test('audit22: rotated label border color alpha is honored (labelBoxSvgStr)', async () => {
+  // A rotated cell uses the SVG-string label box; a translucent labelBorderColor
+  // must emit stroke-opacity, not print a solid border.
+  const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Hi" style="rounded=0;rotation=30;labelBackgroundColor=#ffffff;labelBorderColor=#00ff0080;" parent="1"><mxGeometry x="40" y="30" width="100" height="50" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  let found = false;
+  for (const n of contract.document.pages[0].paint) {
+    if (n.kind !== 'svg') continue;
+    const d = Buffer.from(n.source, 'base64').toString('utf8');
+    if (/stroke="#00ff00"[^>]*stroke-opacity="0\.50?2?"/.test(d)) found = true;
+  }
+  assert.ok(found, 'rotated label border must carry stroke-opacity for its alpha');
+});
+
 test('audit21: percentage alpha in rgba()/hsla() is honored (not forced opaque)', async () => {
   async function fillAlpha(c) {
     const xml = `<mxGraphModel pageWidth="200" pageHeight="120"><root>

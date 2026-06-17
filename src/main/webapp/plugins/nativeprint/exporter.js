@@ -698,6 +698,7 @@
               var tFs = state.fontSize || 11;
               var tFf = state.fontFamily || 'Arial';
               var tFc = hex(state.fontColor || '#000000');
+              var tFcA = colorAlpha(state.fontColor || '#000000');
               // Baseline math from mxSvgCanvas2D.plainText (w=h=0, no clip):
               //   first-line baseline cy = y + size - 1; middle subtracts
               //   textHeight/2; bottom subtracts textHeight + 1;
@@ -724,7 +725,7 @@
                 tBody += '<text x="' + fmt(ttx) + '" y="' + fmt(tCy + tli * tLh) + '"' +
                   ' text-anchor="' + tAnchor + '"' +
                   ' font-family="' + escXml(tFf) + '" font-size="' + fmt(tFs) + '"' +
-                  ' fill="' + tFc + '"' + tStyleAttrs + '>' + escXml(tLines[tli]) + '</text>';
+                  ' fill="' + tFc + '"' + (tFcA < 1 ? ' fill-opacity="' + fmt(tFcA) + '"' : '') + tStyleAttrs + '>' + escXml(tLines[tli]) + '</text>';
               }
               elems.push(tOpen + tBody + tClose);
             }
@@ -1185,7 +1186,7 @@
     return '<rect x="' + fmt(bx) + '" y="' + fmt(by) + '" width="' + fmt(Math.max(0, bw)) +
       '" height="' + fmt(Math.max(0, bh)) + '" fill="' + (bg ? hex(bg.color) : 'none') + '"' +
       (bg && bg.alpha < 1 ? ' fill-opacity="' + fmt(bg.alpha) + '"' : '') +
-      (bc ? ' stroke="' + hex(bc) + '" stroke-width="' +
+      (bc ? ' stroke="' + hex(bc) + '"' + (colorAlpha(bc) < 1 ? ' stroke-opacity="' + fmt(colorAlpha(bc)) + '"' : '') + ' stroke-width="' +
         fmt(Math.max(0.1, number(style.labelBorderWidth, 1))) + '"' : ' stroke="none"') + '/>';
   }
 
@@ -1399,6 +1400,7 @@
     var fs = Math.max(1, number(style.fontSize, 11));
     var ff = style.fontFamily || 'Arial';
     var fc = style.fontColor || '#000000';
+    var fcA = colorAlpha(fc);
     var fsVal = number(style.fontStyle, 0);
     var isBold = !!(fsVal & 1);
     var isItalic = !!(fsVal & 2);
@@ -1418,8 +1420,8 @@
       : valign === 'middle' ? (oy + h / 2) : (oy + pads.t);
     var attrs = ' text-anchor="' + anchor + '" dominant-baseline="' + baseline + '"' +
       ' font-family="' + escXml(ff) + '" font-size="' + fmt(fs) + '"' +
-      ' fill="' + fc + '"' +
-      (topac < 1 ? ' fill-opacity="' + fmt(topac) + '"' : '') +
+      ' fill="' + hex(fc) + '"' +
+      (clamp01(fcA * topac) < 1 ? ' fill-opacity="' + fmt(clamp01(fcA * topac)) + '"' : '') +
       (isBold ? ' font-weight="bold"' : '') +
       (isItalic ? ' font-style="italic"' : '') +
       (deco.length ? ' text-decoration="' + deco.join(' ') + '"' : '');
@@ -2225,7 +2227,7 @@
       strike: !!(fst & 8),
       overline: false,
       color: isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000',
-      colorAlpha: 1,
+      colorAlpha: isPaintable(style.fontColor) ? colorAlpha(style.fontColor) : 1,
       bg: null,
       bgAlpha: 1,
       vshift: 0,
@@ -2263,7 +2265,7 @@
     }
     if (tag === 'font') {
       var fc = el.getAttribute && el.getAttribute('color');
-      if (fc) { var c0 = cssColor(fc); if (c0 && !c0.none) { st.color = c0.hex; st.colorAlpha = c0.alpha; } }
+      if (fc) { var c0 = resolveColor(fc); if (c0 && !c0.none) { st.color = c0.hex; st.colorAlpha = c0.alpha; } }
       var ff = el.getAttribute && el.getAttribute('face');
       if (ff) st.family = ff.split(',')[0].trim().replace(/^['"]|['"]$/g, '');
       var fz = el.getAttribute && el.getAttribute('size');
@@ -2284,9 +2286,9 @@
       if (dec.indexOf('line-through') >= 0) st.strike = true;
       if (dec.indexOf('overline') >= 0) st.overline = true;
     }
-    if (inl['color']) { var c1 = cssColor(inl['color']); if (c1 && !c1.none) { st.color = c1.hex; st.colorAlpha = c1.alpha; } }
+    if (inl['color']) { var c1 = resolveColor(inl['color']); if (c1 && !c1.none) { st.color = c1.hex; st.colorAlpha = c1.alpha; } }
     var bgv = inl['background-color'] || inl['background'];
-    if (bgv) { var b1 = cssColor(bgv); if (b1) { if (b1.none) st.bg = null; else { st.bg = b1.hex; st.bgAlpha = b1.alpha; } } }
+    if (bgv) { var b1 = resolveColor(bgv); if (b1) { if (b1.none) st.bg = null; else { st.bg = b1.hex; st.bgAlpha = b1.alpha; } } }
     if (inl['letter-spacing']) { var lsp = parseFloat(inl['letter-spacing']); if (Number.isFinite(lsp)) st.letterSpacing = lsp; }
     if (inl['vertical-align']) {
       var va = inl['vertical-align'].toLowerCase();
@@ -2989,6 +2991,7 @@
     var fst = parseInt(style.fontStyle || 0, 10) || 0;
     var family = style.fontFamily || 'Arial';
     var color = isPaintable(style.fontColor) ? hex(style.fontColor) : '#000000';
+    var colorA = isPaintable(style.fontColor) ? colorAlpha(style.fontColor) : 1;
     var h = textDefaultAlign(style);
     var v = textDefaultValign(style);
     // overflow=fill/width sizes the label to the whole cell and flows content
@@ -3129,7 +3132,7 @@
         var ry = ty + r.lineH / 2;
         return '<line x1="' + fmt(pl) + '" y1="' + fmt(ry) +
           '" x2="' + fmt(lw - pr) + '" y2="' + fmt(ry) +
-          '" stroke="' + color + '" stroke-width="1"/>';
+          '" stroke="' + color + '"' + (colorA < 1 ? ' stroke-opacity="' + fmt(colorA) + '"' : '') + ' stroke-width="1"/>';
       }
       var rowH = alignH(r.align || h);
       var anchor = rowH === 'right' ? 'end' : rowH === 'center' ? 'middle' : 'start';
@@ -3144,7 +3147,7 @@
         ((fst & 2) ? ' font-style="italic"' : '') +
         (rowDec.length ? ' text-decoration="' + rowDec.join(' ') + '"' : '') +
         (letterSp ? ' letter-spacing="' + fmt(letterSp) + '"' : '') +
-        ' fill="' + color + '" text-anchor="' + anchor +
+        ' fill="' + color + '"' + (colorA < 1 ? ' fill-opacity="' + fmt(colorA) + '"' : '') + ' text-anchor="' + anchor +
         '" dominant-baseline="text-before-edge" xml:space="preserve">' +
         escXml(r.text) + '</text>';
     }).join('');
@@ -5825,9 +5828,11 @@
     // Additive forward-compatible version skew (peer/schema minor ahead).
     SchemaMinorAhead: true,
     ProtoMinorAhead: true,
-    // rgba text color alpha is dropped to hex in the contract (print is opaque
-    // by design). The text still appears; only the transparency is lost. This
-    // is cosmetic and does not warrant a blocking acknowledgment gate.
+    // Retained classification only. Text/run/border color alpha is now HONORED
+    // (emitted as fill-opacity/stroke-opacity, rendered faithfully by resvg) —
+    // it is no longer dropped, so this notice is not emitted on the current
+    // paths. Kept (info, non-blocking) so any future path that genuinely cannot
+    // carry alpha can classify its degradation without a code change.
     RichApproximateAlpha: true
   };
 
