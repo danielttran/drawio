@@ -1350,3 +1350,74 @@ margin shapes, and the flagship test.drawio — all WYSIWYG.
 getLabelMargins/getLabelBounds family (24 shapes) + the '0'-truthy flag class.
 Independent advisor signed off production-ready. Branch:
 claude/optimistic-archimedes-ka4th1 (fork only).
+
+## UPDATE 2026-06-17 — round 8 (WYSIWYG coverage audit, branch claude/wysiwyg-coverage-audit-br3dk2)
+
+**Goal:** find objects/styles still silently diverging, implement them, advisor
+sign-off, push to fork. Five parallel object-by-object audits (labels / vertex
+shapes / edges / stencils+images / C++ engine) against drawio source. Baseline
+was the round-7f sign-off (exporter 205, bake 324, ctest 216, audit 86+8910).
+**9 verified silent divergences fixed**, each matched to drawio source with a
+red→green test; full matrix green before commit.
+
+**Fixes (each to drawio mxShape/mxStencil/mxImageShape/mxSvgCanvas2D source):**
+- *L1/L2 sup/sub (mxSvgCanvas2D.js:2624-2639):* per-run sub/sup used dy ±0.5/0.25
+  and size ×0.75; drawio uses dy (sup −0.35 / sub +0.15)×parent and size /1.2.
+  The supSubLineExpansion formula already matched — only the constants were off,
+  so both glyph placement AND line expansion were wrong. Now exact.
+- *L5 textDirection=auto:* `auto` + strong-RTL content resolved LTR with no
+  notice (mxText.getAutoDirection flips to RTL); now a loud RTL notice (LTR
+  content unaffected).
+- *V1 folder labelInHeader (Shapes.js FolderShape.getLabelMargins):* only the
+  !labelInHeader else-branch was ported, so a SHIPPED `labelInHeader=1` folder
+  (UML sidebar) painted its label over the body instead of confined to the side
+  tab. Added the tab-region margin branch (tabWidth/tabHeight/tabPosition/arc).
+- *V2 glass (Shapes.js paintGlassEffectPath):* the generic branch applied a
+  RECTANGULAR glass to EVERY shape; drawio glasses only the mxRectangleShape
+  family (incl. the default `label` shape), mxEllipse (elliptical glass path),
+  and mxRhombus (diamond glass path). Gated to those + added silhouette-matching
+  ellipse/rhombus glass; triangle/hexagon/cloud/cylinder/etc. no longer glass.
+- *V3+S4 flip+direction (mxShape.js:1417 + mxSvgCanvas2D.js:1342):* direction
+  N/S combined with a single-axis flip mirrored about the WRONG axis — the
+  exporter applied flip-then-rotate with raw flags, but drawio SWAPS flipH↔flipV
+  for N/S and composes mirror∘rotate(theta) with theta NEGATED for a single-axis
+  flip (both flips = +180, no mirror). Fixed in all THREE paths (generic
+  outlinePath, builtin `flipRotatePrefix` helper, stencil effDir+display mirror).
+  Verified identity north+flipH ≡ south+flipV (anti-diagonal reflection); reduces
+  to prior behavior for flip-only / direction-only / both-flips / E/W (only
+  N/S+single-flip changes). 8910-stencil audit (default dir) unchanged → no regress.
+- *S1 stencil fill/strokeOpacity (mxShape.configureCanvas + mxSvgCanvas2D
+  updateFill/updateStroke):* the stencil interpreter used the global alpha only,
+  so a stencil cell with fillOpacity/strokeOpacity printed opaque. Now
+  fill-opacity = alpha×fillAlpha, stroke-opacity = alpha×strokeAlpha.
+- *S2 imageBorder (mxImageShape.js:201-216):* imageBorder was emitted only inside
+  the imageBackground branch; drawio strokes it ON TOP of the image whenever set.
+  Now an on-top border rect fires for imageBorder regardless of imageBackground.
+- *S3 stencil miterlimit (mxSvgCanvas2D.js:1192):* stencil strokes never emitted
+  stroke-miterlimit; drawio writes it when != the canvas default 10 (a stencil
+  <miterlimit> command, e.g. basic.flash limit=6). At 10 it is OMITTED (both
+  render at SVG default 4 — no divergence there); now emits when != 10.
+- *E1 rounded edge arcSize=0:* `radius>0?radius:10` forced a 10px corner radius
+  for an explicit arcSize=0; now `>=0` keeps sharp (degenerate-cubic) corners.
+
+**Evaluated, intentionally NOT changed (documented):**
+- *L3 RICH_ASCENT 0.92 vs drawio's first-baseline 1.0×size:* a ~1px within-line
+  baseline offset (line boxes/pitch already exact). In the prior-advisor-accepted
+  font-metric-approximation class; was visually validated at 0.92, so not churned
+  without a browser-free visual diff (C2). L4 (plain-label height) doesn't apply —
+  the fork renders ALL labels through the block-text path, which already matches.
+- *E2 flexArrow multi-waypoint rounded bends:* mitred instead of quad-rounded on
+  a rare multi-waypoint+rounded flexArrow; LOW, deferred.
+- *E3 dashPattern explicit-0 entries:* the existing `v>0` filter + [3,3] fallback
+  is safer and no SHIPPED drawio dash preset contains 0 — kept.
+- *C-loader PNG signature:* the loader defers the PNG-signature check to the
+  native-surface gate by design (so raster/base64 tests use placeholder data);
+  the validator front-runs it. Benign (engine still loud-fails pre-paper); adding
+  it to the loader broke 6 placeholder-data tests, so reverted.
+
+**Matrix (this box):** exporter 205, validate 64, service 19, bake 333 (+9 R8
+tests), ctest 216/216 (real resvg cdylib), render-gate 1/1, production-audit 86
+shapes + 8910 stencils zero notices / all inked / 0 blank. Goldens regenerated:
+master-test, master-test-arrows-bpmn, master-test-compound-styles,
+master-test-style-variants, master-test-rich-text (coordinate/transform-only;
+other stencil goldens regenerated identical). No C++ change.

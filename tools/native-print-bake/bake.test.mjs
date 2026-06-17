@@ -4834,3 +4834,137 @@ test('NB-2 boundedLbl=0 still applies the margin (mxGraph "0" is truthy)', async
   // boundedLbl=0 (truthy) insets; bare cube (no boundedLbl) does not.
   assert.ok(inset.box.x > none.box.x + 10, `boundedLbl=0 still insets (drawio truthy): ${inset.box.x} vs ${none.box.x}`);
 });
+
+// ===================================================================
+// Round 8 (WYSIWYG coverage audit) regression tests
+// ===================================================================
+
+function allSvg(contract) {
+  return contract.document.pages[0].paint.filter((n) => n.kind === 'svg').map(rawSvg);
+}
+function pathDOf(contract) {
+  const n = contract.document.pages[0].paint.find((x) => x.kind === 'path');
+  return n && n.d;
+}
+const shapeXml = (style, w = 100, h = 60, value = '') => `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+  <mxCell id="0"/><mxCell id="1" parent="0"/>
+  <mxCell id="2" vertex="1" value="${value}" style="${style}" parent="1"><mxGeometry x="0" y="0" width="${w}" height="${h}" as="geometry"/></mxCell>
+</root></mxGraphModel>`;
+
+test('R8 sup/sub: font shrinks by /1.2 and shifts by ±dy*parent (mxSvgCanvas2D parity)', async () => {
+  // drawio mxSvgCanvas2D.js:2624-2639 — sub/sup font = parent/1.2 (NOT *0.75),
+  // dy = (sup?-0.35:0.15)*parent. Was -0.5/0.25 & *0.75 (silently mis-sized/placed).
+  const { contract } = await bake(shapeXml(
+    'text;html=1;fontSize=12;', 200, 60,
+    'x&lt;sup&gt;a&lt;/sup&gt;&lt;sub&gt;b&lt;/sub&gt;'), { keepPx: true });
+  const svg = allSvg(contract).find((s) => /<text/.test(s)) || '';
+  assert.match(svg, /font-size="10"/, `sup/sub must be 12/1.2=10, not 12*0.75=9: ${svg.slice(0, 240)}`);
+  assert.doesNotMatch(svg, /font-size="9"/, 'old *0.75 size must be gone');
+});
+
+test('R8 glass: ellipse uses an elliptical glass path; triangle never glasses', async () => {
+  // drawio paints glass ONLY for the mxRectangleShape family + mxEllipse + mxRhombus
+  // (Shapes.js paintGlassEffectPath overrides). Other shapes never call it.
+  const ell = (await bake(shapeXml('ellipse;glass=1;fillColor=#08f;'), { keepPx: true })).contract;
+  const tri = (await bake(shapeXml('triangle;glass=1;fillColor=#08f;'), { keepPx: true })).contract;
+  const rhomb = (await bake(shapeXml('rhombus;glass=1;fillColor=#08f;'), { keepPx: true })).contract;
+  const rect = (await bake(shapeXml('rounded=0;glass=1;fillColor=#08f;'), { keepPx: true })).contract;
+  const glassNode = (c) => allSvg(c).find((s) => /glassg/.test(s));
+  // ellipse glass: silhouette-matching path uses cubic curves (C), not a plain rect.
+  assert.match(glassNode(ell) || '', /<path d="M[^"]*C[^"]*"/, 'ellipse glass must be elliptical (cubic)');
+  // rhombus glass: diamond path (M..L..L..Q), no rounded-rect corner quads at -sw.
+  assert.ok(glassNode(rhomb), 'rhombus must glass');
+  // triangle must NOT glass (drawio never paints glass on a triangle).
+  assert.ok(!glassNode(tri), 'triangle must NOT emit a glass overlay');
+  // rectangle/label family still glasses.
+  assert.ok(glassNode(rect), 'rectangle family must still glass');
+});
+
+test('R8 flip+direction: N/S swaps flipH/flipV and negates rotation (mxShape+mxSvgCanvas2D)', async () => {
+  const pd = async (s) => pathDOf((await bake(shapeXml('shape=trapezoid;' + s + 'fillColor=#f00;'), { keepPx: true })).contract);
+  const south = await pd('direction=south;');
+  const southFlipH = await pd('direction=south;flipH=1;');
+  const southFlipV = await pd('direction=south;flipV=1;');
+  const northFlipH = await pd('direction=north;flipH=1;');
+  // flip must be APPLIED under direction (not silently dropped).
+  assert.notEqual(southFlipH, south, 'south+flipH must differ from south (flip applied)');
+  assert.notEqual(southFlipH, southFlipV, 'flipH and flipV axes are distinct under direction');
+  // drawio identity: a single-axis flip under N/S swaps the axis AND negates the
+  // rotation, so north+flipH and south+flipV are the SAME composite reflection.
+  assert.equal(northFlipH, southFlipV, 'north+flipH must equal south+flipV (swap+negate)');
+  // south+flipH is the horizontal mirror of south (mirrorH∘rot90 == mirrorV∘rot-90).
+  assert.equal(southFlipH, 'M 0 12 L 0 48 L 100 60 L 100 0 Z');
+});
+
+test('R8 stencil fillOpacity/strokeOpacity multiply the stencil paint alpha', async () => {
+  // mxShape.configureCanvas seeds setFillAlpha(fillOpacity/100)/setStrokeAlpha; the
+  // stencil interpreter previously used the global alpha only (silently opaque).
+  const { contract, notices } = await bake(shapeXml(
+    'shape=mxgraph.basic.banner;fillColor=#0a0;strokeColor=#000;fillOpacity=40;strokeOpacity=30;'),
+    { keepPx: true });
+  assert.deepEqual(notices, [], 'real stencil bakes with no notice');
+  const svg = allSvg(contract).join('');
+  assert.match(svg, /fill-opacity="0\.4"/, `fillOpacity=40 -> fill-opacity 0.4: ${svg.slice(0, 200)}`);
+  assert.match(svg, /stroke-opacity="0\.3"/, 'strokeOpacity=30 -> stroke-opacity 0.3');
+});
+
+test('R8 stencil emits stroke-miterlimit from a <miterlimit> command (mxSvgCanvas2D parity)', async () => {
+  // mxgraph.basic.flash sets <miterlimit limit="6">; drawio writes it (!= default
+  // 10), the exporter previously dropped it (SVG default 4 -> wrong miter spikes).
+  const { contract, notices } = await bake(shapeXml(
+    'shape=mxgraph.basic.flash;fillColor=#fff;strokeColor=#000;'), { keepPx: true });
+  assert.deepEqual(notices, [], 'flash bakes with no notice');
+  const svg = allSvg(contract).join('');
+  assert.match(svg, /stroke-miterlimit="6"/, `flash miterlimit=6 must serialize: ${svg.slice(0, 200)}`);
+});
+
+test('R8 imageBorder strokes the image even without imageBackground', async () => {
+  // mxImageShape.js:201-216 strokes imageBorder ON TOP whenever set, independent
+  // of imageBackground; previously emitted only inside the imageBackground branch.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const { contract } = await bake(shapeXml(
+    `shape=image;image=data:image/png,${png};imageBorder=#ff0000;`), { keepPx: true });
+  const borders = contract.document.pages[0].paint.filter(
+    (n) => n.kind === 'path' && n.stroke && /ff0000/i.test(JSON.stringify(n.stroke)) && n.fill == null);
+  assert.ok(borders.length >= 1, 'imageBorder must stroke a border rect on top of the image');
+});
+
+test('R8 rounded=1;arcSize=0 edge prints sharp corners, not a forced 10px radius', async () => {
+  const mkEdge = (s) => `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="" parent="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="3" vertex="1" style="" parent="1"><mxGeometry x="200" y="200" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="4" edge="1" source="2" target="3" style="${s}" parent="1">
+      <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="200" y="10"/></Array></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const edgeD = (c) => { const n = c.document.pages[0].paint.find((x) => x.kind === 'path' && /M/.test(x.d) && !x.fill); return n && n.d; };
+  const sharp = edgeD((await bake(mkEdge('rounded=1;arcSize=0;'), { keepPx: true })).contract);
+  const round = edgeD((await bake(mkEdge('rounded=1;'), { keepPx: true })).contract);
+  // arcSize=0 => the corner cubic is DEGENERATE (control+end points all = the
+  // corner 200,10), i.e. visually sharp; rounded default bends short of the corner.
+  assert.match(sharp, /L 200 10 C 200 10 200 10 200 10/, `arcSize=0 must be a degenerate (sharp) corner: ${sharp}`);
+  assert.doesNotMatch(round, /L 200 10 C 200 10 200 10 200 10/, 'rounded default must NOT be degenerate');
+  assert.match(round, / C /, `rounded default bends (cubic): ${round}`);
+});
+
+test('R8 textDirection=auto with RTL content raises a loud notice', async () => {
+  const rtl = await bake(shapeXml('text;html=1;textDirection=auto;', 100, 40, 'שלום'), { keepPx: true });
+  const ltr = await bake(shapeXml('text;html=1;textDirection=auto;', 100, 40, 'hello'), { keepPx: true });
+  assert.ok(rtl.notices.some((n) => /right-to-left/i.test(JSON.stringify(n))),
+    'auto + RTL content must be loud');
+  assert.ok(!ltr.notices.some((n) => /right-to-left/i.test(JSON.stringify(n))),
+    'auto + LTR content must NOT raise the RTL notice');
+});
+
+test('R8 folder labelInHeader confines the label to the side tab', async () => {
+  const lblNode = (c) => c.document.pages[0].paint.find((n) => n.kind === 'svg' && /<text/.test(rawSvg(n)));
+  const header = lblNode((await bake(shapeXml(
+    'shape=folder;boundedLbl=1;labelInHeader=1;tabWidth=110;tabHeight=30;tabPosition=left;', 300, 200, 'F'),
+    { keepPx: true })).contract);
+  const body = lblNode((await bake(shapeXml(
+    'shape=folder;boundedLbl=1;tabWidth=110;tabHeight=30;', 300, 200, 'F'), { keepPx: true })).contract);
+  assert.ok(header && body, 'folder labels emitted');
+  // labelInHeader confines to ~tabWidth; the body-label band spans the full width.
+  assert.ok(header.box.w < body.box.w - 50,
+    `labelInHeader label box must be tab-narrow: ${header.box.w} vs ${body.box.w}`);
+});

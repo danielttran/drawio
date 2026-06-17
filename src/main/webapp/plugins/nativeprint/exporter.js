@@ -215,12 +215,23 @@
       gradDefs.push(linearGradDef(gradId, hex(state.fillColor), hex(style.gradientColor), style.gradientDirection));
     }
 
+    // mxShape.configureCanvas seeds setFillAlpha(fillOpacity/100) +
+    // setStrokeAlpha(strokeOpacity/100) (mxShape.js:1033-1034), and
+    // mxSvgCanvas2D emits fill-opacity = alpha*fillAlpha / stroke-opacity =
+    // alpha*strokeAlpha (mxSvgCanvas2D.js:1054/1135). The stencil interpreter
+    // previously used the global alpha only, so a stencil cell with
+    // fillOpacity/strokeOpacity printed fully opaque — a silent divergence.
+    var stencilFillAlpha = style && style.fillOpacity != null
+      ? clamp01(number(style.fillOpacity, 100) / 100) : 1;
+    var stencilStrokeAlpha = style && style.strokeOpacity != null
+      ? clamp01(number(style.strokeOpacity, 100) / 100) : 1;
+
     // Helper: fill SVG attr using current state
     function stateFillAttr() {
       if (!isPaintable(state.fillColor)) return ' fill="none"';
       // Gradient fills carry the canvas alpha too (mxSvgCanvas2D.updateFill
       // sets fill-opacity regardless of gradient).
-      var a = state.alpha;
+      var a = state.alpha * stencilFillAlpha;
       var aAttr = a < 1 ? ' fill-opacity="' + fmt(a) + '"' : '';
       if (gradId) return ' fill="url(#' + gradId + ')"' + aAttr;
       return ' fill="' + hex(state.fillColor) + '"' + aAttr;
@@ -235,6 +246,15 @@
       var sc = state.lineCap === 'round' ? 'round' : state.lineCap === 'square' ? 'square' : 'butt';
       var sj = state.lineJoin === 'round' ? 'round' : state.lineJoin === 'bevel' ? 'bevel' : 'miter';
       s += ' stroke-linecap="' + sc + '" stroke-linejoin="' + sj + '"';
+      // mxSvgCanvas2D.updateStrokeAttributes emits stroke-miterlimit only when it
+      // differs from the canvas default 10 (mxSvgCanvas2D.js:1192) — at 10 the
+      // attr is OMITTED (so both drawio and the print render at the SVG default 4;
+      // no divergence there). A stencil <miterlimit> command (e.g.
+      // electrical/mosfets1.xml limit="2") changes it; that value was silently
+      // dropped, clipping sharp miter spikes differently.
+      if (sj === 'miter' && state.miterLimit !== 10) {
+        s += ' stroke-miterlimit="' + fmt(state.miterLimit) + '"';
+      }
       if (state.dashed) {
         var dp = state.dashPattern
           ? String(state.dashPattern).split(/[ ,]+/).map(function(v) { return number(v, 0); }).filter(function(v) { return v > 0; })
@@ -246,7 +266,8 @@
         if (dsc > 0 && dsc !== 1) dp = dp.map(function (v) { return Math.round(v * dsc * 100) / 100; });
         s += ' stroke-dasharray="' + dp.map(fmt).join(' ') + '"';
       }
-      if (state.alpha < 1) s += ' stroke-opacity="' + fmt(state.alpha) + '"';
+      var sa = state.alpha * stencilStrokeAlpha;
+      if (sa < 1) s += ' stroke-opacity="' + fmt(sa) + '"';
       return s;
     }
 
@@ -720,24 +741,19 @@
       // 'connections' and other sections are silently skipped
     }
 
-    // Step 12: Flip transforms — must use cw/ch (the dimension-swapped space the path was built in)
+    // Step 12+3: flip + direction, composed exactly like mxShape.updateTransform
+    // (flipH/flipV SWAPPED for N/S — mxShape.js:1417) + mxSvgCanvas2D.rotate
+    // (mxSvgCanvas2D.js:1342): the path is drawn in the dimension-swapped (cw×ch)
+    // computeAspect space; a single-axis flip NEGATES the rotation (swaps N↔S /
+    // E↔W folding) AND mirrors in DISPLAY space about the cell centre; both flips
+    // rotate +180 with no mirror. The direction transform maps the cw×ch space
+    // onto the cellW×cellH viewport (translate forms handle non-square delta).
     var innerContent = elems.join('');
-    if (!nested && (boolish(style.flipH) || boolish(style.stencilFlipH))) {
-      innerContent = '<g transform="scale(-1,1) translate(' + fmt(-cw) + ',0)">' + innerContent + '</g>';
-    }
-    if (!nested && (boolish(style.flipV) || boolish(style.stencilFlipV))) {
-      innerContent = '<g transform="scale(1,-1) translate(0,' + fmt(-ch) + ')">' + innerContent + '</g>';
-    }
-
-    // Step 3 (direction rotation): map the cw×ch path space onto the cellW×cellH display viewport.
-    // For north/south: path was built in (cw=cellH, ch=cellW) space; rotate to fit (cellW×cellH).
-    // translate(0,cellH)  rotate(-90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
-    // translate(cellW,0)  rotate(+90) maps  [0..cw]×[0..ch] → [0..cellW]×[0..cellH]  (no clipping)
     if (nested) {
-      // include-shape sub-render: the outermost render already rotated the
-      // whole shape. drawio's nested computeAspect still swaps the scales for
-      // north/south AND offsets by delta = (w-h)/2 (mxStencil.js:497-508);
-      // the swap happened above via cw/ch — apply only the delta here.
+      // include-shape sub-render: the outermost render already rotated/flipped
+      // the whole shape. drawio's nested computeAspect still swaps the scales for
+      // north/south AND offsets by delta = (w-h)/2 (mxStencil.js:497-508); the
+      // swap happened above via cw/ch — apply only the delta here.
       if (dir === 'north' || dir === 'south') {
         var dlt = (cellW - cellH) / 2;
         if (dlt !== 0) {
@@ -745,13 +761,33 @@
         }
       }
       // east/west: nothing — no nested rotation in drawio.
-    } else if (dir === 'north') {
-      innerContent = '<g transform="translate(0,' + fmt(cellH) + ') rotate(-90)">' + innerContent + '</g>';
-    } else if (dir === 'south') {
-      innerContent = '<g transform="translate(' + fmt(cellW) + ',0) rotate(90)">' + innerContent + '</g>';
-    } else if (dir === 'west') {
-      var dcx3 = cellW / 2, dcy3 = cellH / 2;
-      innerContent = '<g transform="rotate(180 ' + fmt(dcx3) + ' ' + fmt(dcy3) + ')">' + innerContent + '</g>';
+    } else {
+      var nsInv = (dir === 'north' || dir === 'south');
+      var sfH = boolish(style.flipH) || boolish(style.stencilFlipH);
+      var sfV = boolish(style.flipV) || boolish(style.stencilFlipV);
+      if (nsInv) { var swp = sfH; sfH = sfV; sfV = swp; }
+      var bothF = sfH && sfV, xorF = sfH !== sfV;
+      // theta adjustment as a direction relabel: both flips => +180 (N↔S, E↔W);
+      // single flip => negate (N↔S; E/W are ±180 ≡ self).
+      var effDir = dir;
+      if (bothF) {
+        effDir = dir === 'north' ? 'south' : dir === 'south' ? 'north'
+          : dir === 'west' ? 'east' : 'west';
+      } else if (xorF) {
+        effDir = dir === 'north' ? 'south' : dir === 'south' ? 'north' : dir;
+      }
+      if (effDir === 'north') {
+        innerContent = '<g transform="translate(0,' + fmt(cellH) + ') rotate(-90)">' + innerContent + '</g>';
+      } else if (effDir === 'south') {
+        innerContent = '<g transform="translate(' + fmt(cellW) + ',0) rotate(90)">' + innerContent + '</g>';
+      } else if (effDir === 'west') {
+        innerContent = '<g transform="rotate(180 ' + fmt(cellW / 2) + ' ' + fmt(cellH / 2) + ')">' + innerContent + '</g>';
+      }
+      // single-axis flip: mirror in DISPLAY space about the cell centre.
+      if (xorF) {
+        if (sfH) innerContent = '<g transform="translate(' + fmt(cellW) + ',0) scale(-1,1)">' + innerContent + '</g>';
+        if (sfV) innerContent = '<g transform="translate(0,' + fmt(cellH) + ') scale(1,-1)">' + innerContent + '</g>';
+      }
     }
 
     // Step 13: Assemble final SVG
@@ -1529,7 +1565,22 @@
     if (shape === 'manualInput' && bounded) {
       return { l: 0, t: number(style.size, 30), r: 0, b: 0 };
     }
-    if (shape === 'folder' && bounded) { // !labelInHeader: tab band off the top
+    if (shape === 'folder' && bounded) {
+      // FolderShape.getLabelMargins (Shapes.js): labelInHeader=1 confines the
+      // label to the side TAB (tabWidth × tabHeight at tabPosition), else the
+      // label drops below the top tab band.
+      if (drawioFlag(style.labelInHeader, false)) {
+        var fSizeX = number(style.tabWidth, 15);
+        var fSizeY = number(style.tabHeight, 15);
+        var fArc = number(style.arcSize, 0.1);
+        if (!boolish(style.absoluteArcSize)) fArc = Math.min(w, h) * fArc;
+        fArc = Math.min(fArc, w * 0.5, (h - fSizeY) * 0.5);
+        if (!boolish(style.rounded)) fArc = 0;
+        if (String(style.tabPosition || 'right') === 'left') {
+          return { l: fArc, t: 0, r: w - fSizeX, b: h - fSizeY };
+        }
+        return { l: w - fSizeX, t: 0, r: fArc, b: h - fSizeY };
+      }
       return { l: 0, t: number(style.tabHeight, 15), r: 0, b: 0 };
     }
     if (shape === 'process' || shape === 'process2') {
@@ -1875,8 +1926,13 @@
       if (!inl['font-family']) st.family = 'Courier New';
     }
     if (tag === 'sup' || tag === 'sub') {
-      st.vshift = st.vshift + (tag === 'sup' ? -0.5 : 0.25) * st.size;
-      st.size = st.size * 0.75;
+      // mxSvgCanvas2D.js:2639 — dyPx = (SUP?-0.35:0.15) * parent effectiveFontSize
+      // (st.size here is still the PARENT size; the shrink below happens after).
+      // mxSvgCanvas2D.js:2624-2626 — sub/sup font becomes 'smaller' = parent/1.2,
+      // and ONLY when the run carries no explicit font-size (an inline
+      // font-size at line ~1896 overrides st.size, matching drawio:2680-2693).
+      st.vshift = st.vshift + (tag === 'sup' ? -0.35 : 0.15) * st.size;
+      st.size = st.size / 1.2;
     }
     if (tag === 'font') {
       var fc = el.getAttribute && el.getAttribute('color');
@@ -1907,8 +1963,8 @@
     if (inl['letter-spacing']) { var lsp = parseFloat(inl['letter-spacing']); if (Number.isFinite(lsp)) st.letterSpacing = lsp; }
     if (inl['vertical-align']) {
       var va = inl['vertical-align'].toLowerCase();
-      if (va === 'super') st.vshift += -0.5 * st.size;
-      else if (va === 'sub') st.vshift += 0.25 * st.size;
+      if (va === 'super') st.vshift += -0.35 * st.size;
+      else if (va === 'sub') st.vshift += 0.15 * st.size;
     }
     return st;
   }
@@ -3006,17 +3062,36 @@
   // top ~40% of the shape, filled with a south gradient fading 0.9 -> 0.1 alpha.
   // Previously dropped silently. Returns the inner SVG content for a box-sized
   // overlay node (no own stroke). Coordinates are box-relative (0..w, 0..h).
-  function glassOverlaySvg(style, w, h) {
+  // glass=1 highlight. drawio paints it via paintGlassEffect (Shapes.js:2123)
+  // which delegates the SILHOUETTE to paintGlassEffectPath: the rectangle family
+  // + swimlane use the default rect path; mxEllipse (Shapes.js:2157) and
+  // mxRhombus (Shapes.js:2171) override it with an ellipse/diamond-matching path.
+  // `shape` selects the variant (default = rectangular).
+  function glassOverlaySvg(style, w, h, shape) {
     var sw = Math.ceil(number(style.strokeWidth, 1) / 2);
     var size = 0.4;
-    var rounded = boolish(style.rounded);
-    var arc = (rounded ? roundedRectRadius(style, w, h) : 0) + 2 * sw;
-    var d = rounded
-      ? 'M ' + p(-sw + arc, -sw) + ' Q ' + p(-sw, -sw) + ' ' + p(-sw, -sw + arc) +
-        ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' + p(w + sw, h * size) +
-        ' L ' + p(w + sw, -sw + arc) + ' Q ' + p(w + sw, -sw) + ' ' + p(w + sw - arc, -sw) + ' Z'
-      : 'M ' + p(-sw, -sw) + ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' +
-        p(w + sw, h * size) + ' L ' + p(w + sw, -sw) + ' Z';
+    var d;
+    if (shape === 'ellipse') {
+      var k = 0.5522847498;
+      var cx = w / 2, cy = h / 2, rx = w / 2 + sw, ry = h / 2 + sw;
+      d = 'M ' + p(cx - rx, cy) +
+        ' C ' + p(cx - rx, cy - ry * k) + ' ' + p(cx - rx * k, cy - ry) + ' ' + p(cx, cy - ry) +
+        ' C ' + p(cx + rx * k, cy - ry) + ' ' + p(cx + rx, cy - ry * k) + ' ' + p(cx + rx, cy) +
+        ' Q ' + p(cx, cy + h * 0.2) + ' ' + p(cx - rx, cy) + ' Z';
+    } else if (shape === 'rhombus' || shape === 'diamond') {
+      var hw = w / 2, hh = h / 2;
+      d = 'M ' + p(0, hh) + ' L ' + p(hw, 0) + ' L ' + p(w, hh) +
+        ' Q ' + p(hw, h * 0.7) + ' ' + p(0, hh) + ' Z';
+    } else {
+      var rounded = boolish(style.rounded);
+      var arc = (rounded ? roundedRectRadius(style, w, h) : 0) + 2 * sw;
+      d = rounded
+        ? 'M ' + p(-sw + arc, -sw) + ' Q ' + p(-sw, -sw) + ' ' + p(-sw, -sw + arc) +
+          ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' + p(w + sw, h * size) +
+          ' L ' + p(w + sw, -sw + arc) + ' Q ' + p(w + sw, -sw) + ' ' + p(w + sw - arc, -sw) + ' Z'
+        : 'M ' + p(-sw, -sw) + ' L ' + p(-sw, h * size) + ' Q ' + p(w * 0.5, h * 0.7) + ' ' +
+          p(w + sw, h * size) + ' L ' + p(w + sw, -sw) + ' Z';
+    }
     return '<defs><linearGradient id="glassg" gradientUnits="userSpaceOnUse" ' +
       'x1="0" y1="0" x2="0" y2="' + fmt(h * 0.6) + '">' +
       '<stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>' +
@@ -3878,6 +3953,27 @@
   // stencilFlipH/V are deliberately NOT read here: mxShape.apply ORs them into
   // flipH/flipV ONLY when a stencil exists (mxShape.js:1410-1415); on the
   // non-stencil paths drawio ignores them.
+  // Builds the SVG transform PREFIX replicating mxSvgCanvas2D.rotate
+  // (mxSvgCanvas2D.js:1342-1366) for content already centred about (cx,cy):
+  // both flips => theta+180 and no mirror; a single-axis flip => append the
+  // mirror translate/scale AND negate theta. Flags must already be swapped for
+  // N/S by the caller (mxShape.js:1417). Returned string is meant to wrap a
+  // centring translate + the content (outermost transform first).
+  function flipRotatePrefix(baseTheta, fH, fV, cx, cy) {
+    var theta = baseTheta;
+    var mirror = '';
+    if (fH && fV) { theta = (theta + 180) % 360; }
+    else if (fH !== fV) {
+      theta = (360 - theta) % 360;
+      var tx = fH ? cx : 0, sx = fH ? -1 : 1;
+      var ty = fV ? cy : 0, sy = fV ? -1 : 1;
+      mirror = 'translate(' + fmt(tx) + ' ' + fmt(ty) + ') scale(' + sx + ' ' + sy +
+        ') translate(' + fmt(-tx) + ' ' + fmt(-ty) + ') ';
+    }
+    var rot = theta ? 'rotate(' + fmt(theta) + ' ' + fmt(cx) + ' ' + fmt(cy) + ') ' : '';
+    return mirror + rot;
+  }
+
   function flipWrapSvg(content, w, h, style) {
     if (boolish(style.flipH)) {
       content = '<g transform="translate(' + fmt(w) + ',0) scale(-1,1)">' + content + '</g>';
@@ -4673,8 +4769,11 @@
       return d;
     }
     // drawio mxPolyline rounds corners with arcSize = (style arcSize ||
-    // LINE_ARCSIZE=20) / 2 = 10 by default. Was a hardcoded 8.
-    var radius = radius > 0 ? radius : 10;
+    // LINE_ARCSIZE=20) / 2 = 10 by default. An EXPLICIT arcSize=0 (radius 0)
+    // means SHARP corners (mxShape.addPoints Math.min(arcSize, …)=0) — only the
+    // missing/invalid case falls back to 10 (the caller never passes 0 by
+    // default, so radius===0 reliably signals an explicit arcSize=0).
+    var radius = (radius >= 0 && isFinite(radius)) ? radius : 10;
     var out = 'M ' + p(points[0].x, points[0].y);
     // mxShape.addPoints: the corner curve is a QUADRATIC with control at
     // the corner (its exact cubic elevation is c = a + 2/3(corner - a));
@@ -6144,7 +6243,13 @@
         'indicator shape/image "' + (style.indicatorShape || style.indicatorImage) +
         '" is not rendered.', cell.id));
     }
-    if (String(style.textDirection || '').toLowerCase() === 'rtl') {
+    var tdir = String(style.textDirection || '').toLowerCase();
+    // mxText.getAutoDirection (mxText.js): textDirection=auto resolves to RTL
+    // when the label contains a strong RTL character (Hebrew/Arabic/…). The
+    // headless renderer lays out LTR, so an auto-RTL label must be loud, never
+    // silent — same posture as an explicit rtl.
+    var rtlChars = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
+    if (tdir === 'rtl' || (tdir === 'auto' && rtlChars.test(String(label || '')))) {
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
     }
@@ -6380,6 +6485,20 @@
           stroke: strokeOf(style) || strokeOf({ strokeColor: '#000000', strokeWidth: 1 })
         });
       }
+      // mxImageShape strokes imageBorder ON TOP of the image whenever it is set
+      // (mxImageShape.js:201-216), independent of imageBackground. Previously the
+      // border was emitted only inside the imageBackground branch, so an image
+      // cell with imageBorder but no imageBackground printed with no border.
+      if (isPaintable(style.imageBorder)) {
+        var ibTop = boolish(style.rounded) ? roundedRectRadius(style, box.w, box.h) : 0;
+        paint.push({ kind: 'path',
+          d: ibTop > 0 ? roundedRectPath(box.x, box.y, box.w, box.h, ibTop)
+                       : rectPath(box.x, box.y, box.w, box.h),
+          fill: null,
+          stroke: { paint: solid(style.imageBorder, opacity(style, 'strokeOpacity')),
+            width: Math.max(0.1, number(style.strokeWidth, 1)), cap: 'butt', join: 'miter',
+            miterLimit: 10, dash: null } });
+      }
       if (label !== '') {
         // Place the label at its ACTUAL bounds (mxText.bounds honors
         // verticalLabelPosition), NOT the full cell box. Otherwise an icon's
@@ -6564,13 +6683,15 @@
           var dirInvBI = (dirBI === 'north' || dirBI === 'south');
           var pwBI0 = dirInvBI ? box.h : box.w, phBI0 = dirInvBI ? box.w : box.h;
           var rawBI = dirInvBI ? builtinShapeSvg(style, pwBI0, phBI0) : builtinContent;
-          // flipH/flipV apply in the direction-swapped (pw x ph) space, like
-          // the stencil path ("flip transform must use cw/ch"). Labels stay
-          // unflipped. Previously flips were silently ignored here.
-          rawBI = flipWrapSvg(rawBI, pwBI0, phBI0, style);
-          builtinContent = '<g transform="rotate(' + fmt(dirDegBI) + ' ' +
-            fmt(box.w / 2) + ' ' + fmt(box.h / 2) + ') translate(' +
-            fmt((box.w - pwBI0) / 2) + ' ' + fmt((box.h - phBI0) / 2) + ')">' +
+          // Compose flip + direction exactly like mxSvgCanvas2D.rotate: flags
+          // swapped for N/S, mirror+negate-theta for a single-axis flip, content
+          // centred then rotated about the box centre. Labels stay unflipped.
+          var cxBI = box.w / 2, cyBI = box.h / 2;
+          var fHB = boolish(style.flipH), fVB = boolish(style.flipV);
+          if (dirInvBI) { var tB = fHB; fHB = fVB; fVB = tB; }
+          builtinContent = '<g transform="' +
+            flipRotatePrefix(dirDegBI, fHB, fVB, cxBI, cyBI) + 'translate(' +
+            fmt(cxBI - pwBI0 / 2) + ' ' + fmt(cyBI - phBI0 / 2) + ')">' +
             rawBI + '</g>';
         } else {
           builtinContent = flipWrapSvg(builtinContent, box.w, box.h, style);
@@ -6857,8 +6978,20 @@
         var pw = dirInv ? h : w, ph = dirInv ? w : h;
         var pd = shapePath(style, ccx - pw / 2, ccy - ph / 2, pw, ph);
         if (!pd) return null;
-        if (flipH_ || flipV_) pd = flipPathD(pd, ccx, ccy, flipH_, flipV_);
-        if (dirDeg) pd = rotatePathD(pd, ccx, ccy, dirDeg);
+        // Replicate mxShape.updateTransform (flipH/flipV are SWAPPED for N/S —
+        // mxShape.js:1417) + mxSvgCanvas2D.rotate's composition
+        // (mxSvgCanvas2D.js:1342-1366): both flips => theta+180 & no mirror;
+        // a single-axis flip => append the mirror AND negate theta. The
+        // transform list is "mirror rotate(theta)", so a point is rotated FIRST
+        // then mirrored. (Reduces to the old flip-then-rotate for flip-only,
+        // direction-only, both-flips, and E/W; only N/S + one-axis flip differs.)
+        var fH = flipH_, fV = flipV_;
+        if (dirInv) { var ft = fH; fH = fV; fV = ft; }
+        var theta = dirDeg;
+        if (fH && fV) { theta = (theta + 180) % 360; fH = false; fV = false; }
+        else if (fH !== fV) { theta = (360 - theta) % 360; }
+        if (theta) pd = rotatePathD(pd, ccx, ccy, theta);
+        if (fH || fV) pd = flipPathD(pd, ccx, ccy, fH, fV);
         return pd;
       }
       var d = outlinePath(box.x, box.y, box.w, box.h);
@@ -6960,8 +7093,22 @@
         });
       }
       // Glass highlight overlay (drawio glass=1), painted over the shape body.
-      if (boolish(style.glass)) {
-        paint.push(paddedSvgShapeNode(glassOverlaySvg(style, box.w, box.h),
+      // drawio paints glass ONLY for shapes whose paintVertexShape/paintForeground
+      // calls paintGlassEffect: the mxRectangleShape family (plain rectangle here),
+      // mxEllipse, and mxRhombus (Shapes.js:2184/2115). Every other generic-path
+      // shape (triangle/hexagon/cloud/cylinder/actor/card/step/…) never glasses,
+      // so emitting it there would be a silent over-render. ellipse/rhombus use
+      // their silhouette-matching glass path.
+      // mxRectangleShape family (rectangle + the default 'label' shape, which
+      // extends it) glasses rectangular; mxEllipse/mxRhombus glass with their
+      // own silhouette. No other generic-path shape calls paintGlassEffect.
+      var glassShape = style.shape;
+      var glassRectFamily = !glassShape || glassShape === 'rectangle' || glassShape === 'label';
+      var glassOk = glassRectFamily ||
+        glassShape === 'ellipse' || glassShape === 'rhombus' || glassShape === 'diamond';
+      if (glassRectFamily) glassShape = undefined; // rectangular glass path
+      if (boolish(style.glass) && glassOk && isPaintable(style.fillColor)) {
+        paint.push(paddedSvgShapeNode(glassOverlaySvg(style, box.w, box.h, glassShape),
           { x: box.x, y: box.y, w: box.w, h: box.h }, { strokeColor: 'none' }));
       }
     }
