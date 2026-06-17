@@ -4210,6 +4210,36 @@ test('audit9: swimlane shadow header follows flipV (was on the wrong side)', asy
   assert.ok(Math.abs(await headerY('flipV=1;') - 120) < 0.5, 'flipV: shadow header at bottom (h-startSize)');
 });
 
+test('audit9: rotation applies to note/note2/shaded-cube builder branches (was dropped)', async () => {
+  // These dedicated builders early-returned without a rotation wrapper, so a
+  // rotated note/cube printed upright (geometry + label) with no notice.
+  async function svg(style) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="N" style="${style}" parent="1"><mxGeometry x="60" y="60" width="120" height="90" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract, notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.length, 0);
+    const n = contract.document.pages[0].paint.find((x) => x.kind === 'svg' &&
+      /rotate\(/.test(Buffer.from(x.source, 'base64').toString('utf8')));
+    return n ? Buffer.from(n.source, 'base64').toString('utf8') : null;
+  }
+  assert.ok(await svg('shape=note;rotation=45;fillColor=#ffe;strokeColor=#cc0;'),
+    'rotated note emits a rotate()-wrapped svg');
+  assert.ok(await svg('shape=note2;rotation=60;shadow=1;fillColor=#ffe;'),
+    'rotated note2+shadow emits a rotate()-wrapped svg');
+  assert.ok(await svg('shape=cube;darkOpacity=0.05;darkOpacity2=0.1;rotation=30;fillColor=#dae8fc;'),
+    'rotated shaded cube emits a rotate()-wrapped svg');
+  // Non-rotated note must stay on the simple builder path (separate label node).
+  const plain = await bake(`<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="N" style="shape=note;fillColor=#ffe;" parent="1"><mxGeometry x="60" y="60" width="120" height="90" as="geometry"/></mxCell>
+  </root></mxGraphModel>`, { keepPx: true });
+  assert.ok(!plain.contract.document.pages[0].paint.some((n) => n.kind === 'svg' &&
+    /rotate\(/.test(Buffer.from(n.source, 'base64').toString('utf8'))),
+    'non-rotated note is not rotate-wrapped');
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

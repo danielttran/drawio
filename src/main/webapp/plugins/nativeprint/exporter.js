@@ -3926,6 +3926,44 @@
       source: base64(svg), aspect: 'preserve' };
   }
 
+  // Rotated render for the dedicated builder branches (note/note2/shaded-cube)
+  // whose `innerFn(style, w, h, fillOverride, opacityOverride)` returns box-local
+  // SVG content. Mirrors the generic rotated-shape path: shadow (offset in
+  // SCREEN space, under), the body, and the rotated label composed into ONE
+  // rotated kind:'svg' node. Without this these branches early-returned and
+  // silently dropped style.rotation (geometry AND label printed upright).
+  function rotatedBuilderNode(innerFn, style, box, graph, cell, label, notices, resolved) {
+    var rotDeg = number(style.rotation, 0);
+    var theta = rotDeg * Math.PI / 180;
+    var cosT = Math.abs(Math.cos(theta)), sinT = Math.abs(Math.sin(theta));
+    var expW = box.w * cosT + box.h * sinT, expH = box.w * sinT + box.h * cosT;
+    var offX = (expW - box.w) / 2, offY = (expH - box.h) / 2;
+    var rcx = expW / 2, rcy = expH / 2;
+    var rotG = function (inner) {
+      return '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) +
+        ')"><g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ')">' + inner + '</g></g>';
+    };
+    var sh = '';
+    if (boolish(style.shadow)) {
+      var sp = shadowParams(style);
+      // innerFn already bakes the shadow alpha (opacityOverride), so no extra
+      // group opacity; offset in screen space via the outer translate.
+      sh = '<g transform="translate(' + fmt(sp.dx) + ' ' + fmt(sp.dy) + ')">' +
+        rotG(innerFn(style, box.w, box.h, sp.color, sp.alpha)) + '</g>';
+    }
+    var body = rotG(innerFn(style, box.w, box.h, null, null));
+    var lbl = label !== ''
+      ? '<g transform="rotate(' + fmt(rotDeg) + ' ' + fmt(rcx) + ' ' + fmt(rcy) + ')">' +
+        rotatedLabelEls(graph, cell, style, offX, offY, box.w, box.h, label, notices, resolved) +
+        '</g>'
+      : '';
+    var svgStr = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
+      'width="' + fmt(expW) + '" height="' + fmt(expH) + '">' + sh + body + lbl + '</svg>';
+    return { kind: 'svg', box: { x: box.x + box.w / 2 - expW / 2,
+      y: box.y + box.h / 2 - expH / 2, w: expW, h: expH },
+      source: base64(svgStr), aspect: 'preserve' };
+  }
+
   // Note shape: a rectangle with a folded-over corner (dog-ear). drawio's
   // NoteShape draws a pentagon (one corner cut at `size`) plus a small fold
   // triangle; `direction` rotates which corner folds (east=top-right default,
@@ -6996,6 +7034,10 @@
       // would flatten the dog-ear to a plain rectangle. note2 (NoteShape2,
       // Shapes.js) paints identically to note — only its label margins differ.
       if (style.shape === 'note' || style.shape === 'note2') {
+        if (number(style.rotation, 0)) {
+          paint.push(rotatedBuilderNode(noteInner, style, box, graph, cell, label, notices, resolved));
+          return;
+        }
         if (boolish(style.shadow)) {
           var nsp = shadowParams(style);
           paint.push(paddedSvgShapeNode(noteInner(style, box.w, box.h, nsp.color, nsp.alpha),
@@ -7016,6 +7058,10 @@
       // plain cube keeps its single-path shapePath render). Mirrors noteInner.
       if (style.shape === 'cube' &&
           (number(style.darkOpacity, 0) !== 0 || number(style.darkOpacity2, 0) !== 0)) {
+        if (number(style.rotation, 0)) {
+          paint.push(rotatedBuilderNode(cubeInner, style, box, graph, cell, label, notices, resolved));
+          return;
+        }
         if (boolish(style.shadow)) {
           var csp = shadowParams(style);
           paint.push(paddedSvgShapeNode(cubeInner(style, box.w, box.h, csp.color, csp.alpha),
