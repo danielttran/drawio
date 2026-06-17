@@ -4102,6 +4102,55 @@ test('audit9: swimlane glass=1 paints the header glass highlight (was dropped)',
   assert.ok(glass, 'swimlane glass overlay node present');
 });
 
+test('audit9: rich-text token x uses accurate AFM glyph metrics (matches resvg)', async () => {
+  // Text positioning is driven by per-glyph Arial/Times AFM advance widths so
+  // wrap points, rich-token x, autosize and label-background boxes match resvg's
+  // own shaping (the old per-class estimate drifted up to ~17% per glyph — a
+  // WYSIWYG hazard for precise medical-label layouts). The second token "X" must
+  // start at exactly the AFM width of bold "WWWW " at 20px: (944*4 + 278)/1000*20.
+  const xml = `<mxGraphModel pageWidth="600" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="&lt;b&gt;WWWW&lt;/b&gt; X" style="text;html=1;align=left;fontFamily=Arial;fontSize=20;" parent="1"><mxGeometry x="0" y="0" width="500" height="60" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+    /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+  const svg = Buffer.from(node.source, 'base64').toString('utf8');
+  const xs = [...svg.matchAll(/<text x="([-0-9.]+)"/g)].map((mm) => Number(mm[1]));
+  assert.equal(xs[0], 0, 'first token at the left edge');
+  const expected = (944 * 4 + 278) / 1000 * 20;  // Arial W=944, space=278
+  assert.ok(Math.abs(xs[1] - expected) < 0.05,
+    `2nd token x should be the AFM width ${expected.toFixed(2)}, got ${xs[1]}`);
+});
+
+test('audit9: serif text measures narrower than sans (font-aware AFM tables)', async () => {
+  // Times lowercase 'a' (444) is narrower than Arial 'a' (556); a rich label
+  // "<span>aaaa</span> X" (a colour span forces two regular-weight tokens) must
+  // place the second token further left for Times than Arial — proving the
+  // metric tables are font-class aware, not sans-only. (Plain non-markup labels
+  // use text-anchor and let resvg centre/align with its own metrics, so the
+  // class-awareness is observable only on the explicit rich-token x.)
+  async function tokenX(fam) {
+    const v = '&lt;span style=&quot;color:#ff0000&quot;&gt;aaaa&lt;/span&gt; X';
+    const xml = `<mxGraphModel pageWidth="600" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="${v}" style="text;html=1;align=left;fontFamily=${fam};fontSize=20;" parent="1"><mxGeometry x="0" y="0" width="500" height="60" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { contract } = await bake(xml, { keepPx: true });
+    const node = contract.document.pages[0].paint.find((n) => n.kind === 'svg' &&
+      /<text/.test(Buffer.from(n.source, 'base64').toString('utf8')));
+    const svg = Buffer.from(node.source, 'base64').toString('utf8');
+    return [...svg.matchAll(/<text x="([-0-9.]+)"/g)].map((mm) => Number(mm[1]))[1];
+  }
+  const sans = await tokenX('Arial');
+  const serif = await tokenX('Times New Roman');
+  assert.ok(serif < sans - 5,
+    `serif "aaaa " must be narrower than sans (serif x=${serif}, sans x=${sans})`);
+  // Exact AFM values: sans (556*4+278)/1000*20=50.04; serif (444*4+250)/1000*20=40.52
+  assert.ok(Math.abs(sans - 50.04) < 0.05, `sans x ${sans}`);
+  assert.ok(Math.abs(serif - 40.52) < 0.05, `serif x ${serif}`);
+});
+
 test('audit7: pages: [] is a loud refusal, never "print everything"', async () => {
   const xml = `<mxGraphModel pageWidth="100" pageHeight="50"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>`;

@@ -939,7 +939,7 @@
       var autoLs = number(style.letterSpacing, 0);
       for (var bi = 0; bi < blocks.length; bi++) {
         var b = blocks[bi];
-        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs);
+        var wrappedLines = wrapSvgText(b.text, b.size, availW, isWrap, autoLs, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0));
         for (var li = 0; li < wrappedLines.length; li++) {
           rows.push({
             text: wrappedLines[li],
@@ -967,7 +967,7 @@
             // CJK run can break between any two ideographs.
             var units = splitBreakable(words[wi]);
             for (var ui = 0; ui < units.length; ui++) {
-              if (textWidthPx(units[ui], bk.size) > availW) {
+              if (textWidthPx(units[ui], bk.size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) > availW) {
                 return false;
               }
             }
@@ -975,7 +975,7 @@
         }
       } else {
         for (var rj = 0; rj < rows.length; rj++) {
-          if (textWidthPx(rows[rj].text, rows[rj].size) > availW) {
+          if (textWidthPx(rows[rj].text, rows[rj].size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) > availW) {
             return false;
           }
         }
@@ -1754,27 +1754,86 @@
     if (cur !== '') units.push(cur);
     return units.length ? units : [word];
   }
-  function glyphEmWidth(ch) {
-    if (ch === ' ' || ch === '\u00A0') return 0.28; // NBSP advances like a space
-    if (isWideBreakChar(ch)) return 1.0; // fullwidth advance
+  // Per-glyph advance widths (units per 1000 em) for ASCII 32..126: the
+  // standard Arial/Helvetica (sans) and Times New Roman (serif) core AFM
+  // metrics; Courier (mono) is a fixed 600. resvg rasterizes text with the
+  // installed face -- real Arial on the Windows print server, the
+  // metric-compatible Liberation Sans on Linux (both Arial-metric), Times on
+  // both -- so these tables match resvg's own shaping to sub-pixel. They replace
+  // the old per-class estimate that drifted up to ~17% per glyph and shifted
+  // wrap points / centre-right alignment / label-background boxes silently -- a
+  // WYSIWYG hazard for precise (e.g. medical-label) layouts.
+  var AFM_SANS = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,
+    667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    278,278,278,469,556,333,
+    556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,
+    334,260,334,584];
+  var AFM_SERIF = [250,333,408,500,500,833,778,180,333,333,500,564,250,333,250,278,
+    500,500,500,500,500,500,500,500,500,500,278,278,564,564,564,444,921,
+    722,667,667,722,611,556,722,722,333,389,722,611,889,722,722,556,722,667,556,611,722,722,944,722,722,611,
+    333,278,333,469,500,333,
+    444,500,444,500,444,333,500,500,278,278,500,278,778,500,500,500,500,333,389,278,500,500,722,500,500,444,
+    480,200,480,541];
+  // Arial/Helvetica BOLD advance widths (units/1000). Arial Bold runs ~5-9%
+  // wider than Regular, so bold runs (drug names on labels) need their own
+  // table or wrapping/rich-token-x drifts. Arial ITALIC shares Regular's
+  // widths, and Arial BOLD-ITALIC shares Bold's, so this one extra table covers
+  // all sans weight/style combinations. (Serif bold/italic reuse the Times
+  // regular table — a small residual for the rare serif-label case.)
+  var AFM_SANS_BOLD = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,
+    556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,
+    722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,
+    333,278,333,584,556,333,
+    556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,
+    389,280,389,584];
+  // Accented Latin-1 letters advance like their unaccented base in Arial/Times;
+  // map them to the base ASCII char so the table covers common diacritics.
+  var AFM_DEACCENT = {
+    'À':'A','Á':'A','Â':'A','Ã':'A','Ä':'A','Å':'A','Ç':'C',
+    'È':'E','É':'E','Ê':'E','Ë':'E','Ì':'I','Í':'I','Î':'I','Ï':'I',
+    'Ñ':'N','Ò':'O','Ó':'O','Ô':'O','Õ':'O','Ö':'O','Ø':'O',
+    'Ù':'U','Ú':'U','Û':'U','Ü':'U','Ý':'Y',
+    'à':'a','á':'a','â':'a','ã':'a','ä':'a','å':'a','ç':'c',
+    'è':'e','é':'e','ê':'e','ë':'e','ì':'i','í':'i','î':'i','ï':'i',
+    'ñ':'n','ò':'o','ó':'o','ô':'o','õ':'o','ö':'o','ø':'o',
+    'ù':'u','ú':'u','û':'u','ü':'u','ý':'y','ÿ':'y'
+  };
+  function fontMetricClass(fam) {
+    var f = String(fam == null ? '' : fam).toLowerCase();
+    if (/courier|consol|mono/.test(f)) return 'mono';
+    if (/times|serif|georgia|garamond|cambria|book antiqua|palatino/.test(f)) return 'serif';
+    return 'sans';
+  }
+  function glyphEmWidth(ch, fam, bold) {
+    if (isWideBreakChar(ch)) return 1.0; // fullwidth advance (CJK etc.)
+    var cls = fontMetricClass(fam);
+    if (cls === 'mono') return 0.6;        // Courier: fixed advance
+    var tbl = cls === 'serif' ? AFM_SERIF : (bold ? AFM_SANS_BOLD : AFM_SANS);
+    var code = ch.charCodeAt(0);
+    if (code >= 32 && code <= 126) return tbl[code - 32] / 1000;
+    if (code === 0x00A0) return tbl[0] / 1000; // NBSP advances like a space
+    var base = AFM_DEACCENT[ch];
+    if (base) return tbl[base.charCodeAt(0) - 32] / 1000;
+    // Fallback for glyphs outside the AFM tables (rare punctuation, unlisted
+    // scripts): the old per-class heuristic, so exotic text is never zero-width.
     if ('iIl.,:;|!\'`'.indexOf(ch) >= 0) return 0.26;
     if ('jftr()[]{}/\\'.indexOf(ch) >= 0) return 0.33;
     if ('mMW'.indexOf(ch) >= 0) return 0.87;
-    if (ch === 'w') return 0.72;
     if (ch >= 'A' && ch <= 'Z') return 0.70;
     if (ch >= '0' && ch <= '9') return 0.56;
-    return 0.52; // typical lowercase / default
+    return 0.52;
   }
-  function textWidthPx(str, size, letterSpacing) {
+  function textWidthPx(str, size, letterSpacing, fam, bold) {
     var t = String(str == null ? '' : str), sum = 0;
-    for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i));
+    for (var i = 0; i < t.length; i++) sum += glyphEmWidth(t.charAt(i), fam, bold);
     // CSS letter-spacing adds a gap AFTER each glyph (including the last); the
     // plain SVG emit + extent already add it, so the wrap must too or a spaced
-    // label breaks at the wrong column. Default 0 → identical to before.
+    // label breaks at the wrong column. Default 0 -> identical to before.
     return sum * size + (letterSpacing > 0 ? letterSpacing * t.length : 0);
   }
 
-  function wrapSvgText(text, size, width, wrap, letterSpacing) {
+  function wrapSvgText(text, size, width, wrap, letterSpacing, fam, bold) {
     var rawLines = String(text == null ? '' : text).split('\n');
     if (!wrap) return rawLines;
     var maxW = Math.max(1, width);
@@ -1795,8 +1854,8 @@
       var line = '', lineW = 0;
       tokens.forEach(function (tk, ti) {
         var sp = (tk.sp && ti > 0 && line !== '');
-        var tw = textWidthPx(tk.text, size, letterSpacing);
-        var spW = sp ? glyphEmWidth(' ') * size : 0;
+        var tw = textWidthPx(tk.text, size, letterSpacing, fam, bold);
+        var spW = sp ? glyphEmWidth(' ', fam, bold) * size : 0;
         if (line !== '' && lineW + spW + tw > maxW) {
           lines.push(line); line = tk.text; lineW = tw;
         } else {
@@ -2282,10 +2341,10 @@
   // ── Layout: line/run model -> SVG body string ──────────────────────────────
   var RICH_LINE_FACTOR = 1.2;       // CSS default line-height
   var RICH_ASCENT = 0.92;           // baseline offset from line-box top (em)
-  function spaceWidthPx(size) { return glyphEmWidth(' ') * size; }
+  function spaceWidthPx(size, fam, bold) { return glyphEmWidth(' ', fam, bold) * size; }
   function tokenWidth(tk) {
     if (tk.img) return tk.img.w;
-    var w = textWidthPx(tk.text, tk.st.size);
+    var w = textWidthPx(tk.text, tk.st.size, 0, tk.st.family, tk.st.weight >= 600);
     if (tk.st.letterSpacing) w += tk.st.letterSpacing * tk.text.length;
     return w;
   }
@@ -2350,7 +2409,7 @@
         var curRow = [], curW = 0;
         tokens.forEach(function (tk) {
           var tw = tokenWidth(tk);
-          var sp = (tk.space && curRow.length) ? spaceWidthPx(tk.st.size) : 0;
+          var sp = (tk.space && curRow.length) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0;
           if (wrap && curRow.length && curW + sp + tw > avail) {
             rows.push(curRow); curRow = []; curW = 0;
             tk = Object.assign({}, tk, { space: false }); sp = 0;
@@ -2375,7 +2434,7 @@
         row.forEach(function (tk, i) {
           if (tk.img) { if (tk.img.h > imgMax) imgMax = tk.img.h; }
           else { if (tk.st.size > maxSize) maxSize = tk.st.size; }
-          rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0);
+          rowW += tokenWidth(tk) + ((tk.space && i > 0) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0);
         });
         var halfLeading = maxSize * (RICH_LINE_FACTOR - 1) / 2;
         row.forEach(function (tk) {
@@ -2407,7 +2466,7 @@
         var x = x0;
         var bgRects = [], texts = [];
         row.forEach(function (tk, i) {
-          var sp = (tk.space && i > 0) ? spaceWidthPx(tk.st.size) : 0;
+          var sp = (tk.space && i > 0) ? spaceWidthPx(tk.st.size, tk.st.family, tk.st.weight >= 600) : 0;
           x += sp;
           var tw = tokenWidth(tk);
           if (tk.img) {
@@ -2762,7 +2821,7 @@
         rows.push({ rule: true, size: 0, weight: 400, lineH: b.size, gap: b.gap });
         return;
       }
-      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap', letterSp).forEach(function (line) {
+      wrapSvgText(b.text, b.size, usableW, style.whiteSpace === 'wrap', letterSp, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)).forEach(function (line) {
         rows.push({ text: line, size: b.size, weight: b.weight,
           // plain labels: drawio ROUNDS the line pitch
           // (mxSvgCanvas2D.plainText lh = Math.round(size * LINE_HEIGHT));
@@ -2830,7 +2889,7 @@
     rows.forEach(function (r) {
       if (r.rule) { exMinX = Math.min(exMinX, pl); exMaxX = Math.max(exMaxX, lw - pr); return; }
       if (r.text == null) return;
-      var rw = textWidthPx(r.text, r.size) +
+      var rw = textWidthPx(r.text, r.size, 0, style.fontFamily, ((number(style.fontStyle, 0) & 1) !== 0)) +
         (letterSp ? letterSp * r.text.length : 0);
       var rh2 = alignH(r.align || h);
       var rx0 = rh2 === 'right' ? lw - pr - rw :
