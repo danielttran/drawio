@@ -1408,22 +1408,34 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
                 const Gdiplus::InterpolationMode prev_im = g.GetInterpolationMode();
                 g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
                 g.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
-                g.DrawImage(&bitmap,
-                            Gdiplus::Rect(blit.x, blit.y, blit.w, blit.h),
-                            0, 0, static_cast<INT>(out_w_sz),
-                            static_cast<INT>(out_h_sz), Gdiplus::UnitPixel);
+                // Check the blit status: under driver/GDI+ memory pressure
+                // DrawImage can fail, leaving the artwork missing. Marking
+                // rasterized=true + emitting the SvgArtworkRasterized SUCCESS
+                // notice on a failed blit would be an error->success mapping
+                // (a positive "rendered" notice over a blank box). On failure
+                // fall through to the loud crosshatch + StubbedSvgArtwork
+                // instead, never a silent/falsely-noticed blank.
+                const Gdiplus::Status svg_blit =
+                    g.DrawImage(&bitmap,
+                                Gdiplus::Rect(blit.x, blit.y, blit.w, blit.h),
+                                0, 0, static_cast<INT>(out_w_sz),
+                                static_cast<INT>(out_h_sz), Gdiplus::UnitPixel);
                 g.SetPixelOffsetMode(prev_pom);
                 g.SetInterpolationMode(prev_im);
-                rasterized = true;
-                push_notice_unique(
-                    result.notices,
-                    DegradationNotice{
-                        DegradationNoticeType::SvgArtworkRasterized,
-                        current_page_id,
-                        "svg rendered via external rasterizer: " +
-                            svg_rasterizer->backend_id(),
-                        {},
-                        {}});
+                if (svg_blit == Gdiplus::Ok) {
+                  rasterized = true;
+                  push_notice_unique(
+                      result.notices,
+                      DegradationNotice{
+                          DegradationNoticeType::SvgArtworkRasterized,
+                          current_page_id,
+                          "svg rendered via external rasterizer: " +
+                              svg_rasterizer->backend_id(),
+                          {},
+                          {}});
+                } else {
+                  raster_fail_detail = "GDI+ DrawImage failed for the svg raster";
+                }
               } else {
                 raster_fail_detail = "GDI+ bitmap construction failed";
               }
@@ -1571,12 +1583,19 @@ Result<DrawResult, ContractError> draw_trace(Gdiplus::Graphics& g,
       // because image content IS rescaled to the destination box.
       g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
       g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-      g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
+      const Gdiplus::Status img_blit = g.DrawImage(&bitmap, dst, 0.0f, 0.0f,
                   static_cast<Gdiplus::REAL>(bitmap.GetWidth()),
                   static_cast<Gdiplus::REAL>(bitmap.GetHeight()),
                   Gdiplus::UnitPixel);
       g.Restore(state);
       stream->Release();
+      // A failed content blit (driver/GDI+ OOM) would leave the image silently
+      // missing from the page; fail loudly instead (the caller AbortDocs).
+      if (img_blit != Gdiplus::Ok) {
+        return Result<DrawResult, ContractError>::err(ContractError{
+            ContractErrorCode::ImageDecodeError, current_page_id,
+            "GDI+ DrawImage failed for the image content (blit rejected)"});
+      }
     }
   }
   return Result<DrawResult, ContractError>::ok(std::move(result));
