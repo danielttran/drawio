@@ -172,6 +172,9 @@
         'Image references an external URL that could not be embedded',
       'GradientDirectionApprox':
         'Gradient direction may differ slightly from screen (headless limitation)',
+      'FontMetricApprox':
+        'A text font is not metric-compatible with the core Arial/Times/Courier ' +
+        'tables — wrap points and alignment may shift from screen',
       'RichApproximate':
         'Rich-text layout is approximated (word-wrap requires font metrics)',
       'RichApproximateAlpha':

@@ -1870,6 +1870,37 @@
     if (/times|serif|georgia|garamond|cambria|book antiqua|palatino/.test(f)) return 'serif';
     return 'sans';
   }
+  // The AFM advance-width tables above are the metrics of three core faces:
+  // Arial/Helvetica (sans), Times New Roman (serif) and Courier (mono). resvg
+  // rasterizes with the installed face named in the SVG; when that face is one
+  // of these (or a metric-compatible clone the print server provisions —
+  // Liberation/Arimo/Tinos/Cousine, Nimbus, the CSS generics), the wrap points
+  // and token positions the bake computed match the rasterized glyphs to
+  // sub-pixel. A DIFFERENT installed face (Verdana, Roboto, Tahoma, Calibri,
+  // Georgia, Consolas, …) is measured with the wrong table yet rendered with
+  // its own metrics -> wrap/alignment/label-box drift. That is a SILENT
+  // WYSIWYG divergence, so scanFontMetricFallbacks() raises a loud
+  // FontMetricApprox notice for it (never a quiet approximation on a medical
+  // label). Set membership is the first family token, lower-cased.
+  var FONT_METRIC_EXACT = {
+    // Arial/Helvetica metric (AFM_SANS / AFM_SANS_BOLD)
+    'arial': 1, 'helvetica': 1, 'liberation sans': 1, 'arimo': 1,
+    'nimbus sans': 1, 'nimbus sans l': 1, 'sans-serif': 1, 'sans serif': 1,
+    // Times New Roman metric (AFM_SERIF)
+    'times': 1, 'times new roman': 1, 'liberation serif': 1, 'tinos': 1,
+    'nimbus roman': 1, 'nimbus roman no9 l': 1, 'serif': 1,
+    // Courier metric (fixed 600/1000)
+    'courier': 1, 'courier new': 1, 'liberation mono': 1, 'cousine': 1,
+    'nimbus mono': 1, 'nimbus mono l': 1, 'nimbus mono ps': 1, 'monospace': 1
+  };
+  function fontFamilyFirstToken(stack) {
+    return String(stack == null ? '' : stack)
+      .split(',')[0].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+  }
+  function fontMetricExact(fam) {
+    var first = fontFamilyFirstToken(fam);
+    return first === '' || FONT_METRIC_EXACT[first] === 1;
+  }
   function glyphEmWidth(ch, fam, bold) {
     if (isWideBreakChar(ch)) return 1.0; // fullwidth advance (CJK etc.)
     var cls = fontMetricClass(fam);
@@ -6317,9 +6348,18 @@
       // above the top edge) snap the origin to the previous (-1) grid cell and
       // shift the WHOLE sheet a full page off-paper -- silent, total content
       // loss on a medical label. Anchoring on the centre keeps the bulk on its
-      // real sheet; any genuine ink past a page edge is reported by the
-      // off-page-ink scan below (faithful-or-loud-notice), never silently
-      // cropped.
+      // real sheet.
+      //
+      // This is a SINGLE-page heuristic. drawio's own multi-page print path
+      // (Graph.getPageLayout) floors the content MIN corner and tiles the
+      // diagram across as many sheets as it spans; the bake emits one sheet per
+      // page, so for the common fixed-size label (content within one page) the
+      // centre and min-corner cells coincide and the result is identical to
+      // drawio. For content larger than a page the two differ -- but any ink
+      // that then falls past a page edge is caught by the engine's loud
+      // HardwareMarginClip / TileCoverageGap at render time
+      // (renderer.cpp escape_tolerance ~4px), so it is faithful-or-loud-notice,
+      // never silently cropped.
       var pgw = page.w * scale;
       var pgh = page.h * scale;
       origin = {
@@ -6393,6 +6433,7 @@
     // in a fallback path; the operator sees the gap, never a silent wrong
     // direction.
     scanGradientFallbacks(paint, notices);
+    scanFontMetricFallbacks(paint, notices);
 
     return {
       contract: {
@@ -6431,6 +6472,52 @@
         'gradients box-centered regardless of drawio gradientDirection. ' +
         'The live (in-browser) path is unaffected — it ships the literal ' +
         'rendered SVG.',
+        ''));
+    }
+  }
+
+  // Raise a loud FontMetricApprox notice for every distinct text font family
+  // whose metrics are NOT the ones the bake measured with (see
+  // FONT_METRIC_EXACT). The bake wraps/positions text with core AFM tables; a
+  // non-compatible installed face renders with its own widths, drifting wrap
+  // points and alignment. On a medical label that silent drift is a C1
+  // violation, so it is surfaced (degradation severity) rather than emitted
+  // quietly. Families are read from the emitted SVG text nodes (production
+  // path) and any kind:'text' node (harness fixtures); the first family token
+  // is what resvg resolves.
+  function scanFontMetricFallbacks(paint, notices) {
+    var flagged = {};
+    function consider(fam) {
+      var first = fontFamilyFirstToken(fam);
+      if (first === '' || fontMetricExact(first) || flagged[first]) return;
+      flagged[first] = true;
+    }
+    for (var i = 0; i < paint.length; i++) {
+      var n = paint[i];
+      if (!n) continue;
+      if (n.kind === 'svg' && typeof n.source === 'string') {
+        var svg = '';
+        try {
+          svg = (typeof Buffer !== 'undefined')
+            ? Buffer.from(n.source, 'base64').toString('utf8')
+            : decodeUtf8B64(n.source);
+        } catch (e) { svg = ''; }
+        var re = /font-family="([^"]+)"/g, m;
+        while ((m = re.exec(svg)) !== null) consider(m[1]);
+      } else if (n.kind === 'text' && n.font && n.font.family) {
+        consider(n.font.family);
+      }
+    }
+    var fams = Object.keys(flagged);
+    if (fams.length > 0) {
+      notices.push(degradation('FontMetricApprox',
+        'text uses font famil' + (fams.length > 1 ? 'ies' : 'y') + ' "' +
+        fams.join('", "') + '" whose glyph metrics differ from the core ' +
+        'Arial/Times/Courier tables the bake measures with. The print server ' +
+        'renders the installed face directly, so wrap points, alignment and ' +
+        'label-background boxes may shift from the drawio canvas. Use a ' +
+        'metric-compatible face (Arial/Helvetica, Times, Courier — or the ' +
+        'Liberation/Arimo/Tinos/Cousine clones) for exact WYSIWYG.',
         ''));
     }
   }

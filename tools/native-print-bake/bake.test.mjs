@@ -2718,6 +2718,63 @@ test('audit: a slightly-negative coordinate does not shift the whole explicit pa
   }
 });
 
+test('audit14: far-page content anchors to its own sheet (mxPrintPreview tiling preserved)', async () => {
+  // The centre-anchoring origin must still place content authored on a far
+  // page-grid cell on THAT sheet with its in-page margins (the audit7
+  // contract), not collapse it onto sheet (0,0).
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="850" y="640" width="80" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // grid cell (2,2): origin (800,600) -> in-page (50,40)
+  assert.match(d, /^M 50 40 /, `far cell must keep its in-page margins, got: ${d.slice(0, 30)}`);
+});
+
+test('audit14: page-spanning content keeps the bulk on the sheet (single-page heuristic)', async () => {
+  // For content WIDER than one page, the single-page bake centre-anchors so the
+  // bulk lands on the sheet (vs draw.io's multi-page tiling which splits it).
+  // The shape spans x=200..1100 on an 850px page: its centre (650) is on cell 0,
+  // so the bake keeps the left portion on the sheet rather than shoving it off.
+  const xml = `<mxGraphModel pageWidth="850" pageHeight="1100"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="rounded=0;" parent="1"><mxGeometry x="200" y="100" width="900" height="80" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { contract } = await bake(xml, { keepPx: true });
+  const d = contract.document.pages[0].paint.find((n) => n.kind === 'path').d;
+  // centre x = 650 -> cell 0 -> origin 0 -> shape paints at its model x=200.
+  assert.match(d, /^M 200 100 /, `page-spanning bulk must stay on the sheet, got: ${d.slice(0, 30)}`);
+});
+
+test('audit14: a non-metric-compatible font raises a loud FontMetricApprox notice', async () => {
+  // WYSIWYG safety: the bake wraps/positions text with the core Arial/Times/
+  // Courier AFM tables. A label rendered with a DIFFERENT installed face
+  // (Verdana, Roboto, ...) drifts at wrap/alignment — that silent divergence
+  // must surface as a loud notice on a medical label, never a quiet
+  // approximation.
+  const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" value="Dose 5mg" style="rounded=0;fontFamily=Verdana;fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+  </root></mxGraphModel>`;
+  const { notices } = await bake(xml, { keepPx: true });
+  const fm = notices.filter((n) => n.kind === 'FontMetricApprox');
+  assert.equal(fm.length, 1, `expected one FontMetricApprox notice, got ${notices.map((n) => n.kind).join(',')}`);
+  assert.match(fm[0].detail.detail, /verdana/i, 'notice must name the offending family');
+});
+
+test('audit14: metric-compatible fonts (Arial/Times/Courier + clones) raise NO FontMetricApprox', async () => {
+  for (const fam of ['Arial', 'Helvetica', 'Times New Roman', 'Courier New', 'Liberation Sans', 'sans-serif']) {
+    const xml = `<mxGraphModel pageWidth="400" pageHeight="200"><root>
+      <mxCell id="0"/><mxCell id="1" parent="0"/>
+      <mxCell id="2" vertex="1" value="Patient" style="rounded=0;fontFamily=${fam};fontSize=14;" parent="1"><mxGeometry x="20" y="20" width="160" height="40" as="geometry"/></mxCell>
+    </root></mxGraphModel>`;
+    const { notices } = await bake(xml, { keepPx: true });
+    assert.equal(notices.filter((n) => n.kind === 'FontMetricApprox').length, 0,
+      `metric-compatible "${fam}" must not raise FontMetricApprox`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Round-2 audit regression tests: shape fidelity fixes verified against
 // Shapes.js / mxgraph shape sources (structural assertions on the baked
