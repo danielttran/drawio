@@ -4968,3 +4968,23 @@ test('R8 folder labelInHeader confines the label to the side tab', async () => {
   assert.ok(header.box.w < body.box.w - 50,
     `labelInHeader label box must be tab-narrow: ${header.box.w} vs ${body.box.w}`);
 });
+
+test('R8 rounded flexArrow with interior waypoints rounds the bends (mxArrowConnector)', async () => {
+  // SHIPPED default is shape=flexArrow;rounded=1; with waypoints the bends are
+  // quad-rounded (mxArrowConnector.js:245-303). Previously always mitred (silent).
+  const mk = (s) => `<mxGraphModel pageWidth="400" pageHeight="400"><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="2" vertex="1" style="" parent="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="3" vertex="1" style="" parent="1"><mxGeometry x="300" y="300" width="20" height="20" as="geometry"/></mxCell>
+    <mxCell id="4" edge="1" source="2" target="3" style="shape=flexArrow;${s}" parent="1">
+      <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="300" y="10"/></Array></mxGeometry></mxCell>
+  </root></mxGraphModel>`;
+  const bandD = (c) => c.document.pages[0].paint
+    .filter((x) => x.kind === 'path' && /Z\s*$/.test(x.d))
+    .map((x) => x.d).sort((a, b) => b.length - a.length)[0]; // flexArrow band = longest closed path
+  const rounded = bandD((await bake(mk('rounded=1;'), { keepPx: true })).contract);
+  const sharp = bandD((await bake(mk('rounded=0;'), { keepPx: true })).contract);
+  assert.ok(rounded, 'flexArrow band emitted');
+  assert.match(rounded, / Q /, `rounded flexArrow bend must use a quad: ${rounded.slice(0, 120)}`);
+  assert.doesNotMatch(sharp || '', / Q /, 'non-rounded flexArrow must stay mitred (no quad)');
+});

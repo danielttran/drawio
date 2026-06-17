@@ -6245,11 +6245,16 @@
     }
     var tdir = String(style.textDirection || '').toLowerCase();
     // mxText.getAutoDirection (mxText.js): textDirection=auto resolves to RTL
-    // when the label contains a strong RTL character (Hebrew/Arabic/…). The
-    // headless renderer lays out LTR, so an auto-RTL label must be loud, never
-    // silent — same posture as an explicit rtl.
-    var rtlChars = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
-    if (tdir === 'rtl' || (tdir === 'auto' && rtlChars.test(String(label || '')))) {
+    // ONLY when the FIRST strong directional character is RTL (tmp[0] > 'z') —
+    // mixed content whose first strong char is Latin stays LTR. The headless
+    // renderer lays out LTR, so an auto-RTL label must be loud, never silent —
+    // same posture as an explicit rtl. Same regex + first-char test as drawio.
+    var autoRtl = false;
+    if (tdir === 'auto') {
+      var strongCh = /[A-Za-z\u05d0-\u065f\u066a-\u06ef\u06fa-\u07ff\ufb1d-\ufdff\ufe70-\ufefc]/.exec(String(label || ''));
+      autoRtl = strongCh != null && strongCh[0] > 'z';
+    }
+    if (tdir === 'rtl' || autoRtl) {
       notices.push(degradation('ExporterUnsupportedShape',
         'right-to-left textDirection is not applied to the label.', cell.id));
     }
@@ -7217,8 +7222,22 @@
       fnCmds.push('L ' + p(pts[0].x - orthx / 2 + spacing * nx, pts[0].y - orthy / 2 + spacing * ny));
     }
 
-    // Waypoints (handles >2-point edges faithfully)
+    // mxUtils.relativeCcw (mxUtils.js:3694): which way the bend turns (-1/0/1).
+    function relCcw(x1, y1, x2, y2, px, py) {
+      x2 -= x1; y2 -= y1; px -= x1; py -= y1;
+      var ccw = px * y2 - py * x2;
+      if (ccw === 0) {
+        ccw = px * x2 + py * y2;
+        if (ccw > 0) { px -= x2; py -= y2; ccw = px * x2 + py * y2; if (ccw < 0) ccw = 0; }
+      }
+      return ccw < 0 ? -1 : (ccw > 0 ? 1 : 0);
+    }
+    var isRounded = boolish(style.rounded);
+    // Waypoints (handles >2-point edges faithfully). Rounded bends are quad
+    // curves (mxArrowConnector.js:245-303) — previously every bend was mitred,
+    // a silent divergence on the SHIPPED default flexArrow (rounded=1).
     for (var i = 0; i < pts.length - 2; i++) {
+      var pos = relCcw(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, pts[i + 2].x, pts[i + 2].y);
       var dx1 = pts[i + 2].x - pts[i + 1].x, dy1 = pts[i + 2].y - pts[i + 1].y;
       var dist1 = Math.sqrt(dx1 * dx1 + dy1 * dy1);
       if (dist1 !== 0) {
@@ -7229,13 +7248,31 @@
         var dist2 = Math.sqrt(nx2 * nx2 + ny2 * ny2);
         if (dist2 !== 0) {
           nx2 /= dist2; ny2 /= dist2;
-          var aF = Math.max(tmp, 0.06);
+          // angleFactor: rounded non-straight bends use a stroke-width-aware
+          // minimum (mxArrowConnector.js:244-245), else the mitre factor.
+          var swF = Math.max(tmp, Math.min(sw / 200 + 0.04, 0.35));
+          var aF = (pos !== 0 && isRounded) ? Math.max(0.1, swF) : Math.max(tmp, 0.06);
           var outX = pts[i + 1].x + ny2 * edgeWidth / 2 / aF;
           var outY = pts[i + 1].y - nx2 * edgeWidth / 2 / aF;
           var inX = pts[i + 1].x - ny2 * edgeWidth / 2 / aF;
           var inY = pts[i + 1].y + nx2 * edgeWidth / 2 / aF;
-          pathCmds.push('L ' + p(outX, outY));
-          (function (x, y) { fnCmds.push('L ' + p(x, y)); })(inX, inY);
+          if (pos === 0 || !isRounded) {
+            pathCmds.push('L ' + p(outX, outY));
+            (function (x, y) { fnCmds.push('L ' + p(x, y)); })(inX, inY);
+          } else if (pos === -1) {
+            // outer side curves; inner side is a straight join.
+            pathCmds.push('L ' + p(inX + ny * edgeWidth, inY - nx * edgeWidth));
+            pathCmds.push('Q ' + p(outX, outY) + ' ' + p(inX + ny1 * edgeWidth, inY - nx1 * edgeWidth));
+            (function (x, y) { fnCmds.push('L ' + p(x, y)); })(inX, inY);
+          } else {
+            // inner side curves (replayed reversed): push quad THEN line so the
+            // reversal yields lineTo(c2) then quadTo(control=in, c1).
+            pathCmds.push('L ' + p(outX, outY));
+            (function (x, y) {
+              fnCmds.push('Q ' + p(x, y) + ' ' + p(outX - ny * edgeWidth, outY + nx * edgeWidth));
+              fnCmds.push('L ' + p(outX - ny1 * edgeWidth, outY + nx1 * edgeWidth));
+            })(inX, inY);
+          }
           nx = nx1; ny = ny1;
         }
       }

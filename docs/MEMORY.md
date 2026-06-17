@@ -1421,3 +1421,32 @@ shapes + 8910 stencils zero notices / all inked / 0 blank. Goldens regenerated:
 master-test, master-test-arrows-bpmn, master-test-compound-styles,
 master-test-style-variants, master-test-rich-text (coordinate/transform-only;
 other stencil goldens regenerated identical). No C++ change.
+
+## UPDATE 2026-06-17 — round 8b (advisor follow-up, same branch)
+
+Independent advisor verified all 9 round-8 fixes CORRECT and regression-free
+(VERDICT: PRODUCTION-READY), proving the flip+direction composition by matrix
+algebra (north+flipH ≡ south+flipV) and numerically checking the stencil path's
+corner mapping. Two items it raised, both now CLOSED:
+
+- **E2 (MEDIUM, C1) rounded flexArrow bends:** the SHIPPED default is
+  `shape=flexArrow;rounded=1;`, so a multi-waypoint flexArrow silently mitred its
+  bends (the author had mis-rated it "rare"). Ported mxArrowConnector.js:212-305
+  faithfully into `flexArrowPath`: per-bend `relativeCcw` turn direction (pos),
+  stroke-width-aware `angleFactor`, and the pos==-1 (outer curves) / pos==1
+  (inner curves, replayed reversed) quad branches; straight join only for
+  pos==0 or rounded=0. Now warning-free AND faithful (not just a notice).
+- **auto-RTL over-notice (LOW):** the round-8 notice fired on ANY RTL char;
+  mxText.getAutoDirection resolves RTL only when the FIRST strong directional
+  char is RTL (`tmp[0] > 'z'`). Now uses drawio's exact regex + first-char test,
+  so LTR-first mixed labels ("abc שלום") no longer raise a spurious notice.
+
+Advisor-accepted residuals (LOW, unchanged): L3 RICH_ASCENT 0.92 vs 1.0 (~1px
+within-line baseline, font-metric-approximation class), E3 dashPattern explicit-0
+(no shipped preset uses 0), C-loader PNG signature (deferred to native-surface
+gate by design; validator front-runs it).
+
++2 regression tests (bake 335). Matrix green: exporter 205, validate 64, service
+19, bake 335, ctest 216/216 (real resvg), render-gate 1/1, production-audit 86 +
+8910 zero notices / all inked / 0 blank. No golden churn (fixtures use 2-point
+flexArrows). No C++ change.
