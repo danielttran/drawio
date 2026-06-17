@@ -6306,16 +6306,25 @@
       origin = { x: view.translate.x * scale, y: view.translate.y * scale };
     } else if (paper && paper.explicit && bounds && bounds.width > 0) {
       // The AUTHOR fixed the page size (File > Page Setup), so cells keep
-      // their on-page position even headless (mxPrintPreview semantics):
-      // the origin is the PAGE-GRID cell containing the content, never the
-      // content corner. floor() generalises to content drawn on a far grid
-      // cell — the editor shows it on that page, and the print shows the
-      // same sheet with the same in-page margins.
+      // their on-page position even headless (mxPrintPreview floor() tiling
+      // semantics): origin = the page-grid cell the diagram occupies and
+      // content paints at (model - origin), so the author's in-page margins
+      // print exactly as drawn (the "shifted up-and-left one block" report).
+      //
+      // The page-grid cell is chosen from the content CENTRE, not its min
+      // corner. Flooring the min corner let a single slightly-negative
+      // coordinate (a 1px overhang, or an outside-positioned label poking
+      // above the top edge) snap the origin to the previous (-1) grid cell and
+      // shift the WHOLE sheet a full page off-paper -- silent, total content
+      // loss on a medical label. Anchoring on the centre keeps the bulk on its
+      // real sheet; any genuine ink past a page edge is reported by the
+      // off-page-ink scan below (faithful-or-loud-notice), never silently
+      // cropped.
       var pgw = page.w * scale;
       var pgh = page.h * scale;
       origin = {
-        x: pgw * Math.floor(bounds.x / pgw),
-        y: pgh * Math.floor(bounds.y / pgh)
+        x: pgw * Math.floor((bounds.x + bounds.width / 2) / pgw),
+        y: pgh * Math.floor((bounds.y + bounds.height / 2) / pgh)
       };
     } else {
       // Auto-fit page (no explicit dims): bounds-anchoring is faithful.

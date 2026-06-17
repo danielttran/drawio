@@ -2692,17 +2692,29 @@ test('audit: wrapped CJK label breaks between ideographs (no silent clipping)', 
   assert.ok(lines >= 2, `CJK label must wrap into multiple lines (got ${lines})`);
 });
 
-test('audit: ink-extent anchoring keeps outside-positioned labels on the page', async () => {
+test('audit: a slightly-negative coordinate does not shift the whole explicit page off-paper', async () => {
+  // Round-13 HIGH bug: the explicit-page origin floored the content MIN
+  // corner, so a single 1px-negative coordinate (or a rotated-shape corner /
+  // label ascent poking above the top edge) snapped the page-grid origin to
+  // the previous (-1) cell and translated the ENTIRE sheet a full page
+  // off-paper -- a silently blank medical label. The origin is now anchored
+  // on the content CENTRE (the bulk's page-grid cell), so a marginal overhang
+  // keeps every on-page shape on its real sheet.
   const xml = `<mxGraphModel pageWidth="400" pageHeight="300"><root>
     <mxCell id="0"/><mxCell id="1" parent="0"/>
-    <mxCell id="2" vertex="1" value="Above" style="rounded=0;verticalLabelPosition=top;verticalAlign=bottom;" parent="1"><mxGeometry x="0" y="0" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="2" vertex="1" value="A" style="rounded=0;" parent="1"><mxGeometry x="20" y="-1" width="100" height="60" as="geometry"/></mxCell>
+    <mxCell id="3" vertex="1" value="B" style="rounded=0;" parent="1"><mxGeometry x="20" y="200" width="100" height="60" as="geometry"/></mxCell>
   </root></mxGraphModel>`;
   const { contract } = await bake(xml, { keepPx: true });
   const page = contract.document.pages[0];
-  for (const n of page.paint) {
-    if (n.box) {
-      assert.ok(n.box.y > -3, `no ink may anchor off the page top (box.y=${n.box.y})`);
-    }
+  // Both cells must stay near their authored y (0..260), NOT shoved a full
+  // page (300px) down/up. The 1px overhang of cell "A" must not relocate the
+  // sheet.
+  const boxes = page.paint.filter((n) => n.box).map((n) => n.box);
+  assert.ok(boxes.length >= 2, 'both cells should paint');
+  for (const b of boxes) {
+    assert.ok(b.y > -5 && b.y + b.h < 305,
+      `explicit-page content must stay on its authored sheet, got box.y=${b.y} h=${b.h}`);
   }
 });
 
