@@ -13,9 +13,11 @@
 
 A drawing is printed by turning it into a **frozen JSON contract** of primitive
 paint nodes (`path` / `svg` / `image`) entirely **without a browser**, then a
-small **C++ engine** transcribes that contract verbatim to a device bitmap (text
-and vector artwork rasterized by the real **resvg** renderer), which the Win32
-host blits **1:1, opaque, at device DPI** to the printer.
+small **C++ engine** transcribes that contract verbatim to a device bitmap. The
+host composites each node at device DPI: `svg` nodes (all text, gradients, and
+complex artwork) are rasterized by the real **resvg** renderer; primitive
+`path`/`image` nodes are drawn by GDI+. The Win32 host then blits the result
+**1:1, opaque, at device DPI** to the printer.
 
 WYSIWYG ("what the operator sees in draw.io is what the printer produces") is a
 **hard requirement** and holds **by construction**: every object is either
@@ -176,11 +178,15 @@ symbols, emoji).
 The bake's output is a strict JSON document — the **isolated boundary** between
 drawio and the engine. Shape:
 
+The production contract is **schema 1.1 / `units:"um"`** (the bake emits a
+schema‑1.0 / `units:"px"` contract internally, then `px-to-um.mjs` converts it to
+the 1.1 µm contract; `keepPx` test bakes stop at the 1.0/px form).
+
 ```jsonc
 {
-  "schema": { "major": 1, "minor": 1 },
+  "schema": { "major": 1, "minor": 1 },   // 1.0 for a keepPx (px) test bake
   "document": {
-    "units": "um",                       // or "px" for keepPx test bakes
+    "units": "um",                       // "px" for a keepPx test bake
     "pages": [{
       "id": "page-1",
       "size":  { "w": …, "h": … },
@@ -275,22 +281,24 @@ end‑to‑end render gate exercises the *real* production rasterizer.
 ### 4.1 Reproduce the per‑link evidence (commands)
 
 ```bash
+# Build the real resvg cdylib first; its path drives the ink/render gates.
+( cd src/main/native-print-engine/host/svg-rasterizer && cargo build --release && cargo test )   # 9 pass
+export SVG_RASTERIZER_LIB="$(readlink -f src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so)"
+
 # Link 1 — canvas→contract fidelity + the full object catalogue, zero notices
 npm run test:nativeprint-exporter        # 205 pass (+1 pre-existing skip) — exporter structural invariants
 npm run test:nativeprint-bake            # 381 pass — bake C1/contract golden + regression corpus
 npm run test:nativeprint-validate        # 64 pass  — contract validator (mirrors the C++ loader)
 npm run test:nativeprint-service         # 19 pass  — unattended service + font preflight
 npm run audit:nativeprint-production     # 86 registered shapes + 8910 stencils — zero gating notices, 0 blank
+#   (the 0-blank ink check needs SVG_RASTERIZER_LIB, set above)
 
 # Link 2 — contract→trace: engine load/validate/transcribe + INV-1 isolation
 ( cd src/main/native-print-engine && cmake -S . -B build >/dev/null && cmake --build build -j )
-( cd src/main/native-print-engine/build && \
-  SVG_RASTERIZER_LIB="$(readlink -f ../host/svg-rasterizer/target/release/libsvg_rasterizer.so)" ctest )
+( cd src/main/native-print-engine/build && ctest )
 #   -> 217/217 pass (incl. INV-1 architecture scan, contract loader/validation, golden render determinism)
 
-# Link 3 — trace→pixels through the REAL resvg cdylib
-( cd src/main/native-print-engine/host/svg-rasterizer && cargo build --release && cargo test )   # 9 pass
-export SVG_RASTERIZER_LIB="$(readlink -f src/main/native-print-engine/host/svg-rasterizer/target/release/libsvg_rasterizer.so)"
+# Link 3 — trace→pixels through the REAL resvg cdylib (built above)
 npm run test:nativeprint-render-gate     # rasterizes every fixture through the real resvg: no blank, no blocking notice
 
 # Render a single inspectable PNG (prints source sha256 beside it)
@@ -397,7 +405,7 @@ whole point: the divergence is never silent.
 | Rich‑text HTML shim | `src/main/webapp/plugins/nativeprint/svg-shim/index.mjs` |
 | Edge routing | `tools/native-print-bake/mx-edge-router.mjs` |
 | Font preflight | `tools/native-print-bake/font-preflight.mjs` |
-| Contract validator (JS, mirrors loader) | `tools/native-print-validate-contract*.mjs` |
+| Contract validator (JS, mirrors loader) | `tools/native-print-validate-contract.mjs` |
 | Engine (load/validate/render) | `src/main/native-print-engine/src/*.cpp`, `include/print_engine/*.hpp` |
 | resvg cdylib | `src/main/native-print-engine/host/svg-rasterizer/` |
 | Win32/GDI+ host | `src/main/native-print-engine/host/win32_services.cpp` |
